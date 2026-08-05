@@ -32,11 +32,6 @@ class Candidate(BaseModel):
     llm_score: float = 0.0
     llm_comment: str = ""
 
-    article: str = ""  # full extracted text, or description as fallback
-    extraction_failed: bool = False
-
-    post_content: str = ""
-
 
 class PublishCandidate(BaseModel):
     """One row read back from the shared candidate-pool Notion database, as

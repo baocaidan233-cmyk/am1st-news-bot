@@ -23,9 +23,14 @@ def _rich_text(value: str) -> dict:
 
 async def write_candidate(config: AppConfig, item: Candidate) -> bool:
     """Writes one row to the shared candidate-pool database — called by the
-    ingestion cycle (main.py) once an article survives scoring, extraction,
-    and content-gen. send_status is left unset (defaults to false) here;
-    only the publish cycle ever sets it true, after actually posting."""
+    ingestion cycle (main.py) once an article survives scoring. Full-text
+    extraction and content-gen no longer happen at ingestion time (moved to
+    the publish cycle, 2026-08-05 — see agents/extractor.py's docstring),
+    so props.content/props.post_content are left unset here; the publish
+    cycle fills those in-memory for just the small batch it selects, and
+    doesn't write them back to this row. send_status is also left unset
+    (defaults to false); only the publish cycle ever sets it true, after
+    actually posting."""
     notion = config.notion
     if not notion.candidate_key or not notion.candidate_db_id:
         logger.warning("write_candidate: NOTION_CANDIDATE_API_KEY / NOTION_CANDIDATE_DB_ID not set — skipping candidate write")
@@ -43,10 +48,8 @@ async def write_candidate(config: AppConfig, item: Candidate) -> bool:
         props.author: _rich_text(item.source_name),
         props.description: _rich_text(item.description),
         props.published_at: {"date": {"start": item.published_at.isoformat()}},
-        props.post_content: _rich_text(item.post_content),
         props.llm_score: {"number": item.llm_score},
         props.llm_comment: _rich_text(item.llm_comment),
-        props.content: _rich_text(item.article),
         props.url_hash: _rich_text(item.url_hash),
     }
     body = {"parent": {"database_id": notion.candidate_db_id}, "properties": properties}

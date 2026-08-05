@@ -8,9 +8,15 @@ something to post.
 
 Cycle order (every publish.interval_seconds, 30 min by default):
   query eligible candidates (Notion: not sent, <=12h old, llm_score>=6)
-  -> drop stale "former president Trump" phrasing
+  -> drop stale "former president Trump" phrasing (cheap pass, title+
+     description only)
   -> tiered batch selection (fresh+high-score preferred, cascading fallback,
      3-5 candidates)
+  -> full-text extraction + content generation for just this small batch
+     (moved here from main.py, 2026-08-05 — see agents/extractor.py's
+     docstring for why), dropping anything the writer judges "No comment"
+  -> re-check the former-Trump filter now that full text/post_content
+     exist, in case only the article body (not title/description) had it
   -> LLM priority re-rank (gpt-4o-mini, on post_content, second opinion vs
      the ingestion-side llm_score)
   -> walk the ranked list, skipping anything that's a near-duplicate of
@@ -41,11 +47,15 @@ from dotenv import load_dotenv
 
 from agents.candidate_selector import filter_former_trump, select_batch
 from agents.embedder import Embedder
+from agents.extractor import Extractor
 from agents.gettr_publisher import GettrPublisher
 from agents.posted_dedup_checker import find_publishable
 from agents.priority_ranker import PriorityRanker
+from agents.writer import Writer
+from core.alerts import AlertNotifier
 from core.config import load_config
 from core.notion_candidates import mark_send_status, query_eligible_candidates
+from core.notion_sources import load_rss_sources
 from core.qdrant_store import PostedHistoryStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -58,6 +68,8 @@ async def run_cycle(
     ranker: PriorityRanker,
     posted_store: PostedHistoryStore,
     publisher: GettrPublisher,
+    extractor: Extractor,
+    writer: Writer,
     dry_run: bool,
 ) -> None:
     candidates = await query_eligible_candidates(config)
@@ -71,9 +83,36 @@ async def run_cycle(
         return
 
     batch = select_batch(candidates, config)
-    logger.info("run_cycle: selected batch of %d for ranking", len(batch))
+    logger.info("run_cycle: selected batch of %d for extraction/content-gen", len(batch))
 
-    ranked = await ranker.rank(batch)
+    sources = await load_rss_sources(config)
+    generated = []
+    for c in batch:
+        text = await extractor.extract(c.url, sources)
+        c.content = text if text else c.description
+
+        post_content = await writer.write(c.title, c.content)
+        if Writer.is_no_comment(post_content):
+            logger.info("run_cycle: %s — writer returned No comment, dropped from batch", c.url)
+            continue
+        # Link appended after generation, not counted against the writer's
+        # word cap — the AI's own output stays pure caption text.
+        c.post_content = f"{post_content}\n\n{c.url}"
+        generated.append(c)
+
+    if not generated:
+        logger.info("run_cycle: nothing survived extraction/content-gen this cycle")
+        return
+
+    # Re-check now that full text/post_content exist — the first pass only
+    # had title+description to work with, so this catches stale phrasing
+    # that only shows up in the article body or the generated caption.
+    generated = filter_former_trump(generated)
+    if not generated:
+        logger.info("run_cycle: all candidates dropped by post-extraction former-Trump filter")
+        return
+
+    ranked = await ranker.rank(generated)
 
     winner = await find_publishable(ranked, embedder, posted_store, config)
     if winner is None:
@@ -106,6 +145,9 @@ async def main() -> None:
     ranker = PriorityRanker(config)
     posted_store = PostedHistoryStore(config)
     publisher = GettrPublisher(config, dry_run=dry_run)
+    alerts = AlertNotifier(config)
+    extractor = Extractor(config, alerts)
+    writer = Writer(config)
     await posted_store.ensure_collection()
 
     if dry_run:
@@ -114,7 +156,7 @@ async def main() -> None:
     try:
         while True:
             try:
-                await run_cycle(config, embedder, ranker, posted_store, publisher, dry_run)
+                await run_cycle(config, embedder, ranker, posted_store, publisher, extractor, writer, dry_run)
             except Exception:
                 logger.exception("run_cycle failed")
             jitter = config.publish.interval_seconds * random.uniform(-0.1, 0.1)

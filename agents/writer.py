@@ -5,7 +5,6 @@ from pathlib import Path
 from openai import AsyncOpenAI
 
 from core.config import AppConfig
-from core.models import Candidate
 
 NO_COMMENT = "No comment"
 
@@ -16,15 +15,20 @@ class Writer:
     Deliberately a separate LLM call from Scorer, not merged into one
     request — Scoring decides "is this worth reporting", this decides "how
     to write it"; keeping them separate matches the original's own division
-    of labor (see am1st_pipeline.html #p5)."""
+    of labor (see am1st_pipeline.html #p5).
+
+    Called from the publish cycle only (2026-08-05 — moved out of
+    ingestion, same reasoning as agents/extractor.py's docstring): takes
+    plain title/article text rather than a specific Candidate type so it
+    works for whichever model the caller has on hand."""
 
     def __init__(self, config: AppConfig) -> None:
         self._client = AsyncOpenAI(api_key=config.openai.api_key)
         self._model = config.openai.chat_model
         self._system_prompt = Path(config.openai.content_gen_prompt_file).read_text(encoding="utf-8")
 
-    async def write(self, candidate: Candidate) -> str:
-        user_message = f"Title:  {candidate.title}\n\nArticle: {candidate.article}"
+    async def write(self, title: str, article: str) -> str:
+        user_message = f"Title:  {title}\n\nArticle: {article}"
         resp = await self._client.chat.completions.create(
             model=self._model,
             messages=[

@@ -17,12 +17,18 @@ Pipeline order per cycle (cheapest filter first):
   load sources (Notion) -> fetch RSS (UTC-normalized, 3h publish-age filter)
   -> URL-hash Redis dedup -> intra-batch embedding dedup (title+description)
   -> cross-cycle Qdrant dedup (title+description vs title+description
-  written in the last 72h) -> AI score gate (gpt-4o-mini, >=5) -> full-text
-  extraction (cookie-mapped, alerts on failure instead of silently dropping)
-  -> content generation (gpt-4o-mini, "No comment" = quality-filtered out)
-  -> write to Notion candidate pool -> Qdrant embedding write (the same
-  title+description embedding used for intra-batch dedup, now persisted for
+  written in the last 72h) -> AI score gate (gpt-4o-mini, >=5) -> write to
+  Notion candidate pool -> Qdrant embedding write (the same title+
+  description embedding used for intra-batch dedup, now persisted for
   future cross-cycle checks).
+
+Full-text extraction and content generation are deliberately NOT part of
+this cycle (moved to main_publish.py, 2026-08-05) — every candidate that
+merely cleared the cheap title+description score gate used to pay for a
+full extraction + LLM-written post, even though only a handful per 30-min
+publish cycle would ever actually get posted before aging out of the 12h
+candidate-pool window. See agents/extractor.py's docstring and
+project_am1st_migration memory.
 
 Usage:
   python3 main.py              # normal run
@@ -39,11 +45,8 @@ import sys
 from dotenv import load_dotenv
 
 from agents.embedder import Embedder
-from agents.extractor import Extractor
 from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
-from agents.writer import Writer
-from core.alerts import AlertNotifier
 from core.config import load_config
 from core.hashing import cosine_similarity
 from core.notion_candidates import write_candidate
@@ -56,7 +59,7 @@ logger = logging.getLogger("main")
 
 
 async def run_cycle(
-    config, redis_store, qdrant_store, embedder, scorer, extractor, writer, dry_run,
+    config, redis_store, qdrant_store, embedder, scorer, dry_run,
 ) -> None:
     sources = await load_rss_sources(config)
     if not sources:
@@ -113,17 +116,6 @@ async def run_cycle(
                 logger.info("run_cycle: %s scored %.1f, below threshold", c.url, c.llm_score)
                 continue
 
-            await extractor.extract(c, sources)
-
-            post_content = await writer.write(c)
-            if Writer.is_no_comment(post_content):
-                logger.info("run_cycle: %s — writer returned No comment, filtered out", c.url)
-                continue
-            # Link appended after generation, not counted against the
-            # writer's 37-word cap — the AI's own output stays pure caption
-            # text, the link is a mechanical addition on top of it.
-            c.post_content = f"{post_content}\n\n{c.url}"
-
             if not dry_run:
                 if not await write_candidate(config, c):
                     logger.warning("run_cycle: candidate-pool write failed for %s", c.url)
@@ -151,9 +143,6 @@ async def main() -> None:
     await qdrant_store.ensure_collection()
     embedder = Embedder(config)
     scorer = Scorer(config)
-    alerts = AlertNotifier(config)
-    extractor = Extractor(config, alerts)
-    writer = Writer(config)
 
     if dry_run:
         logger.info("Running in --dry-run mode: Notion/Qdrant writes will be logged, not sent")
@@ -161,9 +150,7 @@ async def main() -> None:
     try:
         while True:
             try:
-                await run_cycle(
-                    config, redis_store, qdrant_store, embedder, scorer, extractor, writer, dry_run,
-                )
+                await run_cycle(config, redis_store, qdrant_store, embedder, scorer, dry_run)
             except Exception:
                 logger.exception("run_cycle failed")
             jitter = config.poll_interval_seconds * random.uniform(-0.1, 0.1)

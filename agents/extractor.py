@@ -9,7 +9,7 @@ import trafilatura
 
 from core.alerts import AlertNotifier
 from core.config import AppConfig
-from core.models import Candidate, RssSource
+from core.models import RssSource
 
 logger = logging.getLogger(__name__)
 
@@ -51,27 +51,32 @@ class Extractor:
     attempted here.
 
     Bug③ fix carried over from the original n8n workflow: a failed
-    extraction never silently drops the item — it falls back to the RSS
-    description and fires a Notion @mention alert on the matched source's
-    row, so a cookie expiry actually gets noticed.
+    extraction never silently drops the item — the caller falls back to
+    the RSS description, and a Notion @mention alert fires on the matched
+    source's row, so a cookie expiry actually gets noticed.
+
+    Called from the publish cycle only (2026-08-05 — moved out of
+    ingestion): extracting full text for every ingestion-time candidate
+    that merely passed the cheap title+description score gate wasted real
+    work on articles that would very likely never be published before
+    aging out of the 12h candidate-pool window. Now only the handful of
+    candidates actually selected into a publish cycle's batch (up to 5,
+    every 30 min) pay this cost — see project_am1st_migration memory.
     """
 
     def __init__(self, config: AppConfig, alerts: AlertNotifier) -> None:
         self._config = config
         self._alerts = alerts
 
-    async def _fail(self, candidate: Candidate, source: RssSource | None, reason: str) -> None:
-        logger.warning("Extractor: %s for %s", reason, candidate.url)
-        candidate.extraction_failed = True
-        candidate.article = candidate.description
+    async def _fail(self, url: str, source: RssSource | None, reason: str) -> None:
+        logger.warning("Extractor: %s for %s", reason, url)
         if source:
-            await self._alerts.alert(
-                source.page_id,
-                f"全文抓取失败(可能是cookie失效/反爬拦截): {candidate.url}",
-            )
+            await self._alerts.alert(source.page_id, f"全文抓取失败(可能是cookie失效/反爬拦截): {url}")
 
-    async def extract(self, candidate: Candidate, sources: list[RssSource]) -> None:
-        source = _find_cookie_source(candidate.url, sources)
+    async def extract(self, url: str, sources: list[RssSource]) -> str | None:
+        """Returns the extracted main-content text, or None if extraction
+        failed — caller decides the fallback (the RSS description)."""
+        source = _find_cookie_source(url, sources)
         extraction = self._config.extraction
 
         headers = dict(FETCH_HEADERS)
@@ -80,19 +85,19 @@ class Extractor:
 
         try:
             async with httpx.AsyncClient(timeout=extraction.timeout_seconds, follow_redirects=True) as client:
-                resp = await client.get(candidate.url, headers=headers)
+                resp = await client.get(url, headers=headers)
                 resp.raise_for_status()
                 html = resp.text
         except Exception as e:
-            await self._fail(candidate, source, f"fetch failed ({e})")
-            return
+            await self._fail(url, source, f"fetch failed ({e})")
+            return None
 
         # trafilatura's parsing is CPU-bound, synchronous — offload so it
         # doesn't block the event loop while other candidates are in flight.
         text = await asyncio.to_thread(trafilatura.extract, html)
 
         if not text or len(text) < extraction.min_text_length:
-            await self._fail(candidate, source, f"extracted only {len(text or '')} chars")
-            return
+            await self._fail(url, source, f"extracted only {len(text or '')} chars")
+            return None
 
-        candidate.article = text
+        return text
