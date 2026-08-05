@@ -12,8 +12,8 @@ This channel serves a pro-Trump, pro-sovereignty, pro-law-enforcement America Fi
 It is not a neutral general-news feed, not an entertainment feed, and not a generic conservative commentary feed.
 
 Score channel relevance, not general mainstream newsworthiness. ---  
-## 1. AMERICA FIRST RELEVANCE   
-Score greater or equal to 6 if the story reinforces key MAGA-aligned themes:  
+## 1. AMERICA FIRST RELEVANCE
+A story must clearly fit one of these Core Themes to score 5 or above at all — see section 2 for exactly how to grade 5 through 9 once it does:
 ### 🇺🇸 Core Themes 
 - **Trump Agenda and Defense** — Trump wins, executive actions, court wins, rallies, appointments, diplomacy, policy implementation, anti-Trump lawfare, media hoaxes.
 - **Border, Deportation, and Public Safety** — border security, ICE, CBP, Border Patrol, deportations, sanctuary cities, illegal alien crime, cartels, fentanyl, police attacked, anti-police policies, soft-on-crime prosecutors.
@@ -34,15 +34,35 @@ Score greater or equal to 6 if the story reinforces key MAGA-aligned themes:
 - **Mainstream Media Exposed** — MSM caught fabricating or doctoring a story, retracted articles, doctored footage or quotes exposed, journalist admits bias, awards rescinded, outlet apologizes or is sued for defamation.
 - **Elon Musk and X Platform** — Elon Musk statements or actions, X/Twitter policy changes, SpaceX/Starlink news, Musk clashes with government agencies or legacy media, Musk-backed political moves.  ---
 
-## 2. REAL-TIME TRIGGER EVENTS   Stories with these *event types* receive significantly higher scores:  - Court rulings, indictments, arrests, gag orders   - Border footage, drone video, citizen-captured illegal crossings   - Censorship leaks, moderation exposure, whistleblower drops   - White House gaffes, Biden stumbles, protest disruptions  - Viral MAGA influencer posts (**100k+ views in <12 hours**)  ---  
+## 2. SCORE BANDS — 5 IS THE FLOOR, DIFFERENTIATE 6-9
 
-## 3. PATRIOT SHOCK FACTOR   Prioritize stories that **enrage or vindicate** the America First base:  - Faith-based attacks, church closures, pro-life arrests   - Gun rights erosion   - Institutional betrayal (GOP RINOs, red-state legal fights)   - Targeting of whistleblowers, J6 defendants, MAGA donors    ---  
+Anything below 5 is rejected and never enters the candidate pool — do not spend effort fine-grading rejects. Everything at 5 or above must land in exactly one of these bands, applied consistently story after story:
 
-# 4. GOP INTERNAL CONFLICT   Score higher when the story exposes **fractures inside the Republican Party**, especially those hurting MAGA:  - RINOs sabotaging MAGA priorities   - Establishment vs. Freedom Caucus battles   - GOP chaos harming Trump’s agenda   - Resignations or morale collapses (MTG-type events)   - Republicans exposing Congress corruption (insider trading, “sewer” remarks)  ---  
-# 5. OPPOSITION CHALLENGE   Score greater than 6 when MAGA is attacked by:  - Democrats   - Mainstream media   - Federal agencies (FBI/DOJ weaponization)   - Big Tech censorship   - Universities and activist groups   - Foreign adversaries **only when aggressive or mocking**, such as CCP espionage or threats    ---  
+**9-10 — Peak / historic-scale.** Reserve for the most severe version of a structural escalation event:
+- Border invasion / CBP completely overwhelmed
+- Major Trump legal reversal (gag order lifted, indictment dismissed, conviction overturned)
+- Terror attack, assassination or assassination attempt, military death
+- Capitol-scale unrest or nationwide protest
+- Major infrastructure attack, cyber shutdown, sabotage
+- Red-state open defiance of the federal government (e.g., a state sending its own troops, ignoring a federal order)
+- Use 10 only for the rare event that is historic in scale (successful attack, war declaration, a sitting official killed); 9 is the practical ceiling for everything else on this list.
 
-# 6. MAGA TRAITOR / MOVEMENT BETRAYAL   Trigger this category when a figure is widely perceived by the MAGA base as betraying the movement:  - Turning against Trump   - Siding with RINOs or establishment forces   - Abandoning the movement (resignation, “quitting the fight”)   - Attacking MAGA allies   - Labeled by MAGA influencers as “sellout,” “traitor,” or “backstabber”  ---  
+**8 — Major real-time trigger.** A concrete, fresh, high-engagement event, but not at the severity of the list above:
+- Court ruling, indictment, arrest, or gag order (not the major reversal itself)
+- Border footage, drone video, citizen-captured illegal crossings
+- Censorship leak, moderation exposure, whistleblower drop
+- White House gaffe, official stumble, protest disruption
+- A single MAGA influencer post already at 100k+ views within 12 hours
 
-## 7. STRUCTURAL SCORING RULE   Increase the score to **8-9 IF** the story includes urgent, high-impact events such as:  - Border invasion / CBP overwhelmed   - Major Trump legal decisions (gag lifted, indictment dismissed)   - Terror attack, assassination, military death   - Capitol-scale unrest or national protest   - Censorship leak with major implications - Any accusation against Trump (illegal orders, criminal claims, coup talk)   - Infrastructure attack, cyber shutdown, sabotage   - Red-state defiance (e.g., Texas sending troops, ignoring federal orders)    ---  
+**7 — Strong thematic engagement, no single trigger event.** On-theme (section 1) and additionally hits one of:
+- Patriot Shock Factor: enrages or vindicates the base (faith-based attacks, gun-rights erosion, targeting of whistleblowers/J6 defendants/MAGA donors)
+- Opposition Challenge: MAGA is directly attacked by Democrats, mainstream media, federal agencies (FBI/DOJ), Big Tech, universities/activist groups, or an aggressive/mocking foreign adversary
+- GOP Internal Conflict or MAGA Traitor: RINOs sabotaging MAGA priorities, Freedom Caucus vs. establishment fights, a figure widely seen as betraying the movement
+
+**6 — Solid, routine on-theme coverage.** Clearly fits one of the Core Themes in section 1, but doesn't hit any escalation criteria above — the ordinary, steady-state story that belongs on this channel.
+
+**5 — Marginal.** Tangential connection to a Core Theme; borderline whether it belongs at all. This is the floor — below 5, reject without further grading.
+
+---
 
 ## RETURN FORMAT ```json {   "llm_score": float,   "llm_comment": "A concise justification of the score." }
