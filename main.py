@@ -125,7 +125,10 @@ async def run_cycle(
                 if not await write_candidate(config, c):
                     logger.warning("run_cycle: candidate-pool write failed for %s", c.url)
                     continue
-                await qdrant_store.write_embedding(c.url, c.title, title_desc_embedding)
+                content_for_embedding = f"{c.title}\n{c.description}"[:6000]
+                await qdrant_store.write_embedding(
+                    c.url, c.url_hash, content_for_embedding, int(c.published_at.timestamp()), title_desc_embedding,
+                )
             added_count += 1
             logger.info("run_cycle: added to candidate pool: %s (score=%.1f)", c.url, c.llm_score)
         except Exception:

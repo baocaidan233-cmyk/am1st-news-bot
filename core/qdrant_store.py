@@ -33,10 +33,17 @@ class QdrantStore:
     corrects a 2026-08-03 mistake (this class's write method was originally
     called at Gettr-publish time, on post_content, before the "ingestion
     and publish are two separate cycles" architecture was understood — see
-    project_am1st_migration memory's 2026-08-04 note). Payload's logged_at
-    is when *this write* happened, not the source article's original
-    publish time — the 72h window is keyed on when this channel's candidate
-    pool first saw it.
+    project_am1st_migration memory's 2026-08-04 note).
+
+    Payload schema (content/url/urlHash/publishedAt) matches the real,
+    pre-existing n8n system's schema exactly — confirmed 2026-08-05 by
+    reading the actual upsert node in v2.15_gdelt_america_first_major_feed_to_notion.json,
+    after discovering this collection already held ~2900 real historical
+    points under this schema that our own "logged_at"/"title" field names
+    made invisible to every query (see project_am1st_migration memory's
+    2026-08-05 "field-name mismatch" note — a real bug, not a cold cache).
+    publishedAt is the article's own original publish time in Unix seconds
+    (matches the n8n source exactly), not when this row was written.
 
     Periodic delete-by-filter cleanup (retention_days) is intentionally NOT
     implemented here as something the main cycle calls — see standing dedup
@@ -66,9 +73,9 @@ class QdrantStore:
 
     async def most_similar_recent(self, embedding: list[float]) -> float:
         """Highest cosine similarity against title+description embeddings
-        written in the last cross_cycle_window_hours. Returns 0.0 if Qdrant
-        isn't configured or the collection is empty (fail open — never
-        blocks a candidate just because this cache is cold)."""
+        whose source article was published in the last cross_cycle_window_hours.
+        Returns 0.0 if Qdrant isn't configured or nothing matches (fail
+        open — never blocks a candidate just because this cache is cold)."""
         if self._client is None:
             return 0.0
         cutoff = time.time() - self._window_seconds
@@ -77,7 +84,7 @@ class QdrantStore:
                 collection_name=self._collection,
                 query=embedding,
                 limit=1,
-                query_filter=Filter(must=[FieldCondition(key="logged_at", range=Range(gte=cutoff))]),
+                query_filter=Filter(must=[FieldCondition(key="publishedAt", range=Range(gte=cutoff))]),
                 with_payload=False,
             )
         except Exception:
@@ -86,10 +93,12 @@ class QdrantStore:
         points = result.points
         return points[0].score if points else 0.0
 
-    async def write_embedding(self, url: str, title: str, embedding: list[float]) -> None:
+    async def write_embedding(self, url: str, url_hash: str, content: str, published_at_unix: int, embedding: list[float]) -> None:
         """Called once, right when a candidate is accepted into the Notion
         candidate pool — pass the title+description embedding already
-        computed for intra-batch dedup (see class docstring)."""
+        computed for intra-batch dedup (see class docstring). `content`
+        should be the same title+description text the embedding was
+        computed from."""
         if self._client is None:
             return
         await self._client.upsert(
@@ -98,7 +107,7 @@ class QdrantStore:
                 PointStruct(
                     id=str(uuid.uuid4()),
                     vector=embedding,
-                    payload={"url": url, "title": title, "logged_at": time.time()},
+                    payload={"content": content, "url": url, "urlHash": url_hash, "publishedAt": published_at_unix},
                 )
             ],
         )
@@ -115,7 +124,12 @@ class PostedHistoryStore:
     this dedups the publish cycle's chosen winner against what this channel
     has *actually posted* in the last publish.posted_dedup_window_hours,
     keyed on post_content (the generated caption), not title+description.
-    See agents/posted_dedup_checker.py."""
+    See agents/posted_dedup_checker.py.
+
+    Same real n8n payload schema as QdrantStore above (content/url/urlHash/
+    publishedAt) — confirmed against v1.4_am1st_notion_to_gettr_auto
+    posting.json's upsert node and the "similarity check flow (posting_
+    channels_vectorDB)" query node, 2026-08-05."""
 
     def __init__(self, config: AppConfig) -> None:
         self._collection = config.qdrant.posted_collection
@@ -137,36 +151,37 @@ class PostedHistoryStore:
             )
             logger.info("PostedHistoryStore: created collection %s", self._collection)
 
-    async def most_similar_recent(self, embedding: list[float]) -> tuple[float, str, str]:
-        """Highest cosine similarity against post_content embeddings posted
-        in the last window, plus that match's url/title for logging a
-        rejected duplicate. Returns (0.0, "", "") if Qdrant isn't configured,
-        the collection is empty, or the query fails — fail open, same as
+    async def most_similar_recent(self, embedding: list[float]) -> tuple[float, str]:
+        """Highest cosine similarity against post_content embeddings whose
+        source article was published in the last window, plus that match's
+        url for logging. Returns (0.0, "") if Qdrant isn't configured, the
+        collection is empty, or the query fails — fail open, same as
         QdrantStore.most_similar_recent."""
         if self._client is None:
-            return 0.0, "", ""
+            return 0.0, ""
         cutoff = time.time() - self._window_seconds
         try:
             result = await self._client.query_points(
                 collection_name=self._collection,
                 query=embedding,
                 limit=5,
-                query_filter=Filter(must=[FieldCondition(key="posted_at", range=Range(gte=cutoff))]),
+                query_filter=Filter(must=[FieldCondition(key="publishedAt", range=Range(gte=cutoff))]),
                 with_payload=True,
             )
         except Exception:
             logger.exception("PostedHistoryStore: query failed, treating as no match")
-            return 0.0, "", ""
+            return 0.0, ""
         points = result.points
         if not points:
-            return 0.0, "", ""
+            return 0.0, ""
         best = max(points, key=lambda p: p.score)
         payload = best.payload or {}
-        return best.score, payload.get("url", ""), payload.get("title", "")
+        return best.score, payload.get("url", "")
 
-    async def write(self, url: str, title: str, embedding: list[float]) -> None:
+    async def write(self, url: str, url_hash: str, content: str, published_at_unix: int, embedding: list[float]) -> None:
         """Called once, right after the publish cycle's winner is chosen —
-        never for a rejected/duplicate candidate."""
+        never for a rejected/duplicate candidate. `content` should be the
+        post_content the embedding was computed from."""
         if self._client is None:
             return
         await self._client.upsert(
@@ -175,7 +190,7 @@ class PostedHistoryStore:
                 PointStruct(
                     id=str(uuid.uuid4()),
                     vector=embedding,
-                    payload={"url": url, "title": title, "posted_at": time.time()},
+                    payload={"content": content, "url": url, "urlHash": url_hash, "publishedAt": published_at_unix},
                 )
             ],
         )

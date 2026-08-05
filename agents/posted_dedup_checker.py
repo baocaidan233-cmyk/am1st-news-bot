@@ -27,7 +27,7 @@ async def find_publishable(
 
     for candidate in ranked_batch:
         embedding = await embedder.embed(candidate.post_content)
-        similarity, matched_url, matched_title = await posted_store.most_similar_recent(embedding)
+        similarity, matched_url = await posted_store.most_similar_recent(embedding)
 
         if similarity > threshold:
             logger.info(
