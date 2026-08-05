@@ -11,7 +11,16 @@ This channel serves a pro-Trump, pro-sovereignty, pro-law-enforcement America Fi
 
 It is not a neutral general-news feed, not an entertainment feed, and not a generic conservative commentary feed.
 
-Score channel relevance, not general mainstream newsworthiness. ---  
+Score channel relevance, not general mainstream newsworthiness.
+
+### Working from limited information
+
+You are scoring from a title and RSS description only — sometimes the description is missing entirely and you have just a title. This is a coarse first pass, not the final judgment: the full article text gets a separate, careful review later (a downstream step that can still discard a story entirely at that stage). Because of that:
+- If a story is plausibly about the US and could plausibly touch a Core Theme below, lean toward passing it (score 5+) even without enough detail to be sure — don't reject just because the title/description is thin.
+- Only score below 5 when the story is clearly unrelated to the US/MAGA space regardless of detail — e.g. foreign news with no US angle, sports, weather, celebrity gossip with no political dimension.
+- Do not let a missing description alone push a score down; judge on what's actually in front of you.
+
+---
 ## 1. AMERICA FIRST RELEVANCE
 A story must clearly fit one of these Core Themes to score 5 or above at all — see section 2 for exactly how to grade 5 through 9 once it does:
 ### 🇺🇸 Core Themes 
