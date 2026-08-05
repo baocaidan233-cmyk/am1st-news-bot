@@ -77,7 +77,14 @@ async def run_cycle(
     threshold = config.dedup.semantic_threshold
     accepted: list[tuple] = []  # (candidate, embedding)
     for c in survivors:
-        embedding = await embedder.embed(f"{c.title}\n{c.description}")
+        try:
+            # Some RSS feeds dump full article text into "description" instead
+            # of a short summary — truncate defensively so a single oversized
+            # item can't blow past the embedding model's 8192-token limit.
+            embedding = await embedder.embed(f"{c.title}\n{c.description}"[:6000])
+        except Exception:
+            logger.exception("run_cycle: %s dropped — embedding failed, skipping this item", c.url)
+            continue
         if any(cosine_similarity(embedding, prev_emb) >= threshold for _, prev_emb in accepted):
             logger.info("run_cycle: %s dropped — intra-batch semantic duplicate", c.url)
             continue
