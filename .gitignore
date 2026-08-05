@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+data/
+logs/
+.DS_Store
+.venv/
+n8n_am1st_pipelines/
+._*

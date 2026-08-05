@@ -1,0 +1,66 @@
+notion:
+  source_db_id: ""       # env: NOTION_SOURCE_DB_ID — RSS feed table (url + cookie + in_use)
+  candidate_db_id: ""    # env: NOTION_CANDIDATE_DB_ID — "AM1ST-n8n-Channel" candidate pool, shared by ingestion + publish cycles
+  alert_user_id: ""       # env: NOTION_ALERT_USER_ID — @mentioned on cookie/extraction failures
+  # Source props confirmed against the live "rss_n8n_am1st_news" database 2026-08-03.
+  # Candidate props confirmed against the original n8n export's node field lists 2026-08-04 — not yet verified against a live schema read, check before first run.
+  source_props:
+    in_use: "in_use"
+    feed_url: "RSS"
+    name: "Name"
+    cookie: "cookie"
+    domain: "website"
+  candidate_props:
+    title: "title"
+    url: "url"
+    author: "author"
+    description: "description"
+    published_at: "publised_at"  # typo in the live test db's column name — matched deliberately, don't "fix"
+    post_content: "post_content"
+    llm_score: "llm_score"
+    llm_comment: "llm_comment"
+    content: "content"
+    url_hash: "url_hash"
+    send_status: "send_status"
+
+redis:
+  key_prefix: "am1st:url_hash:"
+  ttl_seconds: 864000  # 10 days
+
+openai:
+  chat_model: "gpt-4o-mini"
+  embedding_model: "text-embedding-3-small"
+  scoring_prompt_file: "prompts/scoring_prompt.txt"
+  content_gen_prompt_file: "prompts/content_gen_prompt.txt"
+  score_threshold: 5.0  # inclusive — score >= 5.0 passes
+
+dedup:
+  semantic_threshold: 0.8  # cosine similarity, both intra-batch and cross-cycle layers
+
+qdrant:
+  collection: "am1st_embeddings"           # ingestion-side cross-cycle dedup cache (title+description)
+  posted_collection: "am1st_posting_news_embedding"  # publish-side "already posted" cache (post_content)
+  cross_cycle_window_hours: 72
+  cleanup_retention_days: 10  # for the separate, not-yet-built daily cleanup job
+
+extraction:
+  timeout_seconds: 20
+  min_text_length: 200
+
+gettr:
+  api_url: "https://gettr.com/api/u/post"
+
+publish:
+  interval_seconds: 1800       # 30 minutes
+  candidate_min_score: 6.0
+  candidate_max_age_hours: 12
+  fresh_hours: 4
+  batch_min: 3
+  batch_max: 5
+  priority_rank_prompt_file: "prompts/priority_rank_prompt.txt"
+  posted_dedup_window_hours: 24
+  posted_dedup_threshold: 0.70  # stricter than ingestion's 0.8 — deliberate, fully-autonomous posting errs toward under-posting
+
+max_publish_age_hours: 3
+poll_interval_seconds: 600  # 10 minutes, matches the original n8n cadence
+alert_cooldown_seconds: 21600  # 6h — don't re-@mention for a still-broken source every cycle
