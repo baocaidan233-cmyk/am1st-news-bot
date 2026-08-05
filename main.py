@@ -119,7 +119,10 @@ async def run_cycle(
             if Writer.is_no_comment(post_content):
                 logger.info("run_cycle: %s — writer returned No comment, filtered out", c.url)
                 continue
-            c.post_content = post_content
+            # Link appended after generation, not counted against the
+            # writer's 37-word cap — the AI's own output stays pure caption
+            # text, the link is a mechanical addition on top of it.
+            c.post_content = f"{post_content}\n\n{c.url}"
 
             if not dry_run:
                 if not await write_candidate(config, c):
