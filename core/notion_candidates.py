@@ -13,7 +13,12 @@ logger = logging.getLogger(__name__)
 
 
 def _rich_text(value: str) -> dict:
-    return {"rich_text": [{"text": {"content": value[:2000]}}]}
+    # Notion's 2000-char limit is counted in UTF-16 code units (JS string
+    # semantics), not Python's code-point-based len()/slicing — a single
+    # astral character (some emoji, rare CJK) counts as 2 there but 1 here,
+    # so a plain [:2000] slice can still get rejected as "2001". A 1900
+    # margin absorbs that without needing to actually count UTF-16 units.
+    return {"rich_text": [{"text": {"content": value[:1900]}}]}
 
 
 async def write_candidate(config: AppConfig, item: Candidate) -> bool:
@@ -33,15 +38,15 @@ async def write_candidate(config: AppConfig, item: Candidate) -> bool:
         "Content-Type": "application/json",
     }
     properties = {
-        props.title: {"title": [{"text": {"content": item.title[:2000]}}]},
+        props.title: {"title": [{"text": {"content": item.title[:1900]}}]},
         props.url: {"url": item.url},
         props.author: _rich_text(item.source_name),
-        props.description: _rich_text(item.description[:2000]),
+        props.description: _rich_text(item.description),
         props.published_at: {"date": {"start": item.published_at.isoformat()}},
         props.post_content: _rich_text(item.post_content),
         props.llm_score: {"number": item.llm_score},
         props.llm_comment: _rich_text(item.llm_comment),
-        props.content: _rich_text(item.article[:2000]),
+        props.content: _rich_text(item.article),
         props.url_hash: _rich_text(item.url_hash),
     }
     body = {"parent": {"database_id": notion.candidate_db_id}, "properties": properties}
