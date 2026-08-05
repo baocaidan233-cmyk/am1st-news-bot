@@ -18,7 +18,9 @@ Cycle order (every publish.interval_seconds, 30 min by default):
   -> re-check the former-Trump filter now that full text/post_content
      exist, in case only the article body (not title/description) had it
   -> LLM priority re-rank (gpt-4o-mini, on post_content, second opinion vs
-     the ingestion-side llm_score)
+     the ingestion-side llm_score), given a read-only snapshot of Google
+     News' current top US-politics headlines as trending context (see
+     agents/trending.py — never ingested/scored/published from directly)
   -> walk the ranked list, skipping anything that's a near-duplicate of
      content this channel already posted in the last 24h (threshold 0.70 —
      stricter than the ingestion side's 0.8, deliberately, since this is a
@@ -51,6 +53,7 @@ from agents.extractor import Extractor
 from agents.gettr_publisher import GettrPublisher
 from agents.posted_dedup_checker import find_publishable
 from agents.priority_ranker import PriorityRanker
+from agents.trending import fetch_trending_headlines
 from agents.writer import Writer
 from core.alerts import AlertNotifier
 from core.config import load_config
@@ -112,7 +115,8 @@ async def run_cycle(
         logger.info("run_cycle: all candidates dropped by post-extraction former-Trump filter")
         return
 
-    ranked = await ranker.rank(generated)
+    trending_headlines = await fetch_trending_headlines()
+    ranked = await ranker.rank(generated, trending_headlines)
 
     winner = await find_publishable(ranked, embedder, posted_store, config)
     if winner is None:

@@ -58,7 +58,7 @@ publish:
   candidate_max_age_hours: 12
   fresh_hours: 4
   batch_min: 3
-  batch_max: 5
+  batch_max: 10
   priority_rank_prompt_file: "prompts/priority_rank_prompt.txt"
   posted_dedup_window_hours: 24
   posted_dedup_threshold: 0.70  # stricter than ingestion's 0.8 — deliberate, fully-autonomous posting errs toward under-posting

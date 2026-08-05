@@ -35,17 +35,20 @@ class PriorityRanker:
         self._model = config.openai.chat_model
         self._system_prompt = Path(config.publish.priority_rank_prompt_file).read_text(encoding="utf-8")
 
-    async def _call(self, batch: list[PublishCandidate]) -> str:
+    async def _call(self, batch: list[PublishCandidate], trending_headlines: list[str]) -> str:
         now = datetime.now(timezone.utc)
         user_message = json.dumps(
-            [
-                {
-                    "id": c.page_id,
-                    "post_content": c.post_content,
-                    "hours_old": round((now - c.published_at).total_seconds() / 3600, 1),
-                }
-                for c in batch
-            ],
+            {
+                "trending_headlines": trending_headlines,
+                "stories": [
+                    {
+                        "id": c.page_id,
+                        "post_content": c.post_content,
+                        "hours_old": round((now - c.published_at).total_seconds() / 3600, 1),
+                    }
+                    for c in batch
+                ],
+            },
             ensure_ascii=False,
         )
         resp = await self._client.chat.completions.create(
@@ -65,21 +68,30 @@ class PriorityRanker:
         data = json.loads(cleaned)
         return [_RankEntry.model_validate(item) for item in data]
 
-    async def rank(self, batch: list[PublishCandidate]) -> list[PublishCandidate]:
+    async def rank(self, batch: list[PublishCandidate], trending_headlines: list[str] | None = None) -> list[PublishCandidate]:
         """Sets priority_score on each item in `batch` (in place, on copies)
         and returns them sorted by priority_score descending, tie-broken by
         published_at descending. Falls back to the existing llm_score order
         (priority_score left at 0) if the LLM output can't be parsed even
-        after one retry — never blocks the publish cycle on this step."""
+        after one retry — never blocks the publish cycle on this step.
+
+        `trending_headlines` is a read-only context snapshot (see
+        agents/trending.py) — current top US-politics headlines from
+        Google News, given to the model so it can judge whether a
+        candidate overlaps with what's actively trending right now. An
+        empty list (the default, or whatever agents/trending.py returns on
+        a failed fetch) just means no trending context this cycle — never
+        blocks ranking."""
         if not batch:
             return []
+        trending_headlines = trending_headlines or []
 
-        raw = await self._call(batch)
+        raw = await self._call(batch, trending_headlines)
         try:
             entries = self._parse(raw)
         except (json.JSONDecodeError, ValidationError, TypeError) as e:
             logger.warning("PriorityRanker: malformed output, retrying once: %s", e)
-            retry_raw = await self._call(batch)
+            retry_raw = await self._call(batch, trending_headlines)
             try:
                 entries = self._parse(retry_raw)
             except (json.JSONDecodeError, ValidationError, TypeError):

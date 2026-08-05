@@ -114,7 +114,7 @@ class PublishConfig(BaseModel):
     candidate_max_age_hours: int = 12  # candidate pool eligibility window
     fresh_hours: int = 4  # freshness tier line used by the batch-selection cascade
     batch_min: int = 3
-    batch_max: int = 5
+    batch_max: int = 10  # was 5; raised 2026-08-05 now that extraction/content-gen only run on the selected batch, not every scored candidate — a bigger batch costs much less than it used to
     priority_rank_prompt_file: str = "prompts/priority_rank_prompt.txt"
     posted_dedup_window_hours: int = 24
     posted_dedup_threshold: float = 0.70  # stricter than the ingestion side's 0.8 — deliberate, per the user: fully autonomous posting should err toward under-posting
