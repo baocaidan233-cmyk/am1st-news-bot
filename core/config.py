@@ -108,7 +108,9 @@ class PublishConfig(BaseModel):
     """
 
     interval_seconds: int = 1800  # 30 minutes
-    candidate_min_score: float = 6.0  # matches the original's min_score
+    candidate_min_score: float = 5.0  # Notion query floor — the lower of weekday/weekend_min_score, so both are actually fetched; select_batch applies the day-aware floor on top
+    weekday_min_score: float = 6.0  # weekdays: heavier real news volume, prefer this floor first
+    weekend_min_score: float = 5.0  # weekends: lighter volume, use this floor directly (also the weekday fallback if 6+ doesn't fill the batch)
     candidate_max_age_hours: int = 12  # candidate pool eligibility window
     fresh_hours: int = 4  # freshness tier line used by the batch-selection cascade
     batch_min: int = 3

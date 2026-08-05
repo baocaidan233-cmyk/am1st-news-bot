@@ -52,7 +52,9 @@ gettr:
 
 publish:
   interval_seconds: 1800       # 30 minutes
-  candidate_min_score: 6.0
+  candidate_min_score: 5.0     # Notion query floor (lower of weekday/weekend below)
+  weekday_min_score: 6.0
+  weekend_min_score: 5.0
   candidate_max_age_hours: 12
   fresh_hours: 4
   batch_min: 3

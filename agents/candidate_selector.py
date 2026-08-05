@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from core.config import AppConfig
 from core.models import PublishCandidate
+
+# Which timezone's calendar day decides "weekday vs weekend" — US/Eastern,
+# since this is a US-audience channel and that's the standard reference for
+# "the US news day," not UTC or wherever this process happens to run.
+_DAY_TZ = ZoneInfo("America/New_York")
 
 # Same skip-list as the original n8n "check former"/"check former1" nodes,
 # ported verbatim. Applied as a plain keyword filter here instead of a
@@ -25,6 +31,10 @@ _FORMER_TRUMP_PHRASES = (
 _TIER1_MIN_SCORE = 7.0
 
 
+def _is_weekday(now: datetime) -> bool:
+    return now.astimezone(_DAY_TZ).weekday() < 5  # Mon=0 ... Sun=6
+
+
 def filter_former_trump(candidates: list[PublishCandidate]) -> list[PublishCandidate]:
     """Drops anything still referring to Trump as a former president —
     stale phrasing that slips through when an old article gets re-synced
@@ -44,9 +54,19 @@ def select_batch(candidates: list[PublishCandidate], config: AppConfig) -> list[
     least batch_min survive (or give up and just take the newest ones),
     capped at batch_max. `candidates` should already be former-Trump-filtered
     and come from the Notion eligibility query (send_status/age/score gate
-    already applied there)."""
+    already applied there, at the lower of weekday/weekend_min_score so
+    both are actually fetched).
+
+    Weekday/weekend-aware floor (2026-08-05, user request): weekdays see
+    much more real news volume, so prefer publish.weekday_min_score first
+    and only relax to the lower publish.weekend_min_score if that doesn't
+    fill batch_min. Weekends see much less volume, so go straight to
+    weekend_min_score — being picky first would usually just waste a tier."""
     pub = config.publish
     now = datetime.now(timezone.utc)
+    is_weekday = _is_weekday(now)
+    preferred_floor = pub.weekday_min_score if is_weekday else pub.weekend_min_score
+    fallback_floor = pub.weekend_min_score
 
     def hours_old(c: PublishCandidate) -> float:
         return (now - c.published_at).total_seconds() / 3600
@@ -61,12 +81,31 @@ def select_batch(candidates: list[PublishCandidate], config: AppConfig) -> list[
 
     if len(batch) < pub.batch_min:
         picked_ids = {c.page_id for c in batch}
-        fill = [c for c in fresh if c.llm_score == pub.candidate_min_score and c.page_id not in picked_ids]
+        fill = sorted(
+            (c for c in fresh if preferred_floor <= c.llm_score < _TIER1_MIN_SCORE and c.page_id not in picked_ids),
+            key=lambda c: c.llm_score,
+            reverse=True,
+        )
         batch.extend(fill[: pub.batch_max - len(batch)])
 
     if len(batch) < pub.batch_min:
         picked_ids = {c.page_id for c in batch}
-        fill = [c for c in candidates if c.llm_score >= pub.candidate_min_score and c.page_id not in picked_ids]
+        fill = sorted(
+            (c for c in candidates if c.llm_score >= preferred_floor and c.page_id not in picked_ids),
+            key=lambda c: c.llm_score,
+            reverse=True,
+        )
+        batch.extend(fill[: pub.batch_max - len(batch)])
+
+    if is_weekday and len(batch) < pub.batch_min:
+        # Weekday-only extra fallback: not enough at the 6+ floor, so relax
+        # down to the weekend's lower floor before giving up on score entirely.
+        picked_ids = {c.page_id for c in batch}
+        fill = sorted(
+            (c for c in candidates if fallback_floor <= c.llm_score < preferred_floor and c.page_id not in picked_ids),
+            key=lambda c: c.llm_score,
+            reverse=True,
+        )
         batch.extend(fill[: pub.batch_max - len(batch)])
 
     if len(batch) < pub.batch_min:

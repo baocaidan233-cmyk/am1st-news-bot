@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from openai import AsyncOpenAI
@@ -35,8 +36,16 @@ class PriorityRanker:
         self._system_prompt = Path(config.publish.priority_rank_prompt_file).read_text(encoding="utf-8")
 
     async def _call(self, batch: list[PublishCandidate]) -> str:
+        now = datetime.now(timezone.utc)
         user_message = json.dumps(
-            [{"id": c.page_id, "post_content": c.post_content} for c in batch],
+            [
+                {
+                    "id": c.page_id,
+                    "post_content": c.post_content,
+                    "hours_old": round((now - c.published_at).total_seconds() / 3600, 1),
+                }
+                for c in batch
+            ],
             ensure_ascii=False,
         )
         resp = await self._client.chat.completions.create(
