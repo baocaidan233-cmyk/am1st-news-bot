@@ -51,6 +51,14 @@ async def write_candidate(config: AppConfig, item: Candidate) -> bool:
             resp = await client.post("https://api.notion.com/v1/pages", headers=headers, json=body)
             resp.raise_for_status()
         return True
+    except httpx.HTTPStatusError as e:
+        # Log Notion's actual validation message, not just the terse
+        # "400 Bad Request" from raise_for_status — otherwise a rare
+        # data-dependent rejection (bad property value, oversized field,
+        # odd Unicode from scraped content) is unreproducible after the
+        # fact, as one was during 2026-08-05 testing.
+        logger.error("write_candidate: Notion write failed for %s — %s", item.url, e.response.text[:500])
+        return False
     except Exception:
         logger.exception("write_candidate: Notion write failed for %s", item.url)
         return False
