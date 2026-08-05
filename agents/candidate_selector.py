@@ -11,11 +11,19 @@ from core.models import PublishCandidate
 # "the US news day," not UTC or wherever this process happens to run.
 _DAY_TZ = ZoneInfo("America/New_York")
 
-# Same skip-list as the original n8n "check former"/"check former1" nodes,
-# ported verbatim. Applied as a plain keyword filter here instead of a
-# Notion formula column (the original also had a formula-column version of
-# this same check gating the Notion query itself — this Python rebuild does
-# it once, in code, right after querying eligible candidates).
+# Exact phrase list from the original n8n "check former" node (confirmed
+# 2026-08-05 by reading its actual JS in v1.4_am1st_notion_to_gettr_auto
+# posting.json — not a guess). The real system also had a second,
+# independent check ("check former1") reading a Notion formula column's
+# precomputed flag — that formula's own definition isn't in the export, so
+# it isn't replicated here, but this phrase list is the confirmed one that
+# runs in code either way. Checked against title+description+content+
+# post_content combined, same as the original. Now serves double duty
+# after 2026-08-05's extraction/content-gen move: still catches a stale
+# re-synced article, and also the writer's own occasional hallucination
+# (content_gen_prompt.txt says "always President Trump," but an LLM can
+# still default to "former president" out of training-data habit) once
+# post_content is checked here too.
 _FORMER_TRUMP_PHRASES = (
     "former president trump",
     "former us president trump",
@@ -36,9 +44,9 @@ def _is_weekday(now: datetime) -> bool:
 
 
 def filter_former_trump(candidates: list[PublishCandidate]) -> list[PublishCandidate]:
-    """Drops anything still referring to Trump as a former president —
-    stale phrasing that slips through when an old article gets re-synced
-    into a source feed."""
+    """Drops anything calling Trump a former president — see module
+    docstring for the exact phrase list and why this now runs twice
+    (before and after content-gen)."""
     kept = []
     for c in candidates:
         combined = " ".join([c.title, c.description, c.content, c.post_content]).lower()
