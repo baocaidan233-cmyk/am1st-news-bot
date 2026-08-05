@@ -15,7 +15,7 @@ notion:
     url: "url"
     author: "author"
     description: "description"
-    published_at: "publised_at"  # typo in the live test db's column name — matched deliberately, don't "fix"
+    published_at: "published_at"
     post_content: "post_content"
     llm_score: "llm_score"
     llm_comment: "llm_comment"
