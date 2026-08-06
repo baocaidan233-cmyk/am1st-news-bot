@@ -38,6 +38,16 @@ for the winner's own article URL right before publishing, so the post
 shows a real preview card instead of a bare appended URL with no card —
 see agents/gettr_publisher.py's docstring for the field names involved.
 
+2026-08-06, same day: the posted-dedup embedding (both the check in
+find_publishable and the final write below) now uses
+agents/posted_dedup_checker.py's content_for_embedding() to strip the
+appended "\n\n{url}" suffix before embedding — a real duplicate slipped
+through (two different sources' takes on the same 2020 Maricopa County
+voter-data-hack story) because the literal URL text diluted the
+similarity score just under the 0.70 threshold (0.698 with the URL vs
+0.731 on the caption alone). The URL itself is still appended to the post
+that actually goes out — only what gets embedded for comparison changed.
+
 Usage:
   python3 main_publish.py              # normal run
   python3 main_publish.py --dry-run    # logs the winner, never touches Notion/Qdrant/Gettr
@@ -57,7 +67,7 @@ from agents.embedder import Embedder
 from agents.extractor import Extractor
 from agents.gettr_publisher import GettrPublisher
 from agents.og_metadata import fetch_link_preview
-from agents.posted_dedup_checker import find_publishable
+from agents.posted_dedup_checker import content_for_embedding, find_publishable
 from agents.priority_ranker import PriorityRanker
 from agents.trending import fetch_trending_headlines
 from agents.writer import Writer
@@ -147,7 +157,7 @@ async def run_cycle(
 
     if published and not dry_run:
         await mark_send_status(config, winner.page_id)
-        winner_embedding = await embedder.embed(winner.post_content)
+        winner_embedding = await embedder.embed(content_for_embedding(winner.post_content, winner.url))
         await posted_store.write(
             winner.url, winner.url_hash, winner.post_content, int(winner.published_at.timestamp()), winner_embedding,
         )

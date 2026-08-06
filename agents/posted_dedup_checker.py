@@ -10,6 +10,21 @@ from core.qdrant_store import PostedHistoryStore
 logger = logging.getLogger(__name__)
 
 
+def content_for_embedding(post_content: str, url: str) -> str:
+    """post_content always has "\\n\\n{url}" appended after generation (see
+    main_publish.py's run_cycle) — needed for the actual Gettr post, but
+    embedding the literal URL string dilutes the semantic dedup signal.
+    Real case caught 2026-08-06: two different sources' takes on the exact
+    same event (a 2020 Maricopa County voter-data hack) scored 0.731 on
+    caption text alone — comfortably over the 0.70 duplicate threshold —
+    but only 0.698 with the URL included, missing the duplicate entirely.
+    Strips the exact suffix that was appended, so dedup compares
+    like-for-like; returns the input unchanged if that suffix isn't
+    present (defensive, shouldn't happen given how post_content is built)."""
+    suffix = f"\n\n{url}"
+    return post_content[: -len(suffix)] if post_content.endswith(suffix) else post_content
+
+
 async def find_publishable(
     ranked_batch: list[PublishCandidate],
     embedder: Embedder,
@@ -26,7 +41,7 @@ async def find_publishable(
     threshold = config.publish.posted_dedup_threshold
 
     for candidate in ranked_batch:
-        embedding = await embedder.embed(candidate.post_content)
+        embedding = await embedder.embed(content_for_embedding(candidate.post_content, candidate.url))
         similarity, matched_url = await posted_store.most_similar_recent(embedding)
 
         if similarity > threshold:
