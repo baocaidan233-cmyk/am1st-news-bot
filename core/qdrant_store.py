@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -21,6 +22,29 @@ from core.config import AppConfig
 logger = logging.getLogger(__name__)
 
 EMBEDDING_DIM = 1536  # text-embedding-3-small
+
+
+async def ensure_collection_with_retry(store, name: str, attempts: int = 3, delay_seconds: float = 3.0) -> None:
+    """Wraps any of this module's `ensure_collection()` methods with retry +
+    tolerant continue — called once at process startup in main.py/
+    main_publish.py, OUTSIDE run_cycle's own per-cycle try/except. A
+    transient connectivity blip here previously crashed the whole
+    long-running daemon outright (confirmed live 2026-08-06: a Qdrant
+    ConnectTimeout at startup killed main.py entirely, needing a manual
+    restart) — unlike every per-item operation elsewhere in this codebase,
+    which already fails open. Retries a few times with a short delay, then
+    gives up and continues anyway: the collection almost certainly already
+    exists from a prior run, and every Qdrant call inside run_cycle already
+    fails open on its own if the underlying issue persists."""
+    for attempt in range(1, attempts + 1):
+        try:
+            await store.ensure_collection()
+            return
+        except Exception:
+            logger.exception("ensure_collection_with_retry: failed for %s (attempt %d/%d)", name, attempt, attempts)
+            if attempt < attempts:
+                await asyncio.sleep(delay_seconds)
+    logger.error("ensure_collection_with_retry: never succeeded for %s after %d attempts — continuing anyway", name, attempts)
 
 
 class QdrantStore:

@@ -61,7 +61,7 @@ from core.config import load_config
 from core.hashing import cosine_similarity
 from core.notion_candidates import write_candidate
 from core.notion_sources import load_rss_sources
-from core.qdrant_store import EventStore, QdrantStore
+from core.qdrant_store import EventStore, QdrantStore, ensure_collection_with_retry
 from core.redis_store import RedisStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -253,8 +253,8 @@ async def main() -> None:
     redis_store = RedisStore(config)
     qdrant_store = QdrantStore(config)
     event_store = EventStore(config)
-    await qdrant_store.ensure_collection()
-    await event_store.ensure_collection()
+    await ensure_collection_with_retry(qdrant_store, "am1st_embeddings")
+    await ensure_collection_with_retry(event_store, "am1st_events")
     embedder = Embedder(config)
     scorer = Scorer(config)
 

@@ -75,7 +75,7 @@ from core.alerts import AlertNotifier
 from core.config import load_config
 from core.notion_candidates import mark_send_status, query_eligible_candidates
 from core.notion_sources import load_rss_sources
-from core.qdrant_store import PostedHistoryStore
+from core.qdrant_store import PostedHistoryStore, ensure_collection_with_retry
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("main_publish")
@@ -176,7 +176,7 @@ async def main() -> None:
     alerts = AlertNotifier(config)
     extractor = Extractor(config, alerts)
     writer = Writer(config)
-    await posted_store.ensure_collection()
+    await ensure_collection_with_retry(posted_store, "am1st_posting_news_embedding")
 
     if dry_run:
         logger.info("Running in --dry-run mode: Notion/Qdrant writes will be logged, not sent")
