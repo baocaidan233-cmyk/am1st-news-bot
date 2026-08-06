@@ -74,6 +74,15 @@ Base your scoring on:
   heat_score alone does not excuse a large hours_old/hours_since_update —
   it's the heat_score + still-trending combination together that signals
   "still matters right now," not heat_score by itself.
+- An UNUSUALLY high heat_score — meaning most or all of the major wire/TV
+  outlets are simultaneously covering this same event — is on its own
+  strong evidence this is today's single biggest national story, and
+  should push toward a 9-10 priority_score even if the topic itself
+  doesn't otherwise stand out under your usual thematic judgment (e.g. a
+  topic that doesn't feel like it's been trending lately, but is
+  unmistakably the top story TODAY). Near-universal same-day coverage is
+  itself the signal — it doesn't need to be confirmed by anything else
+  before you weigh it that heavily.
 
 **Trending context** — use trending_headlines to judge whether a
 candidate is part of what's actively getting national attention right

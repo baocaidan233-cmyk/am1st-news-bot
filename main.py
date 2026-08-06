@@ -15,17 +15,21 @@ later reads that pool and decides what (if anything) actually gets posted.
 
 Pipeline order per cycle (cheapest filter first):
   load sources (Notion) -> fetch RSS (UTC-normalized, 3h publish-age filter)
-  -> URL-hash Redis dedup -> intra-batch embedding dedup (title+description)
-  -> cross-cycle Qdrant dedup (title+description vs title+description
-  written in the last 72h) AND event aggregation (core/qdrant_store.py's
-  EventStore, a separate Qdrant collection — computes heat_score/
-  event_first_seen_at; runs for every candidate BEFORE the duplicate-drop
-  decision, since even a dropped near-duplicate still counts as one more
-  source covering that event; see core/config.py's HeatConfig and
-  project_am1st_migration memory's 2026-08-06 "event aggregation" note) ->
-  AI score gate (gpt-4o-mini, >=5) -> write to Notion candidate pool ->
-  Qdrant embedding write (the same title+description embedding used for
-  intra-batch dedup, now persisted for future cross-cycle checks).
+  -> URL-hash Redis dedup -> intra-batch semantic CLUSTERING (title+
+  description; groups this batch's own candidates into local event
+  clusters, not just a drop/keep decision — see Layer 2 below) -> per
+  cluster: read-only peek at core/qdrant_store.py's EventStore (a separate
+  Qdrant collection tracking heat_score/event_first_seen_at per underlying
+  event, not per article) for a heat_score PREVIEW to feed the AI score
+  gate, plus per-candidate cross-cycle Qdrant dedup (vs title+description
+  written in the last 72h) -> AI score gate (gpt-4o-mini, >=5) -> for each
+  cluster with at least one scoring survivor: COMMIT that cluster's
+  accumulated heat/sources to the EventStore (a cluster where nothing
+  cleared the score gate never touches it at all — see 2026-08-06 "event
+  aggregation, take 2" design note in project_am1st_migration memory) ->
+  write survivors to Notion candidate pool -> Qdrant embedding write (the
+  same title+description embeddings used for clustering, now persisted
+  for future cross-cycle checks).
 
 Full-text extraction and content generation are deliberately NOT part of
 this cycle (moved to main_publish.py, 2026-08-05) — every candidate that
@@ -82,9 +86,25 @@ async def run_cycle(
     if not survivors:
         return
 
-    # --- Layer 2: intra-batch semantic dedup (title+description) ---
+    # --- Layer 2: intra-batch semantic CLUSTERING (title+description) ---
+    # Groups this batch's own candidates into local clusters instead of a
+    # plain drop/keep decision — same pairwise cosine comparisons as
+    # before, just also tracking WHICH existing cluster a match belongs to.
+    # score >= dedup.semantic_threshold: near-duplicate WITHIN this batch —
+    #   not its own candidate, but its source still credits the cluster
+    #   (fixes a bug symmetric to the one caught in cross-cycle dedup: this
+    #   used to be silently dropped with zero corroboration credit).
+    # heat.related_threshold <= score < dedup.semantic_threshold: distinct
+    #   angle on the same local event — joins the cluster, becomes its own
+    #   candidate.
+    # score < heat.related_threshold: starts a new local cluster.
+    # See project_am1st_migration memory's 2026-08-06 "event aggregation,
+    # take 2" note for the full design (peek/preview/commit split below).
     threshold = config.dedup.semantic_threshold
-    accepted: list[tuple] = []  # (candidate, embedding)
+    related_threshold = config.heat.related_threshold
+    clusters: list[dict] = []  # {"sources": set(), "earliest_source": str, "earliest_unix": int}
+    cluster_members: list[list[tuple]] = []  # parallel to clusters: [(candidate, embedding), ...]
+
     for c in survivors:
         try:
             # Some RSS feeds dump full article text into "description" instead
@@ -94,64 +114,132 @@ async def run_cycle(
         except Exception:
             logger.exception("run_cycle: %s dropped — embedding failed, skipping this item", c.url)
             continue
-        if any(cosine_similarity(embedding, prev_emb) >= threshold for _, prev_emb in accepted):
-            logger.info("run_cycle: %s dropped — intra-batch semantic duplicate", c.url)
+
+        best_ci, best_score = None, 0.0
+        for ci, members in enumerate(cluster_members):
+            for _, member_embedding in members:
+                score = cosine_similarity(embedding, member_embedding)
+                if score > best_score:
+                    best_score, best_ci = score, ci
+
+        published_unix = int(c.published_at.timestamp())
+
+        if best_score >= threshold:
+            cluster = clusters[best_ci]
+            cluster["sources"].add(c.source_name)
+            if published_unix < cluster["earliest_unix"]:
+                cluster["earliest_unix"] = published_unix
+                cluster["earliest_source"] = c.source_name
+            logger.info("run_cycle: %s dropped — intra-batch semantic duplicate (credited to cluster %d)", c.url, best_ci)
             continue
-        accepted.append((c, embedding))
-    logger.info("run_cycle: %d/%d survive intra-batch semantic dedup", len(accepted), len(survivors))
 
-    # --- Layer 3: cross-cycle semantic dedup (vs title+description written in the last 72h)
-    # + event aggregation (core/qdrant_store.py's EventStore — a separate
-    # collection tracking heat_score/event_first_seen_at per underlying
-    # event, not per article) ---
-    scoring_candidates = []  # list of (Candidate, title+description embedding)
-    for c, embedding in accepted:
-        best_score = await qdrant_store.most_similar_recent(embedding)
-        is_duplicate = best_score >= threshold
+        if best_score >= related_threshold:
+            cluster_idx = best_ci
+        else:
+            cluster_idx = len(clusters)
+            clusters.append({"sources": set(), "earliest_source": c.source_name, "earliest_unix": published_unix})
+            cluster_members.append([])
 
-        # Event aggregation runs BEFORE the duplicate-drop decision below,
-        # and regardless of its outcome: even a dropped near-duplicate
-        # still counts as one more source covering whatever event it
-        # belongs to (add_representative=False just means it doesn't
-        # become an additional matchable anchor for that event — see
-        # EventStore.record's docstring).
-        heat_score, first_seen_unix = await event_store.record(
-            embedding, c.source_name, int(c.published_at.timestamp()), add_representative=not is_duplicate,
+        cluster = clusters[cluster_idx]
+        cluster["sources"].add(c.source_name)
+        if published_unix < cluster["earliest_unix"]:
+            cluster["earliest_unix"] = published_unix
+            cluster["earliest_source"] = c.source_name
+        cluster_members[cluster_idx].append((c, embedding))
+
+    total_members = sum(len(m) for m in cluster_members)
+    logger.info(
+        "run_cycle: %d/%d survive intra-batch semantic dedup, forming %d local cluster(s)",
+        total_members, len(survivors), len(clusters),
+    )
+
+    # --- Layer 3: per-cluster event-store PREVIEW (read-only) + per-candidate
+    # cross-cycle Qdrant dedup (vs title+description written in the last 72h) ---
+    cluster_peeks: list[dict | None] = []
+    scoring_candidates = []  # list of (Candidate, embedding, cluster_idx)
+    for cluster_idx, members in enumerate(cluster_members):
+        if not members:
+            cluster_peeks.append(None)
+            continue
+        matched = await event_store.peek(members[0][1])
+        cluster_peeks.append(matched)
+        cluster = clusters[cluster_idx]
+        preview_heat, preview_first_seen = event_store.preview_heat(
+            matched, cluster["sources"], cluster["earliest_source"], cluster["earliest_unix"],
         )
+        preview_first_seen_dt = datetime.fromtimestamp(preview_first_seen, tz=timezone.utc)
 
-        if is_duplicate:
-            logger.info("run_cycle: %s dropped — cross-cycle semantic duplicate (%.3f)", c.url, best_score)
-            continue
+        for c, embedding in members:
+            best_score = await qdrant_store.most_similar_recent(embedding)
+            if best_score >= threshold:
+                logger.info("run_cycle: %s dropped — cross-cycle semantic duplicate (%.3f)", c.url, best_score)
+                continue
+            c.heat_score = preview_heat
+            c.event_first_seen_at = preview_first_seen_dt
+            scoring_candidates.append((c, embedding, cluster_idx))
+    logger.info("run_cycle: %d/%d survive cross-cycle semantic dedup", len(scoring_candidates), total_members)
 
-        c.heat_score = heat_score
-        c.event_first_seen_at = datetime.fromtimestamp(first_seen_unix, tz=timezone.utc)
-        scoring_candidates.append((c, embedding))
-    logger.info("run_cycle: %d/%d survive cross-cycle semantic dedup", len(scoring_candidates), len(accepted))
-
-    added_count = 0
-    for c, title_desc_embedding in scoring_candidates:
+    # --- Score every survivor first, THEN decide per cluster whether to
+    # commit anything to the EventStore — a cluster where nothing clears
+    # the score gate never touches am1st_events at all, without needing a
+    # separate (and inevitably imperfect) cheap relevance classifier: the
+    # score gate we're already paying for IS that classifier. ---
+    scored: list[tuple] = []  # (candidate, embedding, cluster_idx, passed)
+    for c, embedding, cluster_idx in scoring_candidates:
         try:
             score_output = await scorer.score(c)
             if score_output is None:
                 continue
             c.llm_score = score_output.llm_score
             c.llm_comment = score_output.llm_comment
-            if c.llm_score < config.openai.score_threshold:
+            passed = c.llm_score >= config.openai.score_threshold
+            if not passed:
                 logger.info("run_cycle: %s scored %.1f, below threshold", c.url, c.llm_score)
-                continue
+            scored.append((c, embedding, cluster_idx, passed))
+        except Exception:
+            logger.exception("run_cycle: unhandled error scoring %s, skipping this item", c.url)
 
-            if not dry_run:
+    added_count = 0
+    for cluster_idx, cluster in enumerate(clusters):
+        survivors_in_cluster = [(c, emb) for c, emb, ci, passed in scored if ci == cluster_idx and passed]
+        if not survivors_in_cluster:
+            continue
+
+        if dry_run:
+            for c, _ in survivors_in_cluster:
+                logger.info("run_cycle: [dry-run] would add to candidate pool: %s (score=%.1f)", c.url, c.llm_score)
+                added_count += 1
+            continue
+
+        rep_c, rep_embedding = survivors_in_cluster[0]
+        extra_points = [
+            (emb, c.source_name, int(c.published_at.timestamp())) for c, emb in survivors_in_cluster[1:]
+        ]
+        heat_score, first_seen_unix = await event_store.commit(
+            cluster_peeks[cluster_idx],
+            cluster["sources"],
+            cluster["earliest_source"],
+            cluster["earliest_unix"],
+            representative=(rep_embedding, rep_c.source_name, int(rep_c.published_at.timestamp())),
+            extra_points=extra_points,
+        )
+        first_seen_dt = datetime.fromtimestamp(first_seen_unix, tz=timezone.utc)
+
+        for c, embedding in survivors_in_cluster:
+            try:
+                c.heat_score = heat_score
+                c.event_first_seen_at = first_seen_dt
                 if not await write_candidate(config, c):
                     logger.warning("run_cycle: candidate-pool write failed for %s", c.url)
                     continue
                 content_for_embedding = f"{c.title}\n{c.description}"[:6000]
                 await qdrant_store.write_embedding(
-                    c.url, c.url_hash, content_for_embedding, int(c.published_at.timestamp()), title_desc_embedding,
+                    c.url, c.url_hash, content_for_embedding, int(c.published_at.timestamp()), embedding,
                 )
-            added_count += 1
-            logger.info("run_cycle: added to candidate pool: %s (score=%.1f)", c.url, c.llm_score)
-        except Exception:
-            logger.exception("run_cycle: unhandled error processing %s, skipping this item", c.url)
+                added_count += 1
+                logger.info("run_cycle: added to candidate pool: %s (score=%.1f)", c.url, c.llm_score)
+            except Exception:
+                logger.exception("run_cycle: unhandled error writing %s, skipping this item", c.url)
 
     logger.info("run_cycle: %d added to candidate pool this cycle", added_count)
 

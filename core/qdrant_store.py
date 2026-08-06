@@ -10,6 +10,7 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchValue,
+    PayloadSchemaType,
     PointStruct,
     Range,
     VectorParams,
@@ -161,7 +162,25 @@ class EventStore:
     (the first point of an event uses that event's originating article;
     later representative points use whichever new-angle article added
     them) — never a recomputed centroid, per the "fixed representative,
-    not rolling average" TDT guidance."""
+    not rolling average" TDT guidance.
+
+    2026-08-06, same day — split from a single record() into peek() +
+    preview_heat() + commit(), after the user flagged that record()'s
+    "query, then always write" design wrote an event (or bumped one) for
+    EVERY local news cluster regardless of whether anything in that
+    cluster would end up politically/thematically relevant — sports
+    scores, celebrity gossip, etc. all created event-store noise, since
+    llm_score-based relevance is only known AFTER scoring, which itself
+    happens after the old record() call. Rather than add a second,
+    separate (and imperfect) cheap classifier just to gate the write, this
+    reuses the score gate that's ALREADY being paid for: main.py now calls
+    peek() (read-only) BEFORE scoring to get a preview heat_score to feed
+    the scoring prompt, then calls commit() (the actual write) AFTER
+    scoring, and ONLY for a cluster that had at least one member clear the
+    score threshold — a cluster where every member scored below threshold
+    (irrelevant content) never touches this collection at all. See
+    project_am1st_migration memory's 2026-08-06 "event aggregation, take
+    2" note."""
 
     def __init__(self, config: AppConfig) -> None:
         self._collection = config.qdrant.events_collection
@@ -176,6 +195,17 @@ class EventStore:
         )
 
     async def ensure_collection(self) -> None:
+        """Also creates payload indexes on last_updated_at (range-filtered
+        in peek()'s query) and event_id (exact-match-filtered in commit()'s
+        set_payload calls) — Qdrant rejects a filter on an unindexed field
+        ("Index required but not found"), which the collection didn't have
+        from 2026-08-06's first real run: every query failed open that
+        cycle (logged, not crashed — the fail-open design worked as
+        intended), so event aggregation silently did nothing all cycle.
+        create_payload_index is a no-op if the index already exists, so
+        this always runs, not just on first creation — it needs to
+        backfill the index on the collection created before this fix
+        existed."""
         if self._client is None:
             return
         existing = await self._client.get_collections()
@@ -185,33 +215,26 @@ class EventStore:
                 vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
             )
             logger.info("EventStore: created collection %s", self._collection)
+        await self._client.create_payload_index(
+            collection_name=self._collection, field_name="last_updated_at", field_schema=PayloadSchemaType.INTEGER,
+        )
+        await self._client.create_payload_index(
+            collection_name=self._collection, field_name="event_id", field_schema=PayloadSchemaType.KEYWORD,
+        )
 
-    async def record(
-        self, embedding: list[float], source: str, published_at_unix: int, add_representative: bool,
-    ) -> tuple[float, int]:
-        """Called for EVERY candidate that survives intra-batch dedup —
-        including one about to be dropped as a near-duplicate against
-        QdrantStore's am1st_embeddings collection. That's the whole point:
-        even a dropped near-duplicate still counts as one more source
-        covering this event, so its corroboration credit must be recorded
-        BEFORE the caller's duplicate-drop decision, not after.
-
-        `add_representative` should be True only for a candidate that will
-        actually get its own candidate-pool row (i.e. NOT a near-duplicate
-        drop) — a near-duplicate doesn't add matching robustness (it's
-        already textually redundant with an existing representative), so
-        it bumps the matched event's tally but doesn't become a new point.
-
-        Returns (heat_score, first_seen_at_unix) reflecting this event's
-        state right after this call — the caller attaches these to the
-        candidate. Fails open (returns (1.0, published_at_unix), i.e. "no
-        corroboration found yet") if Qdrant isn't configured or the query
-        fails — never blocks the ingestion cycle."""
+    async def peek(self, embedding: list[float]) -> dict | None:
+        """Read-only — does NOT write anything. Called once per LOCAL
+        CLUSTER (see main.py — every member of a cluster is already known,
+        via cheap in-memory cosine comparison, to be mutually similar, so
+        only one representative embedding needs to be checked against this
+        collection, not one query per candidate). Returns the matched
+        event's current payload dict if the top match is within
+        heat.related_threshold and heat.window_hours, else None. Fails
+        open (returns None, i.e. "no match found") if Qdrant isn't
+        configured or the query fails."""
         if self._client is None:
-            return 1.0, published_at_unix
-
+            return None
         cutoff = time.time() - self._window_seconds
-        match = None
         try:
             result = await self._client.query_points(
                 collection_name=self._collection,
@@ -220,29 +243,79 @@ class EventStore:
                 query_filter=Filter(must=[FieldCondition(key="last_updated_at", range=Range(gte=cutoff))]),
                 with_payload=True,
             )
-            if result.points:
-                match = result.points[0]
+            if result.points and result.points[0].score >= self._related_threshold:
+                return dict(result.points[0].payload or {})
         except Exception:
-            logger.exception("EventStore: query failed, treating as no match")
+            logger.exception("EventStore: peek query failed, treating as no match")
+        return None
 
-        weight = self._major_outlet_weight if source in self._major_outlets else 1.0
+    def preview_heat(
+        self, matched: dict | None, sources: set[str], earliest_source: str, earliest_published_at_unix: int,
+    ) -> tuple[float, int]:
+        """Pure computation, no I/O — shared by main.py's pre-scoring
+        preview (fed into the scoring prompt) and commit()'s final write,
+        so the two never diverge as long as `sources`/`earliest_*` haven't
+        changed between the two calls (they don't, in main.py's flow — a
+        local cluster's membership is fully resolved before either call
+        happens).
+
+        `sources` is the FULL set of distinct source names this cluster
+        has accumulated so far (including ones dropped as near-duplicates
+        before ever reaching scoring — see main.py). `earliest_source` is
+        whichever of those sources has the earliest published_at — it gets
+        the flat "1.0 baseline" for a brand-new event (mirrors the original
+        record() convention: the very first report doesn't get outlet-
+        weighted just for being a major wire service; only SUBSEQUENT
+        corroboration does). Picking a fixed, deterministic source for that
+        baseline matters — iterating a plain set in arbitrary order would
+        make the total heat_score depend on hash order, not on anything
+        meaningful."""
+        if matched is not None:
+            existing_sources = set(matched.get("sources", []))
+            heat = matched.get("heat_score", 1.0)
+            for s in sources - existing_sources:
+                heat += self._major_outlet_weight if s in self._major_outlets else 1.0
+            first_seen = min(matched.get("first_seen_at", earliest_published_at_unix), earliest_published_at_unix)
+            return heat, first_seen
+
+        heat = 1.0
+        for s in sources - {earliest_source}:
+            heat += self._major_outlet_weight if s in self._major_outlets else 1.0
+        return heat, earliest_published_at_unix
+
+    async def commit(
+        self,
+        matched: dict | None,
+        sources: set[str],
+        earliest_source: str,
+        earliest_published_at_unix: int,
+        representative: tuple[list[float], str, int],
+        extra_points: list[tuple[list[float], str, int]],
+    ) -> tuple[float, int]:
+        """The actual write — called AFTER scoring, and only for a local
+        cluster where at least one member cleared the score gate (see
+        main.py). `representative` and each of `extra_points` are
+        (embedding, source, published_at_unix) for every surviving member
+        of the cluster that's about to become its own candidate-pool row —
+        each becomes its own representative point sharing one event_id, so
+        future cross-cycle matches can hit any of their phrasings, not just
+        the first one (mitigates fragmentation/drift, see class docstring).
+
+        Returns (heat_score, first_seen_at_unix) — the final committed
+        values, which should exactly equal whatever preview_heat() returned
+        earlier for this same cluster (nothing about `sources`/`earliest_*`
+        changes between main.py's peek+preview call and this commit call)."""
+        heat, first_seen = self.preview_heat(matched, sources, earliest_source, earliest_published_at_unix)
         now = int(time.time())
+        event_id = matched.get("event_id") if matched is not None else str(uuid.uuid4())
+        shared_payload = {
+            "heat_score": heat,
+            "first_seen_at": first_seen,
+            "last_updated_at": now,
+            "sources": list(set(matched.get("sources", [])) | sources) if matched is not None else list(sources),
+        }
 
-        if match is not None and match.score >= self._related_threshold:
-            payload = match.payload or {}
-            event_id = payload.get("event_id")
-            sources = list(payload.get("sources", []))
-            new_heat = payload.get("heat_score", 1.0)
-            if source not in sources:
-                new_heat += weight
-                sources.append(source)
-            new_first_seen = min(payload.get("first_seen_at", published_at_unix), published_at_unix)
-            shared_payload = {
-                "heat_score": new_heat,
-                "first_seen_at": new_first_seen,
-                "last_updated_at": now,
-                "sources": sources,
-            }
+        if matched is not None:
             try:
                 await self._client.set_payload(
                     collection_name=self._collection,
@@ -251,57 +324,24 @@ class EventStore:
                 )
             except Exception:
                 logger.exception("EventStore: failed to update event %s", event_id)
-            if add_representative:
-                try:
-                    await self._client.upsert(
-                        collection_name=self._collection,
-                        points=[
-                            PointStruct(
-                                id=str(uuid.uuid4()),
-                                vector=embedding,
-                                payload={
-                                    "event_id": event_id,
-                                    "source": source,
-                                    "published_at": published_at_unix,
-                                    **shared_payload,
-                                },
-                            )
-                        ],
-                    )
-                except Exception:
-                    logger.exception("EventStore: failed to add representative point for event %s", event_id)
-            return new_heat, new_first_seen
 
-        if not add_representative:
-            # Dropped as a near-duplicate AND no matching event found within
-            # the window — nothing to attach a heat_score to (this candidate
-            # never becomes a pool row), and no value in creating an orphan
-            # event for something we're discarding anyway.
-            return 1.0, published_at_unix
-
-        event_id = str(uuid.uuid4())
+        all_points = [representative] + list(extra_points)
         try:
             await self._client.upsert(
                 collection_name=self._collection,
                 points=[
                     PointStruct(
                         id=str(uuid.uuid4()),
-                        vector=embedding,
-                        payload={
-                            "event_id": event_id,
-                            "source": source,
-                            "published_at": published_at_unix,
-                            "heat_score": 1.0,
-                            "first_seen_at": published_at_unix,
-                            "last_updated_at": now,
-                            "sources": [source],
-                        },
+                        vector=emb,
+                        payload={"event_id": event_id, "source": src, "published_at": pub, **shared_payload},
                     )
+                    for emb, src, pub in all_points
                 ],
             )
         except Exception:
-            logger.exception("EventStore: failed to create new event")
-        return 1.0, published_at_unix
+            logger.exception("EventStore: failed to add representative point(s) for event %s", event_id)
+
+        return heat, first_seen
 
     async def close(self) -> None:
         if self._client is not None:
