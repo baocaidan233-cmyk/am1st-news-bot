@@ -69,7 +69,22 @@ def select_batch(candidates: list[PublishCandidate], config: AppConfig) -> list[
     much more real news volume, so prefer publish.weekday_min_score first
     and only relax to the lower publish.weekend_min_score if that doesn't
     fill batch_min. Weekends see much less volume, so go straight to
-    weekend_min_score — being picky first would usually just waste a tier."""
+    weekend_min_score — being picky first would usually just waste a tier.
+
+    2026-08-06: the score-based tiers (1-4) now keep cascading until
+    batch_max is full, not just until batch_min is met — this used to stop
+    as soon as 3 candidates were found, even though batch_max allows 10 and
+    extraction/content-gen only runs on this small selected batch (cheap).
+    A moderately-scored-but-currently-trending story could end up excluded
+    from the batch entirely if 3+ higher-scoring fresh stories already
+    existed that cycle — by the time the priority-ranker sees trending
+    context (agents/priority_ranker.py), it's too late, that story was
+    never in the running. Filling the full batch_max with every genuinely
+    scored candidate (not just the top 3) gives the AI re-rank step, which
+    DOES see trending_headlines, a real chance to surface it. Tier 5 (the
+    pure "newest regardless of score" last resort) still gates on
+    batch_min only — it exists for when there's nothing real to pick from
+    at all, not to pad out a batch that already has legitimate candidates."""
     pub = config.publish
     now = datetime.now(timezone.utc)
     is_weekday = _is_weekday(now)
@@ -87,7 +102,7 @@ def select_batch(candidates: list[PublishCandidate], config: AppConfig) -> list[
         reverse=True,
     )
 
-    if len(batch) < pub.batch_min:
+    if len(batch) < pub.batch_max:
         picked_ids = {c.page_id for c in batch}
         fill = sorted(
             (c for c in fresh if preferred_floor <= c.llm_score < _TIER1_MIN_SCORE and c.page_id not in picked_ids),
@@ -96,7 +111,7 @@ def select_batch(candidates: list[PublishCandidate], config: AppConfig) -> list[
         )
         batch.extend(fill[: pub.batch_max - len(batch)])
 
-    if len(batch) < pub.batch_min:
+    if len(batch) < pub.batch_max:
         picked_ids = {c.page_id for c in batch}
         fill = sorted(
             (c for c in candidates if c.llm_score >= preferred_floor and c.page_id not in picked_ids),
@@ -105,8 +120,8 @@ def select_batch(candidates: list[PublishCandidate], config: AppConfig) -> list[
         )
         batch.extend(fill[: pub.batch_max - len(batch)])
 
-    if is_weekday and len(batch) < pub.batch_min:
-        # Weekday-only extra fallback: not enough at the 6+ floor, so relax
+    if is_weekday and len(batch) < pub.batch_max:
+        # Weekday-only extra fallback: still room in the batch, so relax
         # down to the weekend's lower floor before giving up on score entirely.
         picked_ids = {c.page_id for c in batch}
         fill = sorted(
