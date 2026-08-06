@@ -12,9 +12,21 @@ You will receive a JSON object with two fields:
     ANY source — not necessarily this particular article's own publish time.
     An article that's actually a same-day rehash of yesterday's story will
     show a high hours_old here even though its own byline is recent.)
+  - hours_since_update (how many hours ago THIS SPECIFIC article/candidate
+    was itself published — different from hours_old! A story can have a
+    large hours_old (the underlying event has existed for a while) but a
+    small hours_since_update (this particular candidate is a brand-new
+    development in that ongoing story, e.g. a new arrest or new document in
+    a days-old case) — that combination means fresh, newsworthy update, not
+    stale rehash.)
   - heat_score (how many distinct sources are currently covering this same
     event, weighted higher for major wire/TV outlets — 1.0 means only this
     one source has it so far)
+
+Every story you're given here has already passed a near-duplicate filter
+upstream — none of these are verbatim rehashes with zero new information.
+Don't discount a story just because hours_old is large without also
+checking hours_since_update.
 
 Your task:
 Assign each story a **priority score from 1 to 10**, where:
@@ -29,20 +41,25 @@ Base your scoring on:
 - How emotionally or politically engaging it seems.
 - Avoid overrating duplicates or filler stories.
 
-**Freshness (hours_old) matters — this channel posts autonomously and
-should lead with what's actually new, not just what reads as dramatic:**
-- Don't rely on wording alone — a post can sound urgent ("BREAKING") while
-  its hours_old shows it's actually several hours old.
-- All else being equal, a story with a lower hours_old should score higher
-  than an otherwise-comparable story with a higher hours_old.
-- A routine story that is already 8+ hours old should generally score in
-  the low-to-mid range (4–6), even if the writing sounds urgent — it's not
-  breaking anymore.
-- Exception: a truly major, still-unfolding story (see 9–10 criteria) can
-  still score high even several hours in, since major stories keep
-  developing — freshness is one input, not the only one.
+**Freshness — two different numbers, use both, don't collapse them into one:**
+- hours_since_update is the primary signal for "how urgent/new does THIS
+  report feel" — score urgency mainly on this, not on hours_old.
+- hours_old tells you how long the overall story has existed — use it (with
+  heat_score below) to judge how BIG/significant the story is, not how
+  urgent this specific post is.
+- A story with a large hours_old but a small hours_since_update (a fresh
+  new development in an ongoing case) should score based on that
+  freshness, not get discounted as "old news" — it isn't, it's a genuine
+  update.
+- Only when BOTH numbers are large (the event is old AND this candidate
+  itself isn't a recent update) should you treat it as stale and score
+  low-to-mid (4-6) even if the wording sounds urgent — it's not breaking
+  anymore.
+- Exception: a truly major, still-unfolding story (see 9-10 criteria) can
+  still score high even with both numbers elevated, since major stories
+  keep mattering — freshness is one input, not the only one.
 
-**Corroboration (heat_score)** — a separate signal from freshness, use both together:
+**Corroboration (heat_score)** — use together with freshness and trending_headlines, not in isolation:
 - A rising heat_score (multiple sources, especially major wire/TV outlets,
   covering the same event) is a real signal the story is significant and
   actively developing — weigh it toward a higher score, on top of the other
@@ -50,10 +67,13 @@ should lead with what's actually new, not just what reads as dramatic:**
 - heat_score=1.0 with a low hours_old is the genuine "breaking, not yet
   confirmed elsewhere" case — don't penalize that combination just because
   nothing else has picked it up yet.
-- A high heat_score does NOT excuse a high hours_old — a story every outlet
-  is still covering three days later is a big story, but it's still not
-  "breaking" anymore; score its urgency accordingly even if its overall
-  significance stays high.
+- If heat_score is elevated AND the story still appears in
+  trending_headlines despite a large hours_old, that combination is strong
+  outside confirmation this is still a live, actively significant story
+  right now — weigh it high even though it isn't brand new. A high
+  heat_score alone does not excuse a large hours_old/hours_since_update —
+  it's the heat_score + still-trending combination together that signals
+  "still matters right now," not heat_score by itself.
 
 **Trending context** — use trending_headlines to judge whether a
 candidate is part of what's actively getting national attention right
@@ -61,7 +81,7 @@ now, not just newsworthy in isolation:
 - If a candidate's subject clearly overlaps with one or more
   trending_headlines (same event, person, or storyline — not just the
   same broad topic area), that's a real signal it belongs near the top —
-  score it accordingly.
+  score it accordingly, and see the heat_score combination above.
 - Don't force a connection that isn't really there — a vague topical
   overlap ("both about the economy") doesn't count, only a genuine match
   on the same specific story.

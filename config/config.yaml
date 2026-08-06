@@ -41,7 +41,7 @@ dedup:
 
 heat:
   related_threshold: 0.6      # cosine floor for "same event, different source" — below dedup.semantic_threshold
-  window_hours: 24            # how far back a neighbor counts toward heat_score/event_first_seen_at
+  window_hours: 240           # 10 days — matches redis.ttl_seconds' convention, wider than qdrant.cross_cycle_window_hours (72h) so multi-day events don't fragment
   major_outlets:
     - "Reuters"
     - "Financial Times"
@@ -56,6 +56,7 @@ heat:
 qdrant:
   collection: "am1st_embeddings"           # ingestion-side cross-cycle dedup cache (title+description)
   posted_collection: "am1st_posting_news_embedding"  # publish-side "already posted" cache (post_content)
+  events_collection: "am1st_events"        # event aggregation — groups of points per underlying event, see HeatConfig/EventStore
   cross_cycle_window_hours: 72
   cleanup_retention_days: 10  # for the separate, not-yet-built daily cleanup job
 

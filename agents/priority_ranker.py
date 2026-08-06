@@ -48,19 +48,22 @@ class PriorityRanker:
                     {
                         "id": c.page_id,
                         "post_content": c.post_content,
-                        # hours_old is now measured from event_first_seen_at
-                        # (when this underlying event was first reported by
-                        # ANY source, per the ingestion-side corroboration
-                        # query — see core/config.py's HeatConfig), falling
-                        # back to this article's own published_at for older
-                        # rows written before that field existed. This is
-                        # what replaces the naive "this article's own
-                        # timestamp" freshness measure — see
-                        # project_am1st_migration memory's 2026-08-05 design
-                        # note (Reuters breaks it, CNN rehashes it 5h later,
-                        # CBS rehashes it again the next day; each article's
-                        # own published_at looked equally "fresh").
+                        # Two DIFFERENT freshness numbers, deliberately both
+                        # sent (2026-08-06) — collapsing them into one lost
+                        # real information: hours_old measures the underlying
+                        # EVENT's age (event_first_seen_at, from the
+                        # ingestion-side corroboration query — see
+                        # core/config.py's HeatConfig), which answers "how
+                        # long has this story existed." hours_since_update
+                        # measures THIS SPECIFIC candidate's own published_at,
+                        # which answers "how fresh is this particular report."
+                        # These diverge a lot for an evolving story — a
+                        # genuine new development (new arrest, new document)
+                        # in a 30-hour-old case can itself be minutes old.
+                        # See project_am1st_migration memory's 2026-08-06
+                        # "event aggregation" note.
                         "hours_old": round((now - (c.event_first_seen_at or c.published_at)).total_seconds() / 3600, 1),
+                        "hours_since_update": round((now - c.published_at).total_seconds() / 3600, 1),
                         "heat_score": c.heat_score,
                     }
                     for c in batch

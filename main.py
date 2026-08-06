@@ -17,13 +17,15 @@ Pipeline order per cycle (cheapest filter first):
   load sources (Notion) -> fetch RSS (UTC-normalized, 3h publish-age filter)
   -> URL-hash Redis dedup -> intra-batch embedding dedup (title+description)
   -> cross-cycle Qdrant dedup (title+description vs title+description
-  written in the last 72h), which ALSO derives a corroboration/heat_score
-  and event_first_seen_at from the same query's lower-similarity neighbors
-  (2026-08-06 — see core/config.py's HeatConfig and project_am1st_migration
-  memory's 2026-08-05 design note) -> AI score gate (gpt-4o-mini, >=5) ->
-  write to Notion candidate pool -> Qdrant embedding write (the same title+
-  description embedding used for intra-batch dedup, now persisted for
-  future cross-cycle checks).
+  written in the last 72h) AND event aggregation (core/qdrant_store.py's
+  EventStore, a separate Qdrant collection — computes heat_score/
+  event_first_seen_at; runs for every candidate BEFORE the duplicate-drop
+  decision, since even a dropped near-duplicate still counts as one more
+  source covering that event; see core/config.py's HeatConfig and
+  project_am1st_migration memory's 2026-08-06 "event aggregation" note) ->
+  AI score gate (gpt-4o-mini, >=5) -> write to Notion candidate pool ->
+  Qdrant embedding write (the same title+description embedding used for
+  intra-batch dedup, now persisted for future cross-cycle checks).
 
 Full-text extraction and content generation are deliberately NOT part of
 this cycle (moved to main_publish.py, 2026-08-05) — every candidate that
@@ -44,7 +46,6 @@ import asyncio
 import logging
 import random
 import sys
-import time
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -56,7 +57,7 @@ from core.config import load_config
 from core.hashing import cosine_similarity
 from core.notion_candidates import write_candidate
 from core.notion_sources import load_rss_sources
-from core.qdrant_store import QdrantStore
+from core.qdrant_store import EventStore, QdrantStore
 from core.redis_store import RedisStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -64,7 +65,7 @@ logger = logging.getLogger("main")
 
 
 async def run_cycle(
-    config, redis_store, qdrant_store, embedder, scorer, dry_run,
+    config, redis_store, qdrant_store, event_store, embedder, scorer, dry_run,
 ) -> None:
     sources = await load_rss_sources(config)
     if not sources:
@@ -99,39 +100,31 @@ async def run_cycle(
         accepted.append((c, embedding))
     logger.info("run_cycle: %d/%d survive intra-batch semantic dedup", len(accepted), len(survivors))
 
-    # --- Layer 3: cross-cycle semantic dedup (vs title+description written in the last 72h),
-    # plus corroboration/heat scoring derived from the SAME query's neighbors ---
-    heat = config.heat
-    heat_window_seconds = heat.window_hours * 3600
+    # --- Layer 3: cross-cycle semantic dedup (vs title+description written in the last 72h)
+    # + event aggregation (core/qdrant_store.py's EventStore — a separate
+    # collection tracking heat_score/event_first_seen_at per underlying
+    # event, not per article) ---
     scoring_candidates = []  # list of (Candidate, title+description embedding)
     for c, embedding in accepted:
-        neighbors = await qdrant_store.related_matches(embedding)
-        best_score = max((score for score, _ in neighbors), default=0.0)
-        if best_score >= threshold:
+        best_score = await qdrant_store.most_similar_recent(embedding)
+        is_duplicate = best_score >= threshold
+
+        # Event aggregation runs BEFORE the duplicate-drop decision below,
+        # and regardless of its outcome: even a dropped near-duplicate
+        # still counts as one more source covering whatever event it
+        # belongs to (add_representative=False just means it doesn't
+        # become an additional matchable anchor for that event — see
+        # EventStore.record's docstring).
+        heat_score, first_seen_unix = await event_store.record(
+            embedding, c.source_name, int(c.published_at.timestamp()), add_representative=not is_duplicate,
+        )
+
+        if is_duplicate:
             logger.info("run_cycle: %s dropped — cross-cycle semantic duplicate (%.3f)", c.url, best_score)
             continue
 
-        # Corroboration/heat: how many OTHER sources are covering this same
-        # underlying event right now (weighted higher for major outlets),
-        # and the earliest time any of them was seen — an article's own
-        # published_at is a poor proxy for that (Reuters breaks it, CNN
-        # rehashes it 5h later, CBS rehashes it again the next day, each
-        # with its own recent published_at despite covering old news).
-        now_ts = time.time()
-        related = [
-            (score, payload)
-            for score, payload in neighbors
-            if heat.related_threshold <= score < threshold
-            and payload.get("publishedAt", 0) >= now_ts - heat_window_seconds
-        ]
-        c.heat_score = 1.0 + sum(
-            heat.major_outlet_weight if payload.get("source") in heat.major_outlets else 1.0 for _, payload in related
-        )
-        earliest_unix = min(
-            [c.published_at.timestamp()] + [payload["publishedAt"] for _, payload in related if "publishedAt" in payload]
-        )
-        c.event_first_seen_at = datetime.fromtimestamp(earliest_unix, tz=timezone.utc)
-
+        c.heat_score = heat_score
+        c.event_first_seen_at = datetime.fromtimestamp(first_seen_unix, tz=timezone.utc)
         scoring_candidates.append((c, embedding))
     logger.info("run_cycle: %d/%d survive cross-cycle semantic dedup", len(scoring_candidates), len(accepted))
 
@@ -154,7 +147,6 @@ async def run_cycle(
                 content_for_embedding = f"{c.title}\n{c.description}"[:6000]
                 await qdrant_store.write_embedding(
                     c.url, c.url_hash, content_for_embedding, int(c.published_at.timestamp()), title_desc_embedding,
-                    source=c.source_name,
                 )
             added_count += 1
             logger.info("run_cycle: added to candidate pool: %s (score=%.1f)", c.url, c.llm_score)
@@ -172,7 +164,9 @@ async def main() -> None:
 
     redis_store = RedisStore(config)
     qdrant_store = QdrantStore(config)
+    event_store = EventStore(config)
     await qdrant_store.ensure_collection()
+    await event_store.ensure_collection()
     embedder = Embedder(config)
     scorer = Scorer(config)
 
@@ -182,7 +176,7 @@ async def main() -> None:
     try:
         while True:
             try:
-                await run_cycle(config, redis_store, qdrant_store, embedder, scorer, dry_run)
+                await run_cycle(config, redis_store, qdrant_store, event_store, embedder, scorer, dry_run)
             except Exception:
                 logger.exception("run_cycle failed")
             jitter = config.poll_interval_seconds * random.uniform(-0.1, 0.1)
@@ -190,6 +184,7 @@ async def main() -> None:
     finally:
         await redis_store.close()
         await qdrant_store.close()
+        await event_store.close()
 
 
 if __name__ == "__main__":

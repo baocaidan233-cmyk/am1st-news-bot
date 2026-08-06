@@ -77,30 +77,42 @@ class DedupConfig(BaseModel):
 
 
 class HeatConfig(BaseModel):
-    """Corroboration/heat scoring (added 2026-08-06, scoped 2026-08-05 — see
-    project_am1st_migration memory). An article's own published_at is a poor
-    proxy for how fresh the underlying news event actually is: Reuters can
-    break something, CNN rehash it 5h later, CBS rehash it again the next
-    day — each with a recent published_at despite covering old news. This
-    reuses the same cross-cycle Qdrant query main.py already runs for dedup
-    (title+description vs qdrant.collection, within qdrant.cross_cycle_window_hours)
-    — one query per candidate, not two — and buckets the returned neighbors
-    that fall below the dedup threshold (dedup.semantic_threshold) into a
-    lower "related" band to derive two signals: how many distinct sources
-    are covering the same event right now (weighted higher for major
-    wire/TV outlets), and the earliest time any of them was seen —
-    event_first_seen_at, which the ingestion scoring prompt and the
-    publish-time priority-rank prompt both use instead of
-    hours-since-this-article's-own-timestamp."""
+    """Corroboration/heat scoring — event aggregation (redesigned 2026-08-06,
+    see project_am1st_migration memory's "event aggregation" note for the
+    full history). An article's own published_at is a poor proxy for how
+    fresh the underlying news event actually is: Reuters can break
+    something, CNN rehash it 5h later, CBS rehash it again the next day —
+    each with a recent published_at despite covering old news.
 
-    related_threshold: float = 0.6  # cosine similarity floor for "same event, different source" — below dedup.semantic_threshold on purpose, that band is "duplicate," this one is "corroborating"
-    window_hours: int = 24  # how far back a neighbor counts toward heat/event_first_seen_at — narrower than qdrant.cross_cycle_window_hours (72h), which is just how far the query itself reaches
+    core/qdrant_store.py's EventStore maintains a dedicated Qdrant
+    collection (qdrant.events_collection) where each event is a GROUP of
+    points sharing one event_id — not one fixed vector — following the
+    standard "topic tracking" pattern from TDT (Topic Detection and
+    Tracking) research: a topic/event is represented by a small evolving
+    set of representative documents, not a single centroid, so that (a)
+    articles using different phrasing than the very first report can still
+    be recognized as the same event (mitigates cluster fragmentation), and
+    (b) the representative set stays current as a multi-day story evolves
+    (mitigates semantic drift). heat_score/first_seen_at/last_updated_at/
+    sources are kept in sync across every point of an event via a
+    filtered payload update, not stored per-point independently.
+
+    A near-duplicate (score >= dedup.semantic_threshold, dropped from the
+    candidate pool) still bumps its matched event's heat tally before being
+    dropped — that credit must not be lost just because the article itself
+    isn't worth its own candidate-pool row. Only a genuinely new-angle
+    match (related_threshold <= score < dedup.semantic_threshold) becomes
+    an additional representative point, since a near-duplicate doesn't add
+    matching robustness."""
+
+    related_threshold: float = 0.6  # cosine similarity floor for "same event" — below dedup.semantic_threshold on purpose, that band is "duplicate," this one is "corroborating"
+    window_hours: int = 240  # 10 days — matches redis.ttl_seconds' 10-day convention; deliberately much wider than qdrant.cross_cycle_window_hours (72h, the plain dedup check's reach) so a multi-day-evolving event doesn't get treated as "expired" and fragmented into a phantom duplicate event
     major_outlets: list[str] = Field(
         default_factory=lambda: [
             "Reuters", "Financial Times", "Wall Street Journal", "CNN", "CBS", "Fox News", "New York Post", "Just The News",
         ]
     )
-    major_outlet_weight: float = 2.0  # per-neighbor weight if its source_name is in major_outlets, vs 1.0 for any other corroborating source
+    major_outlet_weight: float = 2.0  # per-corroborating-source weight if its source_name is in major_outlets, vs 1.0 for any other source
 
 
 class QdrantConfig(BaseModel):
@@ -108,6 +120,7 @@ class QdrantConfig(BaseModel):
     api_key: str = ""  # env: QDRANT_API_KEY
     collection: str = "am1st_embeddings"  # ingestion-side cross-cycle dedup cache (title+description)
     posted_collection: str = "am1st_posting_news_embedding"  # publish-side "already posted" cache (post_content) — separate collection, separate purpose, see core/qdrant_store.py's PostedHistoryStore
+    events_collection: str = "am1st_events"  # event aggregation collection, see HeatConfig/EventStore — a genuinely different kind of thing from the two collections above (a group of points per underlying event, not one point per article)
     cross_cycle_window_hours: int = 72
     cleanup_retention_days: int = 10
 
