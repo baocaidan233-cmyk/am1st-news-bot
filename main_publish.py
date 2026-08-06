@@ -73,6 +73,7 @@ from agents.trending import fetch_trending_headlines
 from agents.writer import Writer
 from core.alerts import AlertNotifier
 from core.config import load_config
+from core.language import is_english
 from core.notion_candidates import mark_send_status, query_eligible_candidates
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import PostedHistoryStore, ensure_collection_with_retry
@@ -109,6 +110,18 @@ async def run_cycle(
     for c in batch:
         text = await extractor.extract(c.url, sources)
         c.content = text if text else c.description
+
+        # English-only channel — check the actual extracted article text,
+        # not just title/description (main.py's cheaper ingestion-time
+        # filter already covers those). A real published post (2026-08-06)
+        # was a Portuguese-language Reuters article that made it all the
+        # way to publish because the writer's own "decline" signal was, in
+        # that instance, missed by a separate formatting bug — see
+        # core/language.py's docstring. This check doesn't depend on the
+        # model noticing at all.
+        if not is_english(c.content[:1000]):
+            logger.info("run_cycle: %s dropped — non-English article content", c.url)
+            continue
 
         post_content = await writer.write(c.title, c.content)
         if Writer.is_no_comment(post_content):

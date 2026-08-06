@@ -9,3 +9,4 @@ qdrant-client>=1.9
 redis>=5.0
 trafilatura>=2.0
 lxml_html_clean>=0.4
+langdetect>=1.0.9
