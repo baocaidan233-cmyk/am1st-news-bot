@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from openai import AsyncOpenAI
@@ -7,6 +8,14 @@ from openai import AsyncOpenAI
 from core.config import AppConfig
 
 NO_COMMENT = "No comment"
+
+# Strips markdown emphasis (*_`#) and trailing punctuation before comparing —
+# a real published post (2026-08-06) revealed the model sometimes wraps its
+# "decline to write this" signal in markdown ("**No comment**"), which an
+# exact-string match doesn't recognize as the same thing. That post then
+# proceeded through ranking/dedup/publish as if it were real content — see
+# project_am1st_migration memory's 2026-08-06 note for the full incident.
+_MARKDOWN_RE = re.compile(r"[*_`#]+")
 
 
 class Writer:
@@ -40,4 +49,5 @@ class Writer:
 
     @staticmethod
     def is_no_comment(text: str) -> bool:
-        return text.strip().lower() == NO_COMMENT.lower()
+        cleaned = _MARKDOWN_RE.sub("", text).strip().rstrip(".!").strip().lower()
+        return cleaned == NO_COMMENT.lower()
