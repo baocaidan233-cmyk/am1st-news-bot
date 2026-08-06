@@ -33,6 +33,11 @@ The Gettr publish call uses agents/gettr_publisher.py's GettrPublisher
 real test Gettr account for this purpose — see project_am1st_migration
 memory. Text-only post, matching the original n8n design).
 
+2026-08-06: also fetches OG link-preview metadata (agents/og_metadata.py)
+for the winner's own article URL right before publishing, so the post
+shows a real preview card instead of a bare appended URL with no card —
+see agents/gettr_publisher.py's docstring for the field names involved.
+
 Usage:
   python3 main_publish.py              # normal run
   python3 main_publish.py --dry-run    # logs the winner, never touches Notion/Qdrant/Gettr
@@ -51,6 +56,7 @@ from agents.candidate_selector import filter_former_trump, select_batch
 from agents.embedder import Embedder
 from agents.extractor import Extractor
 from agents.gettr_publisher import GettrPublisher
+from agents.og_metadata import fetch_link_preview
 from agents.posted_dedup_checker import find_publishable
 from agents.priority_ranker import PriorityRanker
 from agents.trending import fetch_trending_headlines
@@ -122,7 +128,15 @@ async def run_cycle(
     if winner is None:
         return
 
-    post_id = await publisher.publish(winner.post_content, log_ref=winner.url)
+    og = await fetch_link_preview(winner.url)
+    post_id = await publisher.publish(
+        winner.post_content,
+        log_ref=winner.url,
+        prev_desc=og.get("prev_desc") or winner.description or None,
+        prev_img=og.get("prev_img"),
+        prev_src_link=og.get("prev_src_link") or winner.url,
+        prev_ttl=og.get("prev_ttl") or winner.title,
+    )
     published = post_id is not None
     logger.info(
         "run_cycle: publish %s for %s (post_id=%s)",
