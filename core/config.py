@@ -39,6 +39,8 @@ class NotionCandidateProps(BaseModel):
     content: str = "content"
     url_hash: str = "url_hash"
     send_status: str = "send_status"  # checkbox — set true only once the publish cycle actually posts it
+    heat_score: str = "heat_score"  # number — corroboration signal, see HeatConfig
+    event_first_seen_at: str = "event_first_seen_at"  # date — earliest time any related source was seen, vs published_at's own single-article timestamp
 
 
 class NotionConfig(BaseModel):
@@ -72,6 +74,33 @@ class OpenAIConfig(BaseModel):
 
 class DedupConfig(BaseModel):
     semantic_threshold: float = 0.8
+
+
+class HeatConfig(BaseModel):
+    """Corroboration/heat scoring (added 2026-08-06, scoped 2026-08-05 — see
+    project_am1st_migration memory). An article's own published_at is a poor
+    proxy for how fresh the underlying news event actually is: Reuters can
+    break something, CNN rehash it 5h later, CBS rehash it again the next
+    day — each with a recent published_at despite covering old news. This
+    reuses the same cross-cycle Qdrant query main.py already runs for dedup
+    (title+description vs qdrant.collection, within qdrant.cross_cycle_window_hours)
+    — one query per candidate, not two — and buckets the returned neighbors
+    that fall below the dedup threshold (dedup.semantic_threshold) into a
+    lower "related" band to derive two signals: how many distinct sources
+    are covering the same event right now (weighted higher for major
+    wire/TV outlets), and the earliest time any of them was seen —
+    event_first_seen_at, which the ingestion scoring prompt and the
+    publish-time priority-rank prompt both use instead of
+    hours-since-this-article's-own-timestamp."""
+
+    related_threshold: float = 0.6  # cosine similarity floor for "same event, different source" — below dedup.semantic_threshold on purpose, that band is "duplicate," this one is "corroborating"
+    window_hours: int = 24  # how far back a neighbor counts toward heat/event_first_seen_at — narrower than qdrant.cross_cycle_window_hours (72h), which is just how far the query itself reaches
+    major_outlets: list[str] = Field(
+        default_factory=lambda: [
+            "Reuters", "Financial Times", "Wall Street Journal", "CNN", "CBS", "Fox News", "New York Post", "Just The News",
+        ]
+    )
+    major_outlet_weight: float = 2.0  # per-neighbor weight if its source_name is in major_outlets, vs 1.0 for any other corroborating source
 
 
 class QdrantConfig(BaseModel):
@@ -125,6 +154,7 @@ class AppConfig(BaseModel):
     redis: RedisConfig = Field(default_factory=RedisConfig)
     openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
     dedup: DedupConfig = Field(default_factory=DedupConfig)
+    heat: HeatConfig = Field(default_factory=HeatConfig)
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
     gettr: GettrConfig = Field(default_factory=GettrConfig)

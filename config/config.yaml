@@ -22,6 +22,8 @@ notion:
     content: "content"
     url_hash: "url_hash"
     send_status: "send_status"
+    heat_score: "heat_score"
+    event_first_seen_at: "event_first_seen_at"
 
 redis:
   key_prefix: "am1st:url_hash:"
@@ -36,6 +38,20 @@ openai:
 
 dedup:
   semantic_threshold: 0.8  # cosine similarity, both intra-batch and cross-cycle layers
+
+heat:
+  related_threshold: 0.6      # cosine floor for "same event, different source" — below dedup.semantic_threshold
+  window_hours: 24            # how far back a neighbor counts toward heat_score/event_first_seen_at
+  major_outlets:
+    - "Reuters"
+    - "Financial Times"
+    - "Wall Street Journal"
+    - "CNN"
+    - "CBS"
+    - "Fox News"
+    - "New York Post"
+    - "Just The News"
+  major_outlet_weight: 2.0    # vs 1.0 for any other corroborating source
 
 qdrant:
   collection: "am1st_embeddings"           # ingestion-side cross-cycle dedup cache (title+description)

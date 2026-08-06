@@ -28,7 +28,11 @@ class PriorityRanker:
     picked — same prompt/rubric as the original n8n "LLM Rank Stories" node
     (prompts/priority_rank_prompt.txt), ranking on post_content itself
     (not title+description, which is what the ingestion-side llm_score used).
-    gpt-4o-mini, per standing model-tier rule."""
+    gpt-4o-mini, per standing model-tier rule.
+
+    Since 2026-08-06 also passes heat_score and an event_first_seen_at-based
+    hours_old (see _call below) — the corroboration/heat signal computed at
+    ingestion time, see core/config.py's HeatConfig."""
 
     def __init__(self, config: AppConfig) -> None:
         self._client = AsyncOpenAI(api_key=config.openai.api_key)
@@ -44,7 +48,20 @@ class PriorityRanker:
                     {
                         "id": c.page_id,
                         "post_content": c.post_content,
-                        "hours_old": round((now - c.published_at).total_seconds() / 3600, 1),
+                        # hours_old is now measured from event_first_seen_at
+                        # (when this underlying event was first reported by
+                        # ANY source, per the ingestion-side corroboration
+                        # query — see core/config.py's HeatConfig), falling
+                        # back to this article's own published_at for older
+                        # rows written before that field existed. This is
+                        # what replaces the naive "this article's own
+                        # timestamp" freshness measure — see
+                        # project_am1st_migration memory's 2026-08-05 design
+                        # note (Reuters breaks it, CNN rehashes it 5h later,
+                        # CBS rehashes it again the next day; each article's
+                        # own published_at looked equally "fresh").
+                        "hours_old": round((now - (c.event_first_seen_at or c.published_at)).total_seconds() / 3600, 1),
+                        "heat_score": c.heat_score,
                     }
                     for c in batch
                 ],

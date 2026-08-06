@@ -17,8 +17,11 @@ Pipeline order per cycle (cheapest filter first):
   load sources (Notion) -> fetch RSS (UTC-normalized, 3h publish-age filter)
   -> URL-hash Redis dedup -> intra-batch embedding dedup (title+description)
   -> cross-cycle Qdrant dedup (title+description vs title+description
-  written in the last 72h) -> AI score gate (gpt-4o-mini, >=5) -> write to
-  Notion candidate pool -> Qdrant embedding write (the same title+
+  written in the last 72h), which ALSO derives a corroboration/heat_score
+  and event_first_seen_at from the same query's lower-similarity neighbors
+  (2026-08-06 — see core/config.py's HeatConfig and project_am1st_migration
+  memory's 2026-08-05 design note) -> AI score gate (gpt-4o-mini, >=5) ->
+  write to Notion candidate pool -> Qdrant embedding write (the same title+
   description embedding used for intra-batch dedup, now persisted for
   future cross-cycle checks).
 
@@ -41,6 +44,8 @@ import asyncio
 import logging
 import random
 import sys
+import time
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
@@ -94,13 +99,39 @@ async def run_cycle(
         accepted.append((c, embedding))
     logger.info("run_cycle: %d/%d survive intra-batch semantic dedup", len(accepted), len(survivors))
 
-    # --- Layer 3: cross-cycle semantic dedup (vs title+description written in the last 72h) ---
+    # --- Layer 3: cross-cycle semantic dedup (vs title+description written in the last 72h),
+    # plus corroboration/heat scoring derived from the SAME query's neighbors ---
+    heat = config.heat
+    heat_window_seconds = heat.window_hours * 3600
     scoring_candidates = []  # list of (Candidate, title+description embedding)
     for c, embedding in accepted:
-        similarity = await qdrant_store.most_similar_recent(embedding)
-        if similarity >= threshold:
-            logger.info("run_cycle: %s dropped — cross-cycle semantic duplicate (%.3f)", c.url, similarity)
+        neighbors = await qdrant_store.related_matches(embedding)
+        best_score = max((score for score, _ in neighbors), default=0.0)
+        if best_score >= threshold:
+            logger.info("run_cycle: %s dropped — cross-cycle semantic duplicate (%.3f)", c.url, best_score)
             continue
+
+        # Corroboration/heat: how many OTHER sources are covering this same
+        # underlying event right now (weighted higher for major outlets),
+        # and the earliest time any of them was seen — an article's own
+        # published_at is a poor proxy for that (Reuters breaks it, CNN
+        # rehashes it 5h later, CBS rehashes it again the next day, each
+        # with its own recent published_at despite covering old news).
+        now_ts = time.time()
+        related = [
+            (score, payload)
+            for score, payload in neighbors
+            if heat.related_threshold <= score < threshold
+            and payload.get("publishedAt", 0) >= now_ts - heat_window_seconds
+        ]
+        c.heat_score = 1.0 + sum(
+            heat.major_outlet_weight if payload.get("source") in heat.major_outlets else 1.0 for _, payload in related
+        )
+        earliest_unix = min(
+            [c.published_at.timestamp()] + [payload["publishedAt"] for _, payload in related if "publishedAt" in payload]
+        )
+        c.event_first_seen_at = datetime.fromtimestamp(earliest_unix, tz=timezone.utc)
+
         scoring_candidates.append((c, embedding))
     logger.info("run_cycle: %d/%d survive cross-cycle semantic dedup", len(scoring_candidates), len(accepted))
 
@@ -123,6 +154,7 @@ async def run_cycle(
                 content_for_embedding = f"{c.title}\n{c.description}"[:6000]
                 await qdrant_store.write_embedding(
                     c.url, c.url_hash, content_for_embedding, int(c.published_at.timestamp()), title_desc_embedding,
+                    source=c.source_name,
                 )
             added_count += 1
             logger.info("run_cycle: added to candidate pool: %s (score=%.1f)", c.url, c.llm_score)

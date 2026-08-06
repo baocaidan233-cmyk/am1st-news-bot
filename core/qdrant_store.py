@@ -71,34 +71,51 @@ class QdrantStore:
             )
             logger.info("QdrantStore: created collection %s", self._collection)
 
-    async def most_similar_recent(self, embedding: list[float]) -> float:
-        """Highest cosine similarity against title+description embeddings
-        whose source article was published in the last cross_cycle_window_hours.
-        Returns 0.0 if Qdrant isn't configured or nothing matches (fail
-        open — never blocks a candidate just because this cache is cold)."""
+    async def related_matches(self, embedding: list[float], limit: int = 10) -> list[tuple[float, dict]]:
+        """Up to `limit` nearest neighbors — (cosine score, payload) —
+        among title+description embeddings written in the last
+        cross_cycle_window_hours. Returns [] if Qdrant isn't configured or
+        nothing matches (fail open, same as before).
+
+        This replaced the old most_similar_recent(), which only returned
+        the single top score. One query per candidate now serves TWO
+        purposes: the caller derives the existing duplicate check (best
+        score >= dedup.semantic_threshold) AND the corroboration/heat
+        signal (neighbors in the lower heat.related_threshold band, within
+        heat.window_hours) from this same result set — see
+        core/config.py's HeatConfig docstring and project_am1st_migration
+        memory's 2026-08-05 design note for why this was worth doing as one
+        query instead of two."""
         if self._client is None:
-            return 0.0
+            return []
         cutoff = time.time() - self._window_seconds
         try:
             result = await self._client.query_points(
                 collection_name=self._collection,
                 query=embedding,
-                limit=1,
+                limit=limit,
                 query_filter=Filter(must=[FieldCondition(key="publishedAt", range=Range(gte=cutoff))]),
-                with_payload=False,
+                with_payload=True,
             )
         except Exception:
-            logger.exception("QdrantStore: query failed, treating as no match")
-            return 0.0
-        points = result.points
-        return points[0].score if points else 0.0
+            logger.exception("QdrantStore: query failed, treating as no matches")
+            return []
+        return [(p.score, p.payload or {}) for p in result.points]
 
-    async def write_embedding(self, url: str, url_hash: str, content: str, published_at_unix: int, embedding: list[float]) -> None:
+    async def write_embedding(
+        self, url: str, url_hash: str, content: str, published_at_unix: int, embedding: list[float], source: str = "",
+    ) -> None:
         """Called once, right when a candidate is accepted into the Notion
         candidate pool — pass the title+description embedding already
         computed for intra-batch dedup (see class docstring). `content`
         should be the same title+description text the embedding was
-        computed from."""
+        computed from. `source` (the RSS source's own name, e.g. "Reuters")
+        is a deliberate ADDITION on top of the real n8n payload schema
+        (content/url/urlHash/publishedAt) — added 2026-08-06 so
+        related_matches() callers can weight major outlets when computing
+        the corroboration/heat signal. Historical points written before
+        this change simply lack the key; readers must treat a missing
+        `source` as "unknown," not an error."""
         if self._client is None:
             return
         await self._client.upsert(
@@ -107,7 +124,7 @@ class QdrantStore:
                 PointStruct(
                     id=str(uuid.uuid4()),
                     vector=embedding,
-                    payload={"content": content, "url": url, "urlHash": url_hash, "publishedAt": published_at_unix},
+                    payload={"content": content, "url": url, "urlHash": url_hash, "publishedAt": published_at_unix, "source": source},
                 )
             ],
         )

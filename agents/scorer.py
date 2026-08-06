@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from openai import AsyncOpenAI
@@ -44,7 +45,20 @@ class Scorer:
         return resp.choices[0].message.content or ""
 
     async def score(self, candidate: Candidate) -> ScoreOutput | None:
-        user_message = f"Title: {candidate.title}\n\nDescription: {candidate.description}"
+        # Corroboration signal (2026-08-06 — see core/config.py's HeatConfig
+        # and project_am1st_migration memory's 2026-08-05 design note):
+        # heat_score/event_first_seen_at are set by main.py's Layer 3, from
+        # the cross-cycle Qdrant query, before this is called. heat_score=1.0
+        # means only this one source so far; event_first_seen_at falls back
+        # to this article's own published_at when nothing earlier was found.
+        first_seen = candidate.event_first_seen_at or candidate.published_at
+        hours_since_first_seen = round((datetime.now(timezone.utc) - first_seen).total_seconds() / 3600, 1)
+        user_message = (
+            f"Title: {candidate.title}\n\nDescription: {candidate.description}"
+            f"\n\nCorroboration: heat_score={candidate.heat_score:.1f} (1.0 = only this one source"
+            f" reporting it so far; higher means more outlets, weighted, are covering the same event),"
+            f" hours_since_event_first_seen={hours_since_first_seen}"
+        )
         raw = await self._call(user_message)
         try:
             return ScoreOutput.model_validate(json.loads(raw))

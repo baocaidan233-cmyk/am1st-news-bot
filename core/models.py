@@ -32,6 +32,15 @@ class Candidate(BaseModel):
     llm_score: float = 0.0
     llm_comment: str = ""
 
+    # Corroboration/heat scoring (2026-08-06) — filled in main.py's Layer 3,
+    # from the same cross-cycle Qdrant query used for dedup, before scoring.
+    # heat_score=1.0 (self alone, no corroborating source yet) and
+    # event_first_seen_at=None (meaning "just this article's own
+    # published_at, nothing earlier found") are the correct defaults for a
+    # candidate that hasn't been through that query yet.
+    heat_score: float = 1.0
+    event_first_seen_at: Optional[datetime] = None
+
 
 class PublishCandidate(BaseModel):
     """One row read back from the shared candidate-pool Notion database, as
@@ -52,5 +61,12 @@ class PublishCandidate(BaseModel):
     published_at: datetime
     created_at: datetime  # Notion's own created_time — the 12h eligibility window is keyed on this, not published_at
     priority_score: float = 0.0
+
+    # Same corroboration/heat fields as Candidate — written at ingestion
+    # time, read back here so agents/priority_ranker.py can use
+    # event_first_seen_at (when this underlying event was actually first
+    # reported) instead of this article's own published_at.
+    heat_score: float = 1.0
+    event_first_seen_at: Optional[datetime] = None
 
     gettr_post_id: Optional[str] = None

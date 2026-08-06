@@ -51,6 +51,10 @@ async def write_candidate(config: AppConfig, item: Candidate) -> bool:
         props.llm_score: {"number": item.llm_score},
         props.llm_comment: _rich_text(item.llm_comment),
         props.url_hash: _rich_text(item.url_hash),
+        props.heat_score: {"number": item.heat_score},
+        props.event_first_seen_at: {
+            "date": {"start": (item.event_first_seen_at or item.published_at).isoformat()}
+        },
     }
     body = {"parent": {"database_id": notion.candidate_db_id}, "properties": properties}
 
@@ -161,6 +165,8 @@ async def query_eligible_candidates(config: AppConfig) -> list[PublishCandidate]
                             url_hash=_plain_text(p.get(props.url_hash, {})),
                             published_at=_plain_text(p.get(props.published_at, {})) or row.get("created_time"),
                             created_at=row.get("created_time"),
+                            heat_score=_plain_text(p.get(props.heat_score, {})) or 1.0,
+                            event_first_seen_at=_plain_text(p.get(props.event_first_seen_at, {})),
                         )
                     )
                 except Exception:
