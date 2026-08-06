@@ -29,9 +29,29 @@ _HTML_TAG_RE = re.compile(r"<[^>]+>", re.DOTALL)
 
 _USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
+# CJK Unicode ranges — used to reject an og:title/og:description that came
+# back in Chinese/Japanese/Korean. Confirmed real case (2026-08-06): a WSJ
+# article behind a paywall returned HTTP 200 for a login/paywall
+# interstitial page instead of the real article on one fetch attempt — that
+# interstitial's own og:title happened to be in Chinese while its
+# og:description was still in English, and both got taken at face value,
+# producing a post with a Chinese headline on an English-only channel. Since
+# every real source AM1ST reads is English-language, a mostly-CJK value is
+# itself the signal that the wrong page got scraped — not a value worth
+# showing, so it's treated as "not found" rather than passed through.
+_CJK_RE = re.compile(r"[一-鿿㐀-䶿぀-ヿ가-힯]")
+
 
 def _strip_html(text: str) -> str:
     return re.sub(r"\s+", " ", _HTML_TAG_RE.sub(" ", text)).strip()
+
+
+def _looks_non_english(text: str) -> bool:
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return False
+    cjk_count = sum(1 for c in letters if _CJK_RE.match(c))
+    return cjk_count / len(letters) > 0.2
 
 
 def _extract_og(html: str, prop_name: str, name_variants: tuple = ()) -> str | None:
@@ -67,6 +87,17 @@ def _extract_fields(body: str, url: str) -> dict:
     prev_ttl = _extract_og(body, "og:title", ("twitter:title",))
     prev_desc = _extract_og(body, "og:description", ("twitter:description",))
     prev_src = _extract_og(body, "og:url") or url
+
+    # Reject a non-English title/description independently of each other —
+    # a mismatched paywall/interstitial page can have one field genuinely
+    # in English and the other not (the WSJ case above had an English
+    # og:description alongside a Chinese og:title from the same fetch).
+    if prev_ttl and _looks_non_english(prev_ttl):
+        logger.info("og_metadata: rejected non-English title for %s: %r", url, prev_ttl)
+        prev_ttl = None
+    if prev_desc and _looks_non_english(prev_desc):
+        logger.info("og_metadata: rejected non-English description for %s: %r", url, prev_desc)
+        prev_desc = None
 
     if not prev_img:
         prev_img = _extract_next_data_image(body)
