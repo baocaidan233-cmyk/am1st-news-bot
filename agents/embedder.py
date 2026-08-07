@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from openai import AsyncOpenAI
-
 from core.config import AppConfig
+from core.openai_client import create_openai_client
 
 
 class Embedder:
     def __init__(self, config: AppConfig) -> None:
-        self._client = AsyncOpenAI(api_key=config.openai.api_key)
+        self._client = create_openai_client(config)
         self._model = config.openai.embedding_model
 
     async def embed(self, text: str) -> list[float]:

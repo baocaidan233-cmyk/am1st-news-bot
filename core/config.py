@@ -65,11 +65,21 @@ class RedisConfig(BaseModel):
 
 class OpenAIConfig(BaseModel):
     api_key: str = ""  # env: OPENAI_API_KEY
+    fallback_api_key: str = ""  # env: OPENAI_API_KEY_FALLBACK — only used if the primary key hits RateLimitError (rate limit or exhausted quota), see core/openai_client.py
     chat_model: str = "gpt-4o-mini"
     embedding_model: str = "text-embedding-3-small"
     scoring_prompt_file: str = "prompts/scoring_prompt.txt"
     content_gen_prompt_file: str = "prompts/content_gen_prompt.txt"
     score_threshold: float = 5.0
+
+    @property
+    def api_keys(self) -> list[str]:
+        """Ordered list handed to core.openai_client.FallbackOpenAI — primary
+        first, then the fallback if one is configured and actually different."""
+        keys = [self.api_key]
+        if self.fallback_api_key and self.fallback_api_key != self.api_key:
+            keys.append(self.fallback_api_key)
+        return keys
 
 
 class DedupConfig(BaseModel):
@@ -185,6 +195,7 @@ _ENV_OVERRIDES = {
     ("notion", "alert_user_id"): "NOTION_ALERT_USER_ID",
     ("redis", "url"): "REDIS_URL",
     ("openai", "api_key"): "OPENAI_API_KEY",
+    ("openai", "fallback_api_key"): "OPENAI_API_KEY_FALLBACK",
     ("qdrant", "url"): "QDRANT_URL",
     ("qdrant", "api_key"): "QDRANT_API_KEY",
     ("gettr", "user_id"): "GETTR_USER_ID",

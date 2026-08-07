@@ -3,9 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from openai import AsyncOpenAI
-
 from core.config import AppConfig
+from core.openai_client import create_openai_client
 
 NO_COMMENT = "No comment"
 
@@ -32,7 +31,7 @@ class Writer:
     works for whichever model the caller has on hand."""
 
     def __init__(self, config: AppConfig) -> None:
-        self._client = AsyncOpenAI(api_key=config.openai.api_key)
+        self._client = create_openai_client(config)
         self._model = config.openai.chat_model
         self._system_prompt = Path(config.openai.content_gen_prompt_file).read_text(encoding="utf-8")
 
