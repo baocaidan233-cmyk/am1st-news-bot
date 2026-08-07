@@ -168,7 +168,7 @@ class PublishConfig(BaseModel):
     batch_min: int = 3
     batch_max: int = 10  # was 5; raised 2026-08-05 now that extraction/content-gen only run on the selected batch, not every scored candidate — a bigger batch costs much less than it used to
     priority_rank_prompt_file: str = "prompts/priority_rank_prompt.txt"
-    posted_dedup_window_hours: int = 24
+    posted_dedup_window_hours: int = 240  # was 24h — widened 2026-08-07 as a defensive backstop once the ingestion-side EventStore.mark_published() check exists (core/qdrant_store.py); matches heat.window_hours so both "have we already covered this" checks agree on how long an event stays "recent"
     posted_dedup_threshold: float = 0.70  # stricter than the ingestion side's 0.8 — deliberate, per the user: fully autonomous posting should err toward under-posting
 
 

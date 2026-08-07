@@ -211,6 +211,24 @@ async def run_cycle(
             continue
         matched = await event_store.peek(members[0][1])
         cluster_peeks.append(matched)
+
+        # Already-published guard (2026-08-07) — if this cluster is a
+        # near-verbatim rehash (>= dedup.semantic_threshold, the same bar
+        # used for "not worth its own candidate" everywhere else) of an
+        # event we already actually posted to Gettr (matched["published"],
+        # set by main_publish.py's EventStore.mark_published()), skip the
+        # whole cluster: scoring/candidate-pool cost on something that
+        # would just tell our audience the same news twice again isn't
+        # worth paying. A genuinely different angle on that same event
+        # (0.6-0.8) is NOT blocked here — see EventStore.mark_published()'s
+        # docstring; that's still a legitimate fresh update.
+        if matched is not None and matched.get("published") and matched.get("_score", 0.0) >= threshold:
+            logger.info(
+                "run_cycle: cluster %d dropped — near-duplicate of an already-published event (%.3f)",
+                cluster_idx, matched.get("_score", 0.0),
+            )
+            continue
+
         cluster = clusters[cluster_idx]
         preview_heat, preview_first_seen = event_store.preview_heat(
             matched, cluster["sources"], cluster["earliest_source"], cluster["earliest_unix"],

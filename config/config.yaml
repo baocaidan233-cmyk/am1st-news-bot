@@ -77,7 +77,7 @@ publish:
   batch_min: 3
   batch_max: 10
   priority_rank_prompt_file: "prompts/priority_rank_prompt.txt"
-  posted_dedup_window_hours: 24
+  posted_dedup_window_hours: 240  # was 24h — widened 2026-08-07, matches heat.window_hours (10 days)
   posted_dedup_threshold: 0.70  # stricter than ingestion's 0.8 — deliberate, fully-autonomous posting errs toward under-posting
 
 max_publish_age_hours: 3

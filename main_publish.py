@@ -76,7 +76,7 @@ from core.config import load_config
 from core.language import is_english
 from core.notion_candidates import mark_send_status, query_eligible_candidates
 from core.notion_sources import load_rss_sources
-from core.qdrant_store import PostedHistoryStore, ensure_collection_with_retry
+from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("main_publish")
@@ -87,6 +87,7 @@ async def run_cycle(
     embedder: Embedder,
     ranker: PriorityRanker,
     posted_store: PostedHistoryStore,
+    event_store: EventStore,
     publisher: GettrPublisher,
     extractor: Extractor,
     writer: Writer,
@@ -175,6 +176,22 @@ async def run_cycle(
             winner.url, winner.url_hash, winner.post_content, int(winner.published_at.timestamp()), winner_embedding,
         )
 
+        # Flag the underlying event as published (2026-08-07) — so a later
+        # ingestion cycle's EventStore.peek() can drop a near-verbatim
+        # rehash of it outright instead of only catching a duplicate at the
+        # publish cycle's own, much shorter posted_dedup_window_hours check.
+        # Re-embeds title+description (not post_content — this needs to
+        # land in the same embedding space main.py's peek() already uses)
+        # to find which event this candidate belongs to; skips silently if
+        # no match is found (fail open, never blocks on this).
+        try:
+            title_desc_embedding = await embedder.embed(f"{winner.title}\n{winner.description}"[:6000])
+            matched = await event_store.peek(title_desc_embedding)
+            if matched and matched.get("event_id"):
+                await event_store.mark_published(matched["event_id"])
+        except Exception:
+            logger.exception("run_cycle: failed to mark event as published for %s", winner.url)
+
 
 async def main() -> None:
     load_dotenv()
@@ -185,11 +202,13 @@ async def main() -> None:
     embedder = Embedder(config)
     ranker = PriorityRanker(config)
     posted_store = PostedHistoryStore(config)
+    event_store = EventStore(config)
     publisher = GettrPublisher(config, dry_run=dry_run)
     alerts = AlertNotifier(config)
     extractor = Extractor(config, alerts)
     writer = Writer(config)
     await ensure_collection_with_retry(posted_store, "am1st_posting_news_embedding")
+    await ensure_collection_with_retry(event_store, "am1st_events")
 
     if dry_run:
         logger.info("Running in --dry-run mode: Notion/Qdrant writes will be logged, not sent")
@@ -197,13 +216,14 @@ async def main() -> None:
     try:
         while True:
             try:
-                await run_cycle(config, embedder, ranker, posted_store, publisher, extractor, writer, dry_run)
+                await run_cycle(config, embedder, ranker, posted_store, event_store, publisher, extractor, writer, dry_run)
             except Exception:
                 logger.exception("run_cycle failed")
             jitter = config.publish.interval_seconds * random.uniform(-0.1, 0.1)
             await asyncio.sleep(config.publish.interval_seconds + jitter)
     finally:
         await posted_store.close()
+        await event_store.close()
 
 
 if __name__ == "__main__":

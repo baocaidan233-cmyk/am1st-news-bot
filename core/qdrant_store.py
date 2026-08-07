@@ -252,10 +252,17 @@ class EventStore:
         via cheap in-memory cosine comparison, to be mutually similar, so
         only one representative embedding needs to be checked against this
         collection, not one query per candidate). Returns the matched
-        event's current payload dict if the top match is within
+        event's current payload dict (with the match's cosine similarity
+        added under "_score") if the top match is within
         heat.related_threshold and heat.window_hours, else None. Fails
         open (returns None, i.e. "no match found") if Qdrant isn't
-        configured or the query fails."""
+        configured or the query fails.
+
+        "_score" (2026-08-07) lets main.py distinguish "same event, genuinely
+        different angle" (0.6-0.8, still worth its own post even if the
+        event was already published) from "same event, near-verbatim rehash"
+        (>=0.8) when deciding whether an already-published event's cluster
+        should be dropped outright — see mark_published()'s docstring."""
         if self._client is None:
             return None
         cutoff = time.time() - self._window_seconds
@@ -268,7 +275,9 @@ class EventStore:
                 with_payload=True,
             )
             if result.points and result.points[0].score >= self._related_threshold:
-                return dict(result.points[0].payload or {})
+                payload = dict(result.points[0].payload or {})
+                payload["_score"] = result.points[0].score
+                return payload
         except Exception:
             logger.exception("EventStore: peek query failed, treating as no match")
         return None
@@ -366,6 +375,35 @@ class EventStore:
             logger.exception("EventStore: failed to add representative point(s) for event %s", event_id)
 
         return heat, first_seen
+
+    async def mark_published(self, event_id: str) -> None:
+        """Called by main_publish.py right after a candidate is actually
+        posted to Gettr — flags every point of this event as published, so a
+        LATER ingestion cycle's peek() can tell "we already told our
+        audience about this" apart from "this event exists in our tracking
+        but we never actually published anything about it" (most events:
+        most rows in am1st_events never had any member selected for
+        publish — see project_am1st_migration memory's 2026-08-07 note).
+
+        2026-08-07: added because publish.posted_dedup_window_hours (the
+        publish cycle's own "don't repost something too similar to what we
+        posted in the last N hours" check) is deliberately short (24h,
+        tightened from the ingestion side's dedup for a reason — see
+        main_publish.py's docstring) and compares post_content, which
+        doesn't exist yet at ingestion time. This lets main.py catch a
+        near-verbatim rehash of an event we ALREADY published, even days
+        later, using the same title+description embedding space it already
+        has on hand — no cross-text-type comparison, no new collection."""
+        if self._client is None:
+            return
+        try:
+            await self._client.set_payload(
+                collection_name=self._collection,
+                payload={"published": True, "published_at": int(time.time())},
+                points=Filter(must=[FieldCondition(key="event_id", match=MatchValue(value=event_id))]),
+            )
+        except Exception:
+            logger.exception("EventStore: failed to mark event %s as published", event_id)
 
     async def close(self) -> None:
         if self._client is not None:
