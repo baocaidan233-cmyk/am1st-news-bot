@@ -55,6 +55,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 from agents.embedder import Embedder
+from agents.og_metadata import fetch_link_preview
 from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
 from core.config import load_config
@@ -105,6 +106,33 @@ async def run_cycle(
     logger.info("run_cycle: %d/%d survive English-language filter", len(survivors), before_lang_filter)
     if not survivors:
         return
+
+    # --- Layer 1.6: description backfill via the article page's own
+    # og:description meta tag (2026-08-07) — some RSS feeds give a title
+    # with no description at all, which under-informs both clustering
+    # (embeds on title alone) and the AI score gate (see
+    # project_am1st_migration memory's "GOP donor memo scored only 5"
+    # investigation). This is deliberately just the page's existing
+    # meta-description tag (agents/og_metadata.py, already used for Gettr
+    # preview cards) — NOT full-article extraction, which the user
+    # explicitly rejected as a fix for this same problem and which stays
+    # deferred to the publish cycle for cost reasons (agents/extractor.py's
+    # docstring). A failed/empty fetch just leaves the candidate as-is. ---
+    backfilled = 0
+    empty_before = sum(1 for c in survivors if not c.description)
+    for c in survivors:
+        if c.description:
+            continue
+        try:
+            og = await fetch_link_preview(c.url)
+        except Exception:
+            continue
+        desc = og.get("prev_desc")
+        if desc:
+            c.description = desc
+            backfilled += 1
+    if empty_before:
+        logger.info("run_cycle: backfilled og:description for %d/%d description-less candidate(s)", backfilled, empty_before)
 
     # --- Layer 2: intra-batch semantic CLUSTERING (title+description) ---
     # Groups this batch's own candidates into local clusters instead of a
