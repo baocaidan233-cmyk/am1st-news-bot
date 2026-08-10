@@ -86,6 +86,44 @@ class DedupConfig(BaseModel):
     semantic_threshold: float = 0.8
 
 
+class EntityVerifierConfig(BaseModel):
+    """Second-opinion check on top of EventStore.peek()'s cosine match —
+    see project_am1st_migration memory's 2026-08-09 "event identity"
+    design note for the full derivation. Validated on real historical
+    am1st_events data before implementation: rule tier (entity overlap,
+    excluding tokens that have been the core of >=hub_event_count_threshold
+    different past events) resolves ~2/3 of cosine-matched candidates
+    reliably; the remaining ~1/3 ("AMBIGUOUS" — every shared token is a
+    known multi-event hub, e.g. "Trump"/"Senate"/a cabinet official) goes
+    to a same-event LLM call. That LLM call intentionally does NOT also
+    ask for the update-subtype (CORE_UPDATE/DOWNSTREAM_REACTION/
+    RESTATEMENT) in the same prompt — an ablation test found asking both
+    at once biases the model toward SAME_EVENT ~30% of the time (it seems
+    to pre-assume "same" so it has something to classify), which corrupts
+    the one judgment that actually gates merging. Subtype is a separate,
+    second call, only made when the first call says SAME_EVENT, purely to
+    enrich the logged training record for future distillation — nothing
+    downstream reads it yet.
+
+    Deliberately NOT perfect — the user's explicit call (2026-08-09): a
+    known residual miss rate (e.g. two different candidates' primary
+    races sharing only generic tokens like a state name) is acceptable,
+    not worth chasing with more entity-rarity formulas or bigger
+    blocklists (see 高余弦相同事件验证器.md's "不应该继续做的事情" list).
+    Every rule-tier AMBIGUOUS case and its LLM verdict gets logged
+    (event_identity_log_path) specifically so those residual misses
+    become future hard-negative training data instead of silently
+    recurring forever."""
+
+    hub_event_count_threshold: int = 2  # a shared token counts as real evidence only if it's been the CORE of fewer than this many distinct past events
+    pair_cooccur_max: int = 1  # two individually-hub tokens can still count as evidence if this exact PAIR has co-occurred as a joint core in at most this many past events
+    min_doc_freq_for_core: int = 2  # a token must appear in at least this many of an event's OWN accumulated articles to join its persisted core_entities (not a ratio — a ratio lets a single one-off token qualify as "core" while an event still only has 1-2 articles, see the same design note)
+    hub_key_prefix: str = "am1st:hub:"  # Redis key namespace for the token/pair historical-hub-count index — separate namespace from redis.key_prefix's URL-hash dedup, same REDIS_URL
+    same_event_prompt_file: str = "prompts/same_event_prompt.txt"
+    update_subtype_prompt_file: str = "prompts/update_subtype_prompt.txt"
+    log_path: str = "logs/event_identity_decisions.jsonl"
+
+
 class HeatConfig(BaseModel):
     """Corroboration/heat scoring — event aggregation (redesigned 2026-08-06,
     see project_am1st_migration memory's "event aggregation" note for the
@@ -177,6 +215,7 @@ class AppConfig(BaseModel):
     redis: RedisConfig = Field(default_factory=RedisConfig)
     openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
     dedup: DedupConfig = Field(default_factory=DedupConfig)
+    entity_verifier: EntityVerifierConfig = Field(default_factory=EntityVerifierConfig)
     heat: HeatConfig = Field(default_factory=HeatConfig)
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)

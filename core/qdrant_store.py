@@ -181,6 +181,9 @@ class EventStore:
       first_seen_at     — earliest published_at seen across the event's sources, unix seconds (can only move earlier)
       last_updated_at   — unix seconds of the most recent corroboration — used as the recency filter for matching, NOT first_seen_at, so a still-developing event stays matchable even if it started outside heat.window_hours
       sources           — list of distinct source names already credited, to avoid double-counting the same outlet re-syndicating its own story
+      seed_entities     — entity tokens (core/event_identity.entity_tokens) of this event's FIRST article, set once at creation and never changed — see core/event_identity.py's core_entities_of()
+      entity_doc_freq   — {token: how many of this event's own accumulated articles contain it}, updated every commit()
+      representative_text — title+description of whichever article was this commit()'s representative — a rolling anchor (updates to the latest), used as the "TEXT A" side of EventVerifier's LLM comparisons
 
     Vector = whichever article's embedding this particular point represents
     (the first point of an event uses that event's originating article;
@@ -322,30 +325,50 @@ class EventStore:
         sources: set[str],
         earliest_source: str,
         earliest_published_at_unix: int,
-        representative: tuple[list[float], str, int],
-        extra_points: list[tuple[list[float], str, int]],
-    ) -> tuple[float, int]:
+        representative: tuple[list[float], str, int, str, set[str]],
+        extra_points: list[tuple[list[float], str, int, str, set[str]]],
+    ) -> tuple[float, int, str, set[str]]:
         """The actual write — called AFTER scoring, and only for a local
         cluster where at least one member cleared the score gate (see
-        main.py). `representative` and each of `extra_points` are
-        (embedding, source, published_at_unix) for every surviving member
-        of the cluster that's about to become its own candidate-pool row —
-        each becomes its own representative point sharing one event_id, so
-        future cross-cycle matches can hit any of their phrasings, not just
-        the first one (mitigates fragmentation/drift, see class docstring).
+        main.py). `representative` and each of `extra_points` are now
+        (embedding, source, published_at_unix, text, entity_tokens) —
+        `text` and `entity_tokens` added 2026-08-09 (core/event_identity.py)
+        so this event's identity fingerprint (seed_entities/entity_doc_freq)
+        and its rolling LLM-comparison anchor (representative_text) can be
+        maintained here, instead of re-deriving them from scratch on every
+        check by re-reading every past article's text (which is how the
+        design was validated in scratchpad, but is not how it should run
+        in production — see project_am1st_migration memory's 2026-08-09
+        "event identity" note). Each embedding still becomes its own
+        representative point sharing one event_id, so future cross-cycle
+        matches can hit any of their phrasings, not just the first one
+        (mitigates fragmentation/drift, see class docstring).
 
-        Returns (heat_score, first_seen_at_unix) — the final committed
-        values, which should exactly equal whatever preview_heat() returned
-        earlier for this same cluster (nothing about `sources`/`earliest_*`
-        changes between main.py's peek+preview call and this commit call)."""
+        Returns (heat_score, first_seen_at_unix, event_id, core_entities) —
+        heat_score/first_seen_at_unix should exactly equal whatever
+        preview_heat() returned earlier for this same cluster; event_id and
+        core_entities (core/event_identity.core_entities_of() on the just-
+        written payload) are for the caller to pass to HubIndex.bump()."""
         heat, first_seen = self.preview_heat(matched, sources, earliest_source, earliest_published_at_unix)
         now = int(time.time())
         event_id = matched.get("event_id") if matched is not None else str(uuid.uuid4())
+
+        all_points = [representative] + list(extra_points)
+        seed_entities = set(matched.get("seed_entities", [])) if matched is not None else all_points[0][4]
+        entity_doc_freq = dict(matched.get("entity_doc_freq", {})) if matched is not None else {}
+        for _, _, _, _, entities in all_points:
+            for tok in entities:
+                entity_doc_freq[tok] = entity_doc_freq.get(tok, 0) + 1
+        representative_text = representative[3]
+
         shared_payload = {
             "heat_score": heat,
             "first_seen_at": first_seen,
             "last_updated_at": now,
             "sources": list(set(matched.get("sources", [])) | sources) if matched is not None else list(sources),
+            "seed_entities": list(seed_entities),
+            "entity_doc_freq": entity_doc_freq,
+            "representative_text": representative_text,
         }
 
         if matched is not None:
@@ -358,7 +381,6 @@ class EventStore:
             except Exception:
                 logger.exception("EventStore: failed to update event %s", event_id)
 
-        all_points = [representative] + list(extra_points)
         try:
             await self._client.upsert(
                 collection_name=self._collection,
@@ -368,13 +390,14 @@ class EventStore:
                         vector=emb,
                         payload={"event_id": event_id, "source": src, "published_at": pub, **shared_payload},
                     )
-                    for emb, src, pub in all_points
+                    for emb, src, pub, _, _ in all_points
                 ],
             )
         except Exception:
             logger.exception("EventStore: failed to add representative point(s) for event %s", event_id)
 
-        return heat, first_seen
+        core_entities = seed_entities | {t for t, c in entity_doc_freq.items() if c >= 2}
+        return heat, first_seen, event_id, core_entities
 
     async def mark_published(self, event_id: str) -> None:
         """Called by main_publish.py right after a candidate is actually
@@ -393,13 +416,23 @@ class EventStore:
         doesn't exist yet at ingestion time. This lets main.py catch a
         near-verbatim rehash of an event we ALREADY published, even days
         later, using the same title+description embedding space it already
-        has on hand — no cross-text-type comparison, no new collection."""
+        has on hand — no cross-text-type comparison, no new collection.
+
+        Writes `posted_to_gettr_at`, NOT `published_at` — found 2026-08-09:
+        the original version wrote `published_at`, which every point ALSO
+        uses for its own article's original publish time (see class
+        docstring). Since this is a blanket payload update across every
+        point of the event, it was silently clobbering each point's real
+        article-publish timestamp with "whenever we happened to post to
+        Gettr" the first time any event got marked published — a real,
+        already-shipped bug, fixed here rather than carried forward into
+        the new seed_entities/entity_doc_freq fields this same file adds."""
         if self._client is None:
             return
         try:
             await self._client.set_payload(
                 collection_name=self._collection,
-                payload={"published": True, "published_at": int(time.time())},
+                payload={"published": True, "posted_to_gettr_at": int(time.time())},
                 points=Filter(must=[FieldCondition(key="event_id", match=MatchValue(value=event_id))]),
             )
         except Exception:

@@ -1,0 +1,13 @@
+You are deciding whether two news snippets describe the SAME specific real-world occurrence.
+
+TEXT A (the event as currently tracked):
+{a}
+
+TEXT B (a new candidate that cosine similarity flagged as related to A):
+{b}
+
+Do A and B describe the same specific real-world occurrence — same action/decision, same core participants acting in the same roles, compatible timing? Two texts can share a topic, a person, or a location and still be DIFFERENT events if the core action/decision is different, or if a different actor performs a distinct new action (even a related one, like a reaction, a separate authority's own action, or a retaliation).
+
+Answer in exactly this format:
+VERDICT: SAME_EVENT or DIFFERENT_EVENT
+REASON: one short sentence

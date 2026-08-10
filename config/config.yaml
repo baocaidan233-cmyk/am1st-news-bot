@@ -39,6 +39,15 @@ openai:
 dedup:
   semantic_threshold: 0.8  # cosine similarity, both intra-batch and cross-cycle layers
 
+entity_verifier:
+  hub_event_count_threshold: 2   # shared token only counts as evidence if it's been the core of fewer than this many past events
+  pair_cooccur_max: 1            # two hub tokens together still count if this exact pair has co-occurred in at most this many past events
+  min_doc_freq_for_core: 2       # a token needs >=this many of an event's own articles to join its persisted core_entities
+  hub_key_prefix: "am1st:hub:"
+  same_event_prompt_file: "prompts/same_event_prompt.txt"
+  update_subtype_prompt_file: "prompts/update_subtype_prompt.txt"
+  log_path: "logs/event_identity_decisions.jsonl"
+
 heat:
   related_threshold: 0.6      # cosine floor for "same event, different source" — below dedup.semantic_threshold
   window_hours: 240           # 10 days — matches redis.ttl_seconds' convention, wider than qdrant.cross_cycle_window_hours (72h) so multi-day events don't fragment

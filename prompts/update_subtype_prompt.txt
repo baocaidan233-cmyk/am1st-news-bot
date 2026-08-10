@@ -1,0 +1,14 @@
+TEXT A (the event as currently tracked):
+{a}
+
+TEXT B (already confirmed to be the same real-world occurrence as A):
+{b}
+
+Classify B relative to A as exactly one of:
+CORE_UPDATE - B adds a fact, number, decision, or status not already in A.
+DOWNSTREAM_REACTION - B is opinion/reaction/commentary about A's facts, no new fact.
+RESTATEMENT - B repeats A's same fact(s), just different wording/outlet/language.
+
+Answer in exactly this format:
+SUBTYPE: CORE_UPDATE or DOWNSTREAM_REACTION or RESTATEMENT
+REASON: one short sentence

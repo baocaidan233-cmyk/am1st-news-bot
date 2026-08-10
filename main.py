@@ -20,16 +20,20 @@ Pipeline order per cycle (cheapest filter first):
   clusters, not just a drop/keep decision — see Layer 2 below) -> per
   cluster: read-only peek at core/qdrant_store.py's EventStore (a separate
   Qdrant collection tracking heat_score/event_first_seen_at per underlying
-  event, not per article) for a heat_score PREVIEW to feed the AI score
-  gate, plus per-candidate cross-cycle Qdrant dedup (vs title+description
-  written in the last 72h) -> AI score gate (gpt-4o-mini, >=5) -> for each
-  cluster with at least one scoring survivor: COMMIT that cluster's
-  accumulated heat/sources to the EventStore (a cluster where nothing
-  cleared the score gate never touches it at all — see 2026-08-06 "event
-  aggregation, take 2" design note in project_am1st_migration memory) ->
-  write survivors to Notion candidate pool -> Qdrant embedding write (the
-  same title+description embeddings used for clustering, now persisted
-  for future cross-cycle checks).
+  event, not per article), then a second opinion on that cosine match via
+  core/event_identity.py (entity-overlap rule tier, LLM only for the
+  residual ambiguous tier — cosine similar is not the same claim as same
+  real-world event, see project_am1st_migration memory's 2026-08-09 "event
+  identity" note) for a heat_score PREVIEW to feed the AI score gate, plus
+  per-candidate cross-cycle Qdrant dedup (vs title+description written in
+  the last 72h) -> AI score gate (gpt-4o-mini, >=5) -> for each cluster
+  with at least one scoring survivor: COMMIT that cluster's accumulated
+  heat/sources to the EventStore (a cluster where nothing cleared the
+  score gate never touches it at all — see 2026-08-06 "event aggregation,
+  take 2" design note in project_am1st_migration memory) -> write
+  survivors to Notion candidate pool -> Qdrant embedding write (the same
+  title+description embeddings used for clustering, now persisted for
+  future cross-cycle checks).
 
 Full-text extraction and content generation are deliberately NOT part of
 this cycle (moved to main_publish.py, 2026-08-05) — every candidate that
@@ -59,6 +63,7 @@ from agents.og_metadata import fetch_link_preview
 from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
 from core.config import load_config
+from core.event_identity import EventVerifier, HubIndex, entity_tokens, log_decision, verify_compatibility
 from core.hashing import cosine_similarity
 from core.language import is_english
 from core.notion_candidates import write_candidate
@@ -71,7 +76,7 @@ logger = logging.getLogger("main")
 
 
 async def run_cycle(
-    config, redis_store, qdrant_store, event_store, embedder, scorer, dry_run,
+    config, redis_store, qdrant_store, event_store, embedder, scorer, hub_index, event_verifier, dry_run,
 ) -> None:
     sources = await load_rss_sources(config)
     if not sources:
@@ -210,6 +215,45 @@ async def run_cycle(
             cluster_peeks.append(None)
             continue
         matched = await event_store.peek(members[0][1])
+
+        # Entity-identity second opinion (2026-08-09, core/event_identity.py)
+        # — cosine matching this cluster to `matched` only means "similar
+        # enough to check further," not "same real-world event" (see
+        # project_am1st_migration memory's 2026-08-09 "event identity"
+        # design note — validated on real historical am1st_events data
+        # before this was written: rule tier alone resolves ~2/3 of these,
+        # the LLM tier corrects roughly half of what it sees). Runs before
+        # the already-published guard below so a DIFFERENT_EVENT verdict
+        # makes this cluster start its own fresh event rather than being
+        # folded into (or dropped against) the wrong one. Deliberately not
+        # perfect — a known, accepted residual miss rate, not chased with
+        # more entity-rarity rules; every rule-tier/LLM verdict gets logged
+        # so misses become future training data instead of recurring
+        # silently forever.
+        if matched is not None:
+            cluster_text = f"{members[0][0].title}\n{members[0][0].description}"
+            new_tokens = entity_tokens(cluster_text)
+            rule_verdict = await verify_compatibility(config, matched, new_tokens, hub_index)
+            log_record = {
+                "event_id": matched.get("event_id"),
+                "cosine_score": matched.get("_score"),
+                "rule_verdict": rule_verdict,
+                "candidate_url": members[0][0].url,
+                "candidate_text": cluster_text,
+                "matched_representative_text": matched.get("representative_text", ""),
+            }
+            if rule_verdict == "NO_OVERLAP":
+                logger.info("run_cycle: cluster %d — entity verifier says DIFFERENT_EVENT (rule tier), starting a fresh event", cluster_idx)
+                log_decision(config, {**log_record, "final_verdict": "DIFFERENT_EVENT"})
+                matched = None
+            elif rule_verdict == "AMBIGUOUS":
+                same, llm_raw = await event_verifier.same_event(matched.get("representative_text", ""), cluster_text)
+                log_decision(config, {**log_record, "llm_same_event_raw": llm_raw, "final_verdict": "SAME_EVENT" if same else "DIFFERENT_EVENT"})
+                if not same:
+                    logger.info("run_cycle: cluster %d — entity verifier says DIFFERENT_EVENT (LLM tier), starting a fresh event", cluster_idx)
+                    matched = None
+            # COMPATIBLE / FAIL_OPEN: trust the cosine match as-is — a confident rule-tier outcome isn't worth an LLM call just to log it too
+
         cluster_peeks.append(matched)
 
         # Already-published guard (2026-08-07) — if this cluster is a
@@ -278,17 +322,23 @@ async def run_cycle(
             continue
 
         rep_c, rep_embedding = survivors_in_cluster[0]
+        rep_text = f"{rep_c.title}\n{rep_c.description}"
         extra_points = [
-            (emb, c.source_name, int(c.published_at.timestamp())) for c, emb in survivors_in_cluster[1:]
+            (
+                emb, c.source_name, int(c.published_at.timestamp()),
+                f"{c.title}\n{c.description}", entity_tokens(f"{c.title}\n{c.description}"),
+            )
+            for c, emb in survivors_in_cluster[1:]
         ]
-        heat_score, first_seen_unix = await event_store.commit(
+        heat_score, first_seen_unix, event_id, core_entities = await event_store.commit(
             cluster_peeks[cluster_idx],
             cluster["sources"],
             cluster["earliest_source"],
             cluster["earliest_unix"],
-            representative=(rep_embedding, rep_c.source_name, int(rep_c.published_at.timestamp())),
+            representative=(rep_embedding, rep_c.source_name, int(rep_c.published_at.timestamp()), rep_text, entity_tokens(rep_text)),
             extra_points=extra_points,
         )
+        await hub_index.bump(event_id, core_entities)
         first_seen_dt = datetime.fromtimestamp(first_seen_unix, tz=timezone.utc)
 
         for c, embedding in survivors_in_cluster:
@@ -319,6 +369,8 @@ async def main() -> None:
     redis_store = RedisStore(config)
     qdrant_store = QdrantStore(config)
     event_store = EventStore(config)
+    hub_index = HubIndex(config)
+    event_verifier = EventVerifier(config)
     await ensure_collection_with_retry(qdrant_store, "am1st_embeddings")
     await ensure_collection_with_retry(event_store, "am1st_events")
     embedder = Embedder(config)
@@ -330,7 +382,7 @@ async def main() -> None:
     try:
         while True:
             try:
-                await run_cycle(config, redis_store, qdrant_store, event_store, embedder, scorer, dry_run)
+                await run_cycle(config, redis_store, qdrant_store, event_store, embedder, scorer, hub_index, event_verifier, dry_run)
             except Exception:
                 logger.exception("run_cycle failed")
             jitter = config.poll_interval_seconds * random.uniform(-0.1, 0.1)
@@ -339,6 +391,7 @@ async def main() -> None:
         await redis_store.close()
         await qdrant_store.close()
         await event_store.close()
+        await hub_index.close()
 
 
 if __name__ == "__main__":
