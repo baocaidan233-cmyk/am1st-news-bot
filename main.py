@@ -209,12 +209,26 @@ async def run_cycle(
     # --- Layer 3: per-cluster event-store PREVIEW (read-only) + per-candidate
     # cross-cycle Qdrant dedup (vs title+description written in the last 72h) ---
     cluster_peeks: list[dict | None] = []
+    # Parallel to cluster_peeks — set only when a DIFFERENT_EVENT verdict
+    # came from the AMBIGUOUS/LLM path (shared entities existed, cosine
+    # matched, but the action/actor turned out distinct — e.g. "condemns
+    # the launch" vs "the launch" itself). That is precisely the kind of
+    # link a future storyline layer needs (see 新闻事件身份更新框架.md's
+    # "new action = new event, but same storyline" principle) — NOT stored
+    # for a NO_OVERLAP verdict, since that means zero entity relation to
+    # begin with and is more likely an unrelated cosine false-positive
+    # (recurring event type) than a real storyline neighbor. This does NOT
+    # build storyline grouping itself — it only keeps the breadcrumb so
+    # that work doesn't have to be reconstructed from scratch later.
+    cluster_related_links: list[dict | None] = []
     scoring_candidates = []  # list of (Candidate, embedding, cluster_idx)
     for cluster_idx, members in enumerate(cluster_members):
         if not members:
             cluster_peeks.append(None)
+            cluster_related_links.append(None)
             continue
         matched = await event_store.peek(members[0][1])
+        related_link = None
 
         # Entity-identity second opinion (2026-08-09, core/event_identity.py)
         # — cosine matching this cluster to `matched` only means "similar
@@ -251,10 +265,12 @@ async def run_cycle(
                 log_decision(config, {**log_record, "llm_same_event_raw": llm_raw, "final_verdict": "SAME_EVENT" if same else "DIFFERENT_EVENT"})
                 if not same:
                     logger.info("run_cycle: cluster %d — entity verifier says DIFFERENT_EVENT (LLM tier), starting a fresh event", cluster_idx)
+                    related_link = {"event_id": matched.get("event_id"), "cosine_score": matched.get("_score")}
                     matched = None
             # COMPATIBLE / FAIL_OPEN: trust the cosine match as-is — a confident rule-tier outcome isn't worth an LLM call just to log it too
 
         cluster_peeks.append(matched)
+        cluster_related_links.append(related_link)
 
         # Already-published guard (2026-08-07) — if this cluster is a
         # near-verbatim rehash (>= dedup.semantic_threshold, the same bar
@@ -337,6 +353,7 @@ async def run_cycle(
             cluster["earliest_unix"],
             representative=(rep_embedding, rep_c.source_name, int(rep_c.published_at.timestamp()), rep_text, entity_tokens(rep_text)),
             extra_points=extra_points,
+            related_link=cluster_related_links[cluster_idx],
         )
         await hub_index.bump(event_id, core_entities)
         first_seen_dt = datetime.fromtimestamp(first_seen_unix, tz=timezone.utc)

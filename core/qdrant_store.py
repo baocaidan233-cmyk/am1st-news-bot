@@ -184,6 +184,7 @@ class EventStore:
       seed_entities     — entity tokens (core/event_identity.entity_tokens) of this event's FIRST article, set once at creation and never changed — see core/event_identity.py's core_entities_of()
       entity_doc_freq   — {token: how many of this event's own accumulated articles contain it}, updated every commit()
       representative_text — title+description of whichever article was this commit()'s representative — a rolling anchor (updates to the latest), used as the "TEXT A" side of EventVerifier's LLM comparisons
+      related_event_ids  — [{event_id, cosine_score, linked_at}], set once at this event's creation when it exists BECAUSE a cosine-matched, entity-related candidate was ruled DIFFERENT_EVENT (see core/event_identity.py and main.py's 2026-08-10 note) — a breadcrumb for a future storyline-linking pass, not itself storyline grouping
 
     Vector = whichever article's embedding this particular point represents
     (the first point of an event uses that event's originating article;
@@ -327,6 +328,7 @@ class EventStore:
         earliest_published_at_unix: int,
         representative: tuple[list[float], str, int, str, set[str]],
         extra_points: list[tuple[list[float], str, int, str, set[str]]],
+        related_link: dict | None = None,
     ) -> tuple[float, int, str, set[str]]:
         """The actual write — called AFTER scoring, and only for a local
         cluster where at least one member cleared the score gate (see
@@ -344,6 +346,20 @@ class EventStore:
         matches can hit any of their phrasings, not just the first one
         (mitigates fragmentation/drift, see class docstring).
 
+        `related_link` (2026-08-10) — only passed when `matched` is None
+        BECAUSE the entity verifier's AMBIGUOUS/LLM path just ruled
+        DIFFERENT_EVENT against some other event (shared/hub entities,
+        cosine matched, but a distinct action — e.g. "condemns the launch"
+        vs the launch itself): `{"event_id": ..., "cosine_score": ...}` of
+        that rejected match. Persisted once, at this new event's creation,
+        as a seed for storyline linking later — deliberately NOT recorded
+        for a NO_OVERLAP rejection, since zero entity relation is more
+        likely an unrelated cosine false-positive than a real storyline
+        neighbor. This does not itself group events into a storyline —
+        that needs its own, separately-thresholded pass (main.py's
+        2026-08-10 comment) — it only keeps the link from being silently
+        discarded before that pass exists.
+
         Returns (heat_score, first_seen_at_unix, event_id, core_entities) —
         heat_score/first_seen_at_unix should exactly equal whatever
         preview_heat() returned earlier for this same cluster; event_id and
@@ -360,6 +376,11 @@ class EventStore:
             for tok in entities:
                 entity_doc_freq[tok] = entity_doc_freq.get(tok, 0) + 1
         representative_text = representative[3]
+        related_event_ids = (
+            list(matched.get("related_event_ids", []))
+            if matched is not None
+            else ([{**related_link, "linked_at": now}] if related_link else [])
+        )
 
         shared_payload = {
             "heat_score": heat,
@@ -369,6 +390,7 @@ class EventStore:
             "seed_entities": list(seed_entities),
             "entity_doc_freq": entity_doc_freq,
             "representative_text": representative_text,
+            "related_event_ids": related_event_ids,
         }
 
         if matched is not None:
