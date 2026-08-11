@@ -68,6 +68,7 @@ qdrant:
   events_collection: "am1st_events"        # event aggregation — groups of points per underlying event, see HeatConfig/EventStore
   cross_cycle_window_hours: 72
   cleanup_retention_days: 10  # for the separate, not-yet-built daily cleanup job
+  timeout_seconds: 15  # AsyncQdrantClient has no timeout by default — real hang observed 2026-08-11
 
 extraction:
   timeout_seconds: 20

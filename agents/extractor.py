@@ -76,6 +76,15 @@ def _looks_like_paywall_teaser(text: str) -> bool:
     return any(signal in lowered for signal in _PAYWALL_TEASER_SIGNALS)
 
 
+def _domain_matches(netloc: str, domain: str) -> bool:
+    """True host-boundary match — netloc IS domain, or is a genuine
+    subdomain of it. A plain substring check (`domain in netloc`) matched
+    "ft.com" against "joehoft.com" in real testing (2026-08-11): FT's real
+    subscription cookie got sent to an unrelated site, and that site got
+    routed through the heavy Playwright fallback for nothing."""
+    return netloc == domain or netloc.endswith("." + domain)
+
+
 def _find_cookie_source(url: str, sources: list[RssSource]) -> RssSource | None:
     """Matches the article's domain against each configured source's own
     `domain` field — not every source has a paywall cookie, so most matches
@@ -83,14 +92,14 @@ def _find_cookie_source(url: str, sources: list[RssSource]) -> RssSource | None:
     without one)."""
     netloc = urlparse(url).netloc
     for source in sources:
-        if source.domain and source.domain in netloc:
+        if source.domain and _domain_matches(netloc, source.domain):
             return source
     return None
 
 
 def _needs_browser(url: str) -> bool:
     netloc = urlparse(url).netloc
-    return any(domain in netloc for domain in _BROWSER_REQUIRED_DOMAINS)
+    return any(_domain_matches(netloc, domain) for domain in _BROWSER_REQUIRED_DOMAINS)
 
 
 class Extractor:

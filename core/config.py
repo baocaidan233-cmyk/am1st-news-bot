@@ -171,6 +171,7 @@ class QdrantConfig(BaseModel):
     events_collection: str = "am1st_events"  # event aggregation collection, see HeatConfig/EventStore — a genuinely different kind of thing from the two collections above (a group of points per underlying event, not one point per article)
     cross_cycle_window_hours: int = 72
     cleanup_retention_days: int = 10
+    timeout_seconds: int = 15  # AsyncQdrantClient has no timeout by default — a stalled request (real hang observed 2026-08-11 during a live 3-cycle test, no error, no timeout, just stuck) can block run_cycle forever
 
 
 class ExtractionConfig(BaseModel):

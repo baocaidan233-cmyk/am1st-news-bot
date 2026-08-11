@@ -81,7 +81,7 @@ class QdrantStore:
         self._collection = config.qdrant.collection
         self._window_seconds = config.qdrant.cross_cycle_window_hours * 3600
         self._client = (
-            AsyncQdrantClient(url=config.qdrant.url, api_key=config.qdrant.api_key or None)
+            AsyncQdrantClient(url=config.qdrant.url, api_key=config.qdrant.api_key or None, timeout=config.qdrant.timeout_seconds)
             if config.qdrant.url
             else None
         )
@@ -217,7 +217,7 @@ class EventStore:
         self._major_outlets = set(config.heat.major_outlets)
         self._major_outlet_weight = config.heat.major_outlet_weight
         self._client = (
-            AsyncQdrantClient(url=config.qdrant.url, api_key=config.qdrant.api_key or None)
+            AsyncQdrantClient(url=config.qdrant.url, api_key=config.qdrant.api_key or None, timeout=config.qdrant.timeout_seconds)
             if config.qdrant.url
             else None
         )
@@ -483,7 +483,7 @@ class PostedHistoryStore:
         self._collection = config.qdrant.posted_collection
         self._window_seconds = config.publish.posted_dedup_window_hours * 3600
         self._client = (
-            AsyncQdrantClient(url=config.qdrant.url, api_key=config.qdrant.api_key or None)
+            AsyncQdrantClient(url=config.qdrant.url, api_key=config.qdrant.api_key or None, timeout=config.qdrant.timeout_seconds)
             if config.qdrant.url
             else None
         )
