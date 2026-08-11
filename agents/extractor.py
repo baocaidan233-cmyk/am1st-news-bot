@@ -51,6 +51,30 @@ window.chrome = window.chrome || { runtime: {} };
 """
 _VIEWPORT = {"width": 1366, "height": 900}
 
+# Confirmed 2026-08-11 on a real FT article: an expired paywall cookie
+# doesn't make the fetch fail — it "succeeds" with the site's own marketing
+# copy for the paywall itself, which is long enough to clear
+# min_text_length and would otherwise pass through as if it were the real
+# article. Tried building an automated login-based cookie refresher first
+# (same Playwright approach as the bot-detection fallback above), but
+# NYT/WaPo's blocks happen before auth is even checked, and FT's own login
+# page is itself gated behind a Cloudflare Turnstile challenge that never
+# resolved in headless testing — automating past that would mean building
+# a captcha-bypass tool, which isn't something to build. So this stays
+# detection-only: recognize the teaser text and alert, same channel as
+# every other extraction failure, rather than silently treating marketing
+# copy as if it were the article.
+_PAYWALL_TEASER_SIGNALS = (
+    "subscribe to unlock this article",
+    "try unlimited access",
+    "complete digital access to quality",
+)
+
+
+def _looks_like_paywall_teaser(text: str) -> bool:
+    lowered = text.lower()
+    return any(signal in lowered for signal in _PAYWALL_TEASER_SIGNALS)
+
 
 def _find_cookie_source(url: str, sources: list[RssSource]) -> RssSource | None:
     """Matches the article's domain against each configured source's own
@@ -107,10 +131,10 @@ class Extractor:
         self._config = config
         self._alerts = alerts
 
-    async def _fail(self, url: str, source: RssSource | None, reason: str) -> None:
+    async def _fail(self, url: str, source: RssSource | None, reason: str, alert_message: str | None = None) -> None:
         logger.warning("Extractor: %s for %s", reason, url)
         if source:
-            await self._alerts.alert(source.page_id, f"全文抓取失败(可能是cookie失效/反爬拦截): {url}")
+            await self._alerts.alert(source.page_id, alert_message or f"全文抓取失败(可能是cookie失效/反爬拦截): {url}")
 
     async def _fetch_plain(self, url: str, headers: dict) -> str | None:
         try:
@@ -195,6 +219,15 @@ class Extractor:
             if used_browser:
                 reason += " (after browser retry)"
             await self._fail(url, source, reason)
+            return None
+
+        if _looks_like_paywall_teaser(text):
+            await self._fail(
+                url,
+                source,
+                f"extracted text is a paywall teaser, not the article ({len(text)} chars)",
+                alert_message=f"抓到的内容像是付费墙提示文案，cookie可能已过期，需要手动更新: {url}",
+            )
             return None
 
         return text
