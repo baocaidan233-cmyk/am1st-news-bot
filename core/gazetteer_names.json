@@ -555,6 +555,10 @@
  "notable": [
   ["Joe Biden", "Biden"], ["Hunter Biden", "Biden"], ["Barack Obama", "Obama"],
   ["Bill Clinton", "Clinton"], ["Hillary Clinton", "Clinton"],
-  ["Anthony Fauci", "Fauci"], ["Bill Gates", "Gates"]
- ]
+  ["Anthony Fauci", "Fauci"], ["Bill Gates", "Gates"],
+  ["Elbridge Colby", "Colby"], ["Mehmet Oz", null],
+  ["Luigi Mangione", "Mangione"], ["Zohran Mamdani", "Mamdani"],
+  ["Kamala Harris", "Harris"]
+ ],
+ "aliases": ["RFK Jr.", "AOC"]
 }

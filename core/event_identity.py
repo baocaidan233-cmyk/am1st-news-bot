@@ -80,7 +80,19 @@ def _gazetteer_patterns() -> list[dict]:
     # wrong, it's still a real, correct actor name either way.
     for full_name, last in data["cabinet"] + data["notable"]:
         patterns.append({"label": "PERSON", "pattern": full_name})
-        patterns.append({"label": "PERSON", "pattern": last})
+        # `last: null` opts a specific entry out of the bare-last-name
+        # pattern — added for "Mehmet Oz" (2026-08-11): "Oz" alone collides
+        # constantly with the "oz." weight abbreviation in ordinary text,
+        # a real false-positive risk none of the other ~560 names have.
+        if last:
+            patterns.append({"label": "PERSON", "pattern": last})
+    # Standalone nicknames/initialisms real headlines actually use instead
+    # of any stored full/last form (2026-08-11) — "RFK Jr." for the
+    # already-listed Robert F. Kennedy Jr., "AOC" for the already-listed
+    # Alexandria Ocasio-Cortez. Matched on real production RSS data: both
+    # were misses even with the underlying person already in the list.
+    for alias in data.get("aliases", []):
+        patterns.append({"label": "PERSON", "pattern": alias})
     return patterns
 
 
