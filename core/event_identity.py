@@ -26,11 +26,66 @@ import redis.asyncio as redis
 import spacy
 
 from core.config import AppConfig
+from core.language import is_english
 from core.openai_client import create_openai_client
 
 logger = logging.getLogger(__name__)
 
 nlp = spacy.load("en_core_web_sm")
+
+# Gazetteer-based EntityRuler (2026-08-11) — en_core_web_sm's statistical
+# NER misses real, important people in compressed headline syntax (no
+# title, no verb context — e.g. "Colby pushes back on..."; confirmed 2026-
+# 08-11 on a real production headline where the dependency parse correctly
+# found "Colby" as the sentence's subject, but it was never tagged PERSON
+# at all, so entity_covering() below correctly refused to accept it as an
+# actor). The name list itself (537 sitting Congress members from the
+# unitedstates/congress-legislators project + 24 Cabinet members, hand-
+# verified from Wikipedia + 7 manually-curated "notable but not currently
+# in office" figures) was already built and decided on 2026-08-09 — see
+# project_am1st_ner_language_gate_decision memory — but was never actually
+# wired into the running pipeline until now; it only existed as data in a
+# published Artifact. core/gazetteer_names.json is that same data,
+# recovered and committed here as a real tracked file.
+#
+# Only full-name patterns are added for Cabinet/notable (24+7 — no
+# ambiguity check was ever computed for these, so a bare-last-name pattern
+# risks false-positive PERSON tags on common surnames like "Wright"/
+# "Turner"/"Collins"). For Congress, `last_name_ambiguous` (already
+# computed in 2026-08-09's work, per-member, based on surname collisions
+# WITHIN Congress — e.g. 3 Scotts, 5 Moores) gates whether a bare-last-name
+# pattern is added at all: ~30 of the 537 are full-name-only for this
+# reason. Known residual risk, not chased further: a bare last name that
+# ALSO happens to be an ordinary English word (e.g. "Green"/"Paul"/"Cole")
+# can still false-positive-tag unrelated capitalized text — same "accept
+# imperfection, don't over-engineer entity rules" philosophy as this
+# module's core_entities_of()/HubIndex design elsewhere.
+_GAZETTEER_PATH = Path(__file__).parent / "gazetteer_names.json"
+
+
+def _gazetteer_patterns() -> list[dict]:
+    with open(_GAZETTEER_PATH, encoding="utf-8") as f:
+        data = json.load(f)
+    patterns = []
+    for full_name, last, ambiguous in data["congress"]:
+        patterns.append({"label": "PERSON", "pattern": full_name})
+        if not ambiguous:
+            patterns.append({"label": "PERSON", "pattern": last})
+    # Cabinet/notable also get a bare-last-name pattern (2026-08-11, user
+    # confirmed) — headlines almost always refer to these by surname alone
+    # ("Bessent warns...", "Hegseth pushes back..."), and unlike the
+    # Congress list, the actor field just stores a guessed name string, not
+    # a resolved identity — a same-surname collision (Doug Collins/Susan
+    # Collins, Joe Biden/Hunter Biden) doesn't make the guessed string
+    # wrong, it's still a real, correct actor name either way.
+    for full_name, last in data["cabinet"] + data["notable"]:
+        patterns.append({"label": "PERSON", "pattern": full_name})
+        patterns.append({"label": "PERSON", "pattern": last})
+    return patterns
+
+
+_ruler = nlp.add_pipe("entity_ruler", before="ner")
+_ruler.add_patterns(_gazetteer_patterns())
 
 # Not real people — collective/house pseudonyms whose byline shows up on
 # unrelated articles, which would otherwise poison entity-based matching
@@ -73,6 +128,99 @@ def entity_tokens(text: str) -> set[str]:
             if tok not in _STOPWORDS and len(tok) > 1:
                 tokens.add(tok)
     return tokens
+
+
+# Deliberately small and non-exhaustive (2026-08-10 design note: event_type
+# is a coarse retrieval aid, not an identity-determining field — see
+# 新闻事件库研究 2026.md §3.1's own "don't chase an exhaustive ontology"
+# guidance) — an unmatched verb lemma just leaves event_type empty rather
+# than guessing, same fail-open philosophy as the rest of this module.
+# Keyed on the ROOT verb's lemma from extract_event_frame() below.
+_ACTION_TYPE_MAP = {
+    "sanction": "sanction", "impose": "sanction", "ban": "sanction", "tariff": "sanction",
+    "arrest": "arrest", "charge": "arrest", "indict": "arrest", "detain": "arrest",
+    "raid": "arrest", "deport": "arrest", "seize": "arrest",
+    "rule": "court_ruling", "convict": "court_ruling", "acquit": "court_ruling",
+    "sentence": "court_ruling", "overturn": "court_ruling", "dismiss": "court_ruling",
+    "uphold": "court_ruling",
+    "sue": "lawsuit", "appeal": "lawsuit", "settle": "lawsuit",
+    "launch": "attack", "attack": "attack", "bomb": "attack", "invade": "attack",
+    "kill": "attack", "strike": "attack",
+    "elect": "election", "vote": "election", "win": "election", "lead": "election", "trail": "election",
+    "meet": "meeting", "sign": "policy_action", "approve": "policy_action",
+    "pass": "policy_action", "veto": "policy_action", "block": "policy_action", "revoke": "policy_action",
+    "announce": "statement", "condemn": "statement", "praise": "statement", "back": "statement",
+    "criticize": "statement", "warn": "statement", "deny": "statement", "confirm": "statement",
+    "blast": "statement", "slam": "statement", "rip": "statement", "torch": "statement",
+    "knock": "statement", "hail": "statement", "defend": "statement", "tout": "statement",
+    "dump": "statement", "expose": "statement",
+    "protest": "protest", "rally": "protest", "march": "protest", "boo": "protest",
+    "resign": "resignation", "fire": "personnel_action", "appoint": "personnel_action",
+    "nominate": "personnel_action", "endorse": "personnel_action",
+    "surge": "economic_data", "plunge": "economic_data", "spike": "economic_data",
+    "tank": "economic_data", "jump": "economic_data", "soar": "economic_data",
+}
+
+
+def extract_event_frame(text: str) -> dict:
+    """Free, no-LLM ACTION/ACTOR/TARGET/event_type guess from the same kind
+    of spaCy parse entity_tokens() already runs — 2026-08-10, replaces an
+    earlier LLM-extraction design the user rejected as unnecessary cost
+    once event_time was dropped from scope entirely (no consumer needs it;
+    if a future feature does, the article URL is already on file to go
+    re-read it). Reads the ROOT verb of the first sentence (usually the
+    headline) and its nsubj/dobj/pobj children — this is meaningfully
+    weaker than an LLM on complex sentences (subordinate clauses, passive
+    voice, coordination) and is expected to leave actor/target empty often;
+    that's intentional fail-open, not a bug — a wrong guess is worse than
+    an empty field here, same philosophy as verify_compatibility(). actor/
+    target are only accepted if they land inside a real recognized entity
+    span (cross-checked against the same NER this module already does),
+    not just any noun.
+
+    Returns {"action": str|None, "actor": str|None, "target": str|None,
+    "event_type": str|None} — all None if no clear verb root was found.
+
+    2026-08-10, added after a real-data smoke test: en_core_web_sm run on
+    non-English text (this collection has occasional Chinese/Portuguese
+    items — see core/language.py's docstring for prior, unrelated
+    incidents of the same root cause) produces fluent-looking nonsense —
+    e.g. a Portuguese sentence's root verb lemma comes back as a real-
+    looking but wrong token. is_english() already exists for exactly this
+    class of problem; reused here rather than writing a second check."""
+    empty = {"action": None, "actor": None, "target": None, "event_type": None}
+    if not text or not is_english(text):
+        return empty
+    doc = nlp(text)
+    entity_spans = [
+        (ent.start, ent.end, _clean_entity_span(ent.text))
+        for ent in doc.ents
+        if ent.label_ in _ENTITY_LABELS and _clean_entity_span(ent.text).lower() not in KNOWN_BYLINE_NOISE
+    ]
+
+    def entity_covering(token) -> str | None:
+        for start, end, cleaned in entity_spans:
+            if start <= token.i < end:
+                return cleaned
+        return None
+
+    for sent in doc.sents:
+        root = sent.root
+        if root.pos_ not in ("VERB", "AUX"):
+            continue
+        action = root.lemma_.lower()
+        actor = target = None
+        for child in root.children:
+            if child.dep_ in ("nsubj", "nsubjpass") and actor is None:
+                actor = entity_covering(child)
+            elif child.dep_ == "dobj" and target is None:
+                target = entity_covering(child)
+            elif child.dep_ == "prep":
+                for grandchild in child.children:
+                    if grandchild.dep_ == "pobj" and target is None:
+                        target = entity_covering(grandchild)
+        return {"action": action, "actor": actor, "target": target, "event_type": _ACTION_TYPE_MAP.get(action)}
+    return empty
 
 
 class HubIndex:

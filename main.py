@@ -63,7 +63,7 @@ from agents.og_metadata import fetch_link_preview
 from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
 from core.config import load_config
-from core.event_identity import EventVerifier, HubIndex, entity_tokens, log_decision, verify_compatibility
+from core.event_identity import EventVerifier, HubIndex, entity_tokens, extract_event_frame, log_decision, verify_compatibility
 from core.hashing import cosine_similarity
 from core.language import is_english
 from core.notion_candidates import write_candidate
@@ -342,18 +342,30 @@ async def run_cycle(
         extra_points = [
             (
                 emb, c.source_name, int(c.published_at.timestamp()),
-                f"{c.title}\n{c.description}", entity_tokens(f"{c.title}\n{c.description}"),
+                f"{c.title}\n{c.description}", entity_tokens(f"{c.title}\n{c.description}"), c.url,
             )
             for c, emb in survivors_in_cluster[1:]
         ]
+        # Free, no-LLM ACTION/ACTOR/TARGET/event_type guess (2026-08-10,
+        # core/event_identity.py) — only consulted by commit() when this
+        # cluster is actually starting a brand-new event; harmless/unused
+        # otherwise. canonical_title/canonical_summary are deliberately the
+        # seed article's own title/description, not LLM-rewritten — see
+        # EventStore.commit()'s docstring.
+        seed_frame = {
+            **extract_event_frame(rep_text),
+            "canonical_title": rep_c.title,
+            "canonical_summary": rep_c.description or rep_c.title,
+        }
         heat_score, first_seen_unix, event_id, core_entities = await event_store.commit(
             cluster_peeks[cluster_idx],
             cluster["sources"],
             cluster["earliest_source"],
             cluster["earliest_unix"],
-            representative=(rep_embedding, rep_c.source_name, int(rep_c.published_at.timestamp()), rep_text, entity_tokens(rep_text)),
+            representative=(rep_embedding, rep_c.source_name, int(rep_c.published_at.timestamp()), rep_text, entity_tokens(rep_text), rep_c.url),
             extra_points=extra_points,
             related_link=cluster_related_links[cluster_idx],
+            seed_frame=seed_frame,
         )
         await hub_index.bump(event_id, core_entities)
         first_seen_dt = datetime.fromtimestamp(first_seen_unix, tz=timezone.utc)

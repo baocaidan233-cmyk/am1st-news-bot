@@ -176,6 +176,7 @@ class EventStore:
     Payload per point:
       event_id        — uuid shared by every representative point of this event
       source           — the RSS source name that contributed THIS point
+      url              — this point's own article's URL — 2026-08-11, was missing entirely (only am1st_embeddings/am1st_posting_news_embedding had it); the user's own earlier "drop event_time, re-derive from the article URL later if ever needed" reasoning depended on this actually being stored, which it wasn't until now
       published_at     — this point's own article's publish time (unix seconds)
       heat_score        — 1.0 + weighted sum of distinct corroborating sources (kept in sync across the event's points)
       first_seen_at     — earliest published_at seen across the event's sources, unix seconds (can only move earlier)
@@ -185,6 +186,8 @@ class EventStore:
       entity_doc_freq   — {token: how many of this event's own accumulated articles contain it}, updated every commit()
       representative_text — title+description of whichever article was this commit()'s representative — a rolling anchor (updates to the latest), used as the "TEXT A" side of EventVerifier's LLM comparisons
       related_event_ids  — [{event_id, cosine_score, linked_at}], set once at this event's creation when it exists BECAUSE a cosine-matched, entity-related candidate was ruled DIFFERENT_EVENT (see core/event_identity.py and main.py's 2026-08-10 note) — a breadcrumb for a future storyline-linking pass, not itself storyline grouping
+      canonical_title, canonical_summary — the seed article's own title/description, set once at creation and never changed (same permanence as seed_entities) — deliberately NOT an LLM-rewritten title/summary; see 2026-08-10 event-identity note: the user explicitly ruled out a new LLM call for this once event_time was dropped from scope
+      event_type, canonical_action, actor, target — core/event_identity.extract_event_frame()'s free, no-LLM guess (spaCy dependency parse of the seed article, not an LLM) — set once at creation from `seed_frame`, fail-open to empty string when unclear rather than guessing; NOT re-derived on later commits to the same event
 
     Vector = whichever article's embedding this particular point represents
     (the first point of an event uses that event's originating article;
@@ -326,14 +329,15 @@ class EventStore:
         sources: set[str],
         earliest_source: str,
         earliest_published_at_unix: int,
-        representative: tuple[list[float], str, int, str, set[str]],
-        extra_points: list[tuple[list[float], str, int, str, set[str]]],
+        representative: tuple[list[float], str, int, str, set[str], str],
+        extra_points: list[tuple[list[float], str, int, str, set[str], str]],
         related_link: dict | None = None,
+        seed_frame: dict | None = None,
     ) -> tuple[float, int, str, set[str]]:
         """The actual write — called AFTER scoring, and only for a local
         cluster where at least one member cleared the score gate (see
         main.py). `representative` and each of `extra_points` are now
-        (embedding, source, published_at_unix, text, entity_tokens) —
+        (embedding, source, published_at_unix, text, entity_tokens, url) —
         `text` and `entity_tokens` added 2026-08-09 (core/event_identity.py)
         so this event's identity fingerprint (seed_entities/entity_doc_freq)
         and its rolling LLM-comparison anchor (representative_text) can be
@@ -341,10 +345,14 @@ class EventStore:
         check by re-reading every past article's text (which is how the
         design was validated in scratchpad, but is not how it should run
         in production — see project_am1st_migration memory's 2026-08-09
-        "event identity" note). Each embedding still becomes its own
-        representative point sharing one event_id, so future cross-cycle
-        matches can hit any of their phrasings, not just the first one
-        (mitigates fragmentation/drift, see class docstring).
+        "event identity" note). `url` added 2026-08-11 — was missing
+        entirely until the user pointed out the event library has no way
+        to go re-read a full article, which the earlier "drop event_time,
+        look it up from the URL later" decision had assumed was already
+        possible. Each embedding still becomes its own representative
+        point sharing one event_id, so future cross-cycle matches can hit
+        any of their phrasings, not just the first one (mitigates
+        fragmentation/drift, see class docstring).
 
         `related_link` (2026-08-10) — only passed when `matched` is None
         BECAUSE the entity verifier's AMBIGUOUS/LLM path just ruled
@@ -360,6 +368,15 @@ class EventStore:
         2026-08-10 comment) — it only keeps the link from being silently
         discarded before that pass exists.
 
+        `seed_frame` (2026-08-10) — core/event_identity.extract_event_frame()
+        run on the representative's own title+description, always passed
+        by the caller (cheap — no LLM, no I/O) but only consulted when
+        `matched` is None: canonical_title/canonical_summary/event_type/
+        canonical_action/actor/target get set once from it at this event's
+        creation and are never re-derived on later commits, same as
+        seed_entities. Deliberately not LLM-generated — see the class
+        docstring's payload note on why.
+
         Returns (heat_score, first_seen_at_unix, event_id, core_entities) —
         heat_score/first_seen_at_unix should exactly equal whatever
         preview_heat() returned earlier for this same cluster; event_id and
@@ -372,7 +389,7 @@ class EventStore:
         all_points = [representative] + list(extra_points)
         seed_entities = set(matched.get("seed_entities", [])) if matched is not None else all_points[0][4]
         entity_doc_freq = dict(matched.get("entity_doc_freq", {})) if matched is not None else {}
-        for _, _, _, _, entities in all_points:
+        for _, _, _, _, entities, _ in all_points:
             for tok in entities:
                 entity_doc_freq[tok] = entity_doc_freq.get(tok, 0) + 1
         representative_text = representative[3]
@@ -381,6 +398,13 @@ class EventStore:
             if matched is not None
             else ([{**related_link, "linked_at": now}] if related_link else [])
         )
+        frame = seed_frame or {}
+        canonical_title = matched.get("canonical_title", "") if matched is not None else frame.get("canonical_title", "")
+        canonical_summary = matched.get("canonical_summary", "") if matched is not None else frame.get("canonical_summary", "")
+        event_type = matched.get("event_type", "") if matched is not None else (frame.get("event_type") or "")
+        canonical_action = matched.get("canonical_action", "") if matched is not None else (frame.get("action") or "")
+        actor = matched.get("actor", "") if matched is not None else (frame.get("actor") or "")
+        target = matched.get("target", "") if matched is not None else (frame.get("target") or "")
 
         shared_payload = {
             "heat_score": heat,
@@ -391,6 +415,12 @@ class EventStore:
             "entity_doc_freq": entity_doc_freq,
             "representative_text": representative_text,
             "related_event_ids": related_event_ids,
+            "canonical_title": canonical_title,
+            "canonical_summary": canonical_summary,
+            "event_type": event_type,
+            "canonical_action": canonical_action,
+            "actor": actor,
+            "target": target,
         }
 
         if matched is not None:
@@ -410,9 +440,9 @@ class EventStore:
                     PointStruct(
                         id=str(uuid.uuid4()),
                         vector=emb,
-                        payload={"event_id": event_id, "source": src, "published_at": pub, **shared_payload},
+                        payload={"event_id": event_id, "source": src, "published_at": pub, "url": url, **shared_payload},
                     )
-                    for emb, src, pub, _, _ in all_points
+                    for emb, src, pub, _, _, url in all_points
                 ],
             )
         except Exception:
