@@ -59,6 +59,7 @@ import asyncio
 import logging
 import random
 import sys
+import time
 
 from dotenv import load_dotenv
 
@@ -215,10 +216,21 @@ async def main() -> None:
 
     try:
         while True:
+            started = time.monotonic()
             try:
-                await run_cycle(config, embedder, ranker, posted_store, event_store, publisher, extractor, writer, dry_run)
+                await asyncio.wait_for(
+                    run_cycle(config, embedder, ranker, posted_store, event_store, publisher, extractor, writer, dry_run),
+                    timeout=config.cycle_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                # Same self-loop cutoff as main.py's ingestion cycle — this
+                # process runs independently of it, so publishing must not
+                # stall just because one cycle got stuck on e.g. a slow
+                # extraction (2026-08-12 discussion).
+                logger.error("run_cycle exceeded %ds — cutting it off, will retry next cycle", config.cycle_timeout_seconds)
             except Exception:
                 logger.exception("run_cycle failed")
+            logger.info("run_cycle: cycle took %.1fs", time.monotonic() - started)
             jitter = config.publish.interval_seconds * random.uniform(-0.1, 0.1)
             await asyncio.sleep(config.publish.interval_seconds + jitter)
     finally:

@@ -92,4 +92,5 @@ publish:
 
 max_publish_age_hours: 3
 poll_interval_seconds: 600  # 10 minutes, matches the original n8n cadence
+cycle_timeout_seconds: 540  # 9 min — real n8n cycles ran ~5min, almost never past 7min; hard-cuts a stuck cycle so the next one always starts on schedule
 alert_cooldown_seconds: 21600  # 6h — don't re-@mention for a still-broken source every cycle

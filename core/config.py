@@ -224,6 +224,7 @@ class AppConfig(BaseModel):
     publish: PublishConfig = Field(default_factory=PublishConfig)
     max_publish_age_hours: int = 3
     poll_interval_seconds: int = 600
+    cycle_timeout_seconds: int = 540  # 9 min — per the user's real n8n experience, a healthy cycle runs ~5min and almost never past 7min; this hard-cuts a stuck cycle so the next one always starts on schedule (main.py and main_publish.py loops both apply this, independently — see 2026-08-12 waterfall/no-external-retrigger discussion)
     alert_cooldown_seconds: int = 21600
 
 

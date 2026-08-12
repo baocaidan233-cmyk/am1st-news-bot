@@ -54,6 +54,7 @@ import asyncio
 import logging
 import random
 import sys
+import time
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -410,10 +411,22 @@ async def main() -> None:
 
     try:
         while True:
+            started = time.monotonic()
             try:
-                await run_cycle(config, redis_store, qdrant_store, event_store, embedder, scorer, hub_index, event_verifier, dry_run)
+                await asyncio.wait_for(
+                    run_cycle(config, redis_store, qdrant_store, event_store, embedder, scorer, hub_index, event_verifier, dry_run),
+                    timeout=config.cycle_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                # This process self-loops (see module docstring) instead of
+                # being re-triggered externally like the old n8n workflow —
+                # without this cutoff, one truly stuck cycle would freeze
+                # every future cycle forever, since nothing else would ever
+                # call run_cycle() again (2026-08-12 discussion).
+                logger.error("run_cycle exceeded %ds — cutting it off, will retry next cycle", config.cycle_timeout_seconds)
             except Exception:
                 logger.exception("run_cycle failed")
+            logger.info("run_cycle: cycle took %.1fs", time.monotonic() - started)
             jitter = config.poll_interval_seconds * random.uniform(-0.1, 0.1)
             await asyncio.sleep(config.poll_interval_seconds + jitter)
     finally:
