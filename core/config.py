@@ -66,7 +66,8 @@ class RedisConfig(BaseModel):
 class OpenAIConfig(BaseModel):
     api_key: str = ""  # env: OPENAI_API_KEY
     fallback_api_key: str = ""  # env: OPENAI_API_KEY_FALLBACK — only used if the primary key hits RateLimitError (rate limit or exhausted quota), see core/openai_client.py
-    chat_model: str = "gpt-4o-mini"
+    chat_model: str = "gpt-4o-mini"  # Writer + PriorityRanker — editorial voice/judgment, kept on 4o-mini per the user's 2026-08-14 call after comparing real Writer output side by side
+    scoring_model: str = "gpt-5-nano"  # Scorer only — pure numeric triage, not user-facing prose, so the ~2.4x real cost saving (verified 2026-08-14 with reasoning_effort=minimal) was worth taking here; see agents/scorer.py for the gpt-5-family kwargs it needs
     embedding_model: str = "text-embedding-3-small"
     scoring_prompt_file: str = "prompts/scoring_prompt.txt"
     content_gen_prompt_file: str = "prompts/content_gen_prompt.txt"

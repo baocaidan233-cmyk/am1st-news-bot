@@ -30,7 +30,8 @@ redis:
   ttl_seconds: 864000  # 10 days
 
 openai:
-  chat_model: "gpt-4o-mini"
+  chat_model: "gpt-4o-mini"  # Writer + PriorityRanker — kept 4o-mini, see core/config.py comment
+  scoring_model: "gpt-5-nano"  # Scorer only — ~2.4x cheaper, verified 2026-08-14 (see agents/scorer.py)
   embedding_model: "text-embedding-3-small"
   scoring_prompt_file: "prompts/scoring_prompt.txt"
   content_gen_prompt_file: "prompts/content_gen_prompt.txt"

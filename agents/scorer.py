@@ -22,26 +22,46 @@ class ScoreOutput(BaseModel):
 class Scorer:
     """AI relevancy scoring — same prompt/role/theme list as the original
     AM1ST n8n workflow's Scoring node, ported verbatim (prompts/scoring_prompt.txt).
-    gpt-4o-mini only, per standing model-tier rule — no secondary Gemini
-    autofix model; a single retry with the parse error appended does the
-    same job the original's autoFix/second-model fallback did."""
+    On gpt-5-nano (config.openai.scoring_model), not the chat_model Writer/
+    PriorityRanker use — switched 2026-08-14 since this call is pure numeric
+    triage (never user-facing prose), and the ~2.4x real cost saving is worth
+    taking here specifically. No secondary Gemini autofix model; a single
+    retry with the parse error appended does the same job the original's
+    autoFix/second-model fallback did.
+
+    gpt-5-nano is a reasoning model — two real, empirically-found quirks
+    that don't apply to gpt-4o-mini:
+    - It rejects `temperature`/`max_tokens`; needs `max_completion_tokens`.
+    - Without `reasoning_effort="minimal"`, it can burn the entire
+      max_completion_tokens budget on invisible reasoning tokens (still
+      billed at the output rate) and return EMPTY content — verified
+      2026-08-14: with the default reasoning effort and this budget, the
+      scoring call came back with content=None. `minimal` fixed it and
+      also made the real per-call cost cheaper than gpt-4o-mini, not more
+      expensive (default effort's hidden reasoning tokens made a "cheaper"
+      model cost MORE per call)."""
 
     def __init__(self, config: AppConfig) -> None:
         self._client = create_openai_client(config)
-        self._model = config.openai.chat_model
+        self._model = config.openai.scoring_model
         self._system_prompt = Path(config.openai.scoring_prompt_file).read_text(encoding="utf-8")
 
     async def _call(self, user_message: str) -> str:
-        resp = await self._client.chat.completions.create(
+        kwargs = dict(
             model=self._model,
-            temperature=0.3,
-            max_tokens=500,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": self._system_prompt},
                 {"role": "user", "content": user_message},
             ],
         )
+        if self._model.startswith("gpt-5"):
+            kwargs["max_completion_tokens"] = 500
+            kwargs["reasoning_effort"] = "minimal"
+        else:
+            kwargs["temperature"] = 0.3
+            kwargs["max_tokens"] = 500
+        resp = await self._client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content or ""
 
     async def score(self, candidate: Candidate) -> ScoreOutput | None:
