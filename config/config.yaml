@@ -48,6 +48,10 @@ entity_verifier:
   same_event_prompt_file: "prompts/same_event_prompt.txt"
   update_subtype_prompt_file: "prompts/update_subtype_prompt.txt"
   log_path: "logs/event_identity_decisions.jsonl"
+  top_k: 5  # verify up to this many historical event candidates, not just the top-1 cosine match — see core/config.py
+  subtype_restatement_weight: 0.2
+  subtype_corroboration_weight: 1.0
+  subtype_core_update_weight: 1.5
 
 heat:
   related_threshold: 0.6      # cosine floor for "same event, different source" — below dedup.semantic_threshold

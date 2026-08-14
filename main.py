@@ -209,69 +209,115 @@ async def run_cycle(
 
     # --- Layer 3: per-cluster event-store PREVIEW (read-only) + per-candidate
     # cross-cycle Qdrant dedup (vs title+description written in the last 72h) ---
+    # 2026-08-14 P0 redesign (event-identity research memo — see
+    # project memory) — three changes from the original single-Top-1 design:
+    #   1. Walks up to entity_verifier.top_k historical event candidates
+    #      (cosine-descending), not just the single most-similar one — the
+    #      true match can rank #2+ if the top-ranked candidate is a
+    #      coincidentally-closer but actually-unrelated event (see
+    #      EventStore.peek_top_k()'s docstring). Stops at the first
+    #      accepted SAME_OCCURRENCE; a rejected candidate no longer ends
+    #      the search.
+    #   2. Every candidate resolves to one of three verdicts —
+    #      SAME_OCCURRENCE (accept, stop), RELATED_DIFFERENT_EVENT
+    #      (entity-related but a distinct action, e.g. "condemns the
+    #      launch" vs the launch itself — recorded as a breadcrumb, keep
+    #      walking), UNRELATED (zero entity overlap, no breadcrumb, keep
+    #      walking) — this is what the old NO_OVERLAP/AMBIGUOUS-LLM-
+    #      DIFFERENT split already did implicitly, just now against
+    #      multiple candidates and explicitly labeled as such in the log.
+    #   3. Once SAME_OCCURRENCE is accepted, EventVerifier.classify_subtype()
+    #      (existed since 2026-08-09, never actually called before this)
+    #      weights how much this cluster's corroboration should move the
+    #      matched event's heat_score — a real new fact (CORE_UPDATE)
+    #      moves it more than an outlet just repeating yesterday's line
+    #      (RESTATEMENT). Real added cost: one extra small LLM call per
+    #      accepted match, including the previously-free COMPATIBLE/
+    #      FAIL_OPEN rule-tier resolutions — deliberate, since heat
+    #      weighting should apply uniformly regardless of which tier
+    #      accepted the match. Does NOT touch canonical_title/
+    #      canonical_summary/timeline state — those stay seed-only/never-
+    #      rewritten per the user's earlier explicit call (see
+    #      EventStore.commit()'s docstring); this only reweights heat.
+    subtype_weights = {
+        "CORE_UPDATE": config.entity_verifier.subtype_core_update_weight,
+        "CORROBORATION": config.entity_verifier.subtype_corroboration_weight,
+        "RESTATEMENT": config.entity_verifier.subtype_restatement_weight,
+    }
     cluster_peeks: list[dict | None] = []
-    # Parallel to cluster_peeks — set only when a DIFFERENT_EVENT verdict
-    # came from the AMBIGUOUS/LLM path (shared entities existed, cosine
-    # matched, but the action/actor turned out distinct — e.g. "condemns
-    # the launch" vs "the launch" itself). That is precisely the kind of
-    # link a future storyline layer needs (see 新闻事件身份更新框架.md's
-    # "new action = new event, but same storyline" principle) — NOT stored
-    # for a NO_OVERLAP verdict, since that means zero entity relation to
-    # begin with and is more likely an unrelated cosine false-positive
-    # (recurring event type) than a real storyline neighbor. This does NOT
-    # build storyline grouping itself — it only keeps the breadcrumb so
-    # that work doesn't have to be reconstructed from scratch later.
-    cluster_related_links: list[dict | None] = []
+    # Parallel to cluster_peeks — every RELATED_DIFFERENT_EVENT candidate
+    # rejected while walking the Top-K list for this cluster (0, 1, or
+    # several), not just one. That is precisely the kind of link a future
+    # storyline layer needs (see 新闻事件身份更新框架.md's "new action = new
+    # event, but same storyline" principle) — NOT stored for an UNRELATED
+    # verdict, since zero entity relation is more likely an unrelated
+    # cosine false-positive (recurring event type) than a real storyline
+    # neighbor. This does NOT build storyline grouping itself — it only
+    # keeps the breadcrumbs so that work doesn't have to be reconstructed
+    # from scratch later.
+    cluster_related_links: list[list[dict]] = []
+    cluster_heat_multipliers: list[float] = []
     scoring_candidates = []  # list of (Candidate, embedding, cluster_idx)
     for cluster_idx, members in enumerate(cluster_members):
         if not members:
             cluster_peeks.append(None)
-            cluster_related_links.append(None)
+            cluster_related_links.append([])
+            cluster_heat_multipliers.append(1.0)
             continue
-        matched = await event_store.peek(members[0][1])
-        related_link = None
+
+        cluster_text = f"{members[0][0].title}\n{members[0][0].description}"
+        new_tokens = entity_tokens(cluster_text)
+        event_candidates = await event_store.peek_top_k(members[0][1], config.entity_verifier.top_k)
 
         # Entity-identity second opinion (2026-08-09, core/event_identity.py)
-        # — cosine matching this cluster to `matched` only means "similar
-        # enough to check further," not "same real-world event" (see
+        # — cosine matching a candidate event only means "similar enough to
+        # check further," not "same real-world event" (see
         # project_am1st_migration memory's 2026-08-09 "event identity"
         # design note — validated on real historical am1st_events data
         # before this was written: rule tier alone resolves ~2/3 of these,
-        # the LLM tier corrects roughly half of what it sees). Runs before
-        # the already-published guard below so a DIFFERENT_EVENT verdict
-        # makes this cluster start its own fresh event rather than being
-        # folded into (or dropped against) the wrong one. Deliberately not
-        # perfect — a known, accepted residual miss rate, not chased with
-        # more entity-rarity rules; every rule-tier/LLM verdict gets logged
-        # so misses become future training data instead of recurring
-        # silently forever.
-        if matched is not None:
-            cluster_text = f"{members[0][0].title}\n{members[0][0].description}"
-            new_tokens = entity_tokens(cluster_text)
-            rule_verdict = await verify_compatibility(config, matched, new_tokens, hub_index)
+        # the LLM tier corrects roughly half of what it sees). Deliberately
+        # not perfect — a known, accepted residual miss rate, not chased
+        # with more entity-rarity rules; every rule-tier/LLM verdict gets
+        # logged so misses become future training data instead of
+        # recurring silently forever.
+        matched = None
+        heat_multiplier = 1.0
+        related_links: list[dict] = []
+        for candidate in event_candidates:
+            rule_verdict = await verify_compatibility(config, candidate, new_tokens, hub_index)
             log_record = {
-                "event_id": matched.get("event_id"),
-                "cosine_score": matched.get("_score"),
+                "event_id": candidate.get("event_id"),
+                "cosine_score": candidate.get("_score"),
                 "rule_verdict": rule_verdict,
                 "candidate_url": members[0][0].url,
                 "candidate_text": cluster_text,
-                "matched_representative_text": matched.get("representative_text", ""),
+                "matched_representative_text": candidate.get("representative_text", ""),
             }
             if rule_verdict == "NO_OVERLAP":
-                logger.info("run_cycle: cluster %d — entity verifier says DIFFERENT_EVENT (rule tier), starting a fresh event", cluster_idx)
-                log_decision(config, {**log_record, "final_verdict": "DIFFERENT_EVENT"})
-                matched = None
-            elif rule_verdict == "AMBIGUOUS":
-                same, llm_raw = await event_verifier.same_event(matched.get("representative_text", ""), cluster_text)
-                log_decision(config, {**log_record, "llm_same_event_raw": llm_raw, "final_verdict": "SAME_EVENT" if same else "DIFFERENT_EVENT"})
+                logger.info("run_cycle: cluster %d — candidate event %s is UNRELATED (rule tier), trying next candidate", cluster_idx, candidate.get("event_id"))
+                log_decision(config, {**log_record, "final_verdict": "UNRELATED"})
+                continue
+            if rule_verdict == "AMBIGUOUS":
+                same, llm_raw = await event_verifier.same_event(candidate.get("representative_text", ""), cluster_text)
+                log_decision(config, {**log_record, "llm_same_event_raw": llm_raw, "final_verdict": "SAME_OCCURRENCE" if same else "RELATED_DIFFERENT_EVENT"})
                 if not same:
-                    logger.info("run_cycle: cluster %d — entity verifier says DIFFERENT_EVENT (LLM tier), starting a fresh event", cluster_idx)
-                    related_link = {"event_id": matched.get("event_id"), "cosine_score": matched.get("_score")}
-                    matched = None
-            # COMPATIBLE / FAIL_OPEN: trust the cosine match as-is — a confident rule-tier outcome isn't worth an LLM call just to log it too
+                    logger.info("run_cycle: cluster %d — candidate event %s is RELATED_DIFFERENT_EVENT (LLM tier), trying next candidate", cluster_idx, candidate.get("event_id"))
+                    related_links.append({"event_id": candidate.get("event_id"), "cosine_score": candidate.get("_score")})
+                    continue
+                matched = candidate
+            else:
+                # COMPATIBLE / FAIL_OPEN: trust the cosine match as-is — a confident rule-tier outcome isn't worth an LLM call just to log it too
+                log_decision(config, {**log_record, "final_verdict": "SAME_OCCURRENCE"})
+                matched = candidate
+
+            subtype, subtype_raw = await event_verifier.classify_subtype(candidate.get("representative_text", ""), cluster_text)
+            heat_multiplier = subtype_weights.get(subtype, 1.0)  # unparseable/unexpected subtype -> plain corroboration weight (fail open)
+            log_decision(config, {**log_record, "subtype": subtype, "subtype_raw": subtype_raw, "heat_multiplier": heat_multiplier})
+            break
 
         cluster_peeks.append(matched)
-        cluster_related_links.append(related_link)
+        cluster_related_links.append(related_links)
+        cluster_heat_multipliers.append(heat_multiplier)
 
         # Already-published guard (2026-08-07) — if this cluster is a
         # near-verbatim rehash (>= dedup.semantic_threshold, the same bar
@@ -292,7 +338,7 @@ async def run_cycle(
 
         cluster = clusters[cluster_idx]
         preview_heat, preview_first_seen = event_store.preview_heat(
-            matched, cluster["sources"], cluster["earliest_source"], cluster["earliest_unix"],
+            matched, cluster["sources"], cluster["earliest_source"], cluster["earliest_unix"], heat_multiplier,
         )
         preview_first_seen_dt = datetime.fromtimestamp(preview_first_seen, tz=timezone.utc)
 
@@ -365,8 +411,9 @@ async def run_cycle(
             cluster["earliest_unix"],
             representative=(rep_embedding, rep_c.source_name, int(rep_c.published_at.timestamp()), rep_text, entity_tokens(rep_text), rep_c.url),
             extra_points=extra_points,
-            related_link=cluster_related_links[cluster_idx],
+            related_links=cluster_related_links[cluster_idx],
             seed_frame=seed_frame,
+            heat_multiplier=cluster_heat_multipliers[cluster_idx],
         )
         await hub_index.bump(event_id, core_entities)
         first_seen_dt = datetime.fromtimestamp(first_seen_unix, tz=timezone.utc)

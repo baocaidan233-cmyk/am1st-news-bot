@@ -6,9 +6,14 @@ TEXT B (already confirmed to be the same real-world occurrence as A):
 
 Classify B relative to A as exactly one of:
 CORE_UPDATE - B adds a fact, number, decision, or status not already in A.
-DOWNSTREAM_REACTION - B is opinion/reaction/commentary about A's facts, no new fact.
+CORROBORATION - B is an independent source confirming A's same facts, no new fact.
 RESTATEMENT - B repeats A's same fact(s), just different wording/outlet/language.
 
+Note: this is only ever asked after B has already been confirmed to be the
+SAME occurrence as A, not merely related to it — an opinion, reaction, or a
+different actor's own separate response to A is a DIFFERENT event, not a
+subtype of this one, and should never reach this step.
+
 Answer in exactly this format:
-SUBTYPE: CORE_UPDATE or DOWNSTREAM_REACTION or RESTATEMENT
+SUBTYPE: CORE_UPDATE or CORROBORATION or RESTATEMENT
 REASON: one short sentence

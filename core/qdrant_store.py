@@ -289,8 +289,66 @@ class EventStore:
             logger.exception("EventStore: peek query failed, treating as no match")
         return None
 
+    async def peek_top_k(self, embedding: list[float], k: int) -> list[dict]:
+        """Read-only, like peek() — but returns up to `k` distinct candidate
+        events (by cosine descending, each ≥ heat.related_threshold, within
+        heat.window_hours) instead of trusting the single most-similar one.
+        Added 2026-08-14 (P0 item from the event-identity research memo,
+        "难点五"): the true match isn't guaranteed to be Top-1 — a
+        coincidentally-closer but actually-unrelated event can outrank the
+        real match, and peek()'s old limit=1 design gave main.py no way to
+        even see, let alone check, anything past that first (possibly
+        wrong) candidate. Caller (main.py's Layer 3) should walk this list
+        in order and verify each with the same rule/LLM tiers as before,
+        stopping at the first SAME_OCCURRENCE — not assume rank 0 is right.
+
+        Only used by main.py's multi-candidate verification flow — the
+        simpler existing peek() (Top-1) stays as-is for main_publish.py's
+        mark_published() check, which just needs "does this map to a
+        tracked event at all," not a full verification walk.
+
+        Over-fetches raw points (k*4) and dedupes to distinct event_ids,
+        keeping each event's highest-scoring point — necessary because an
+        event can have multiple representative points (see class
+        docstring), so a naive top-k point query could return several
+        points that all belong to the same one or two events."""
+        if self._client is None:
+            return []
+        cutoff = time.time() - self._window_seconds
+        try:
+            result = await self._client.query_points(
+                collection_name=self._collection,
+                query=embedding,
+                limit=k * 4,
+                query_filter=Filter(must=[FieldCondition(key="last_updated_at", range=Range(gte=cutoff))]),
+                with_payload=True,
+            )
+        except Exception:
+            logger.exception("EventStore: peek_top_k query failed, treating as no candidates")
+            return []
+        seen_event_ids: set[str] = set()
+        candidates: list[dict] = []
+        for point in result.points:
+            if point.score < self._related_threshold:
+                break  # Qdrant returns points sorted by score descending — nothing after this clears the floor either
+            payload = dict(point.payload or {})
+            event_id = payload.get("event_id")
+            if event_id in seen_event_ids:
+                continue  # keep only the first (highest-scoring) point seen per event
+            seen_event_ids.add(event_id)
+            payload["_score"] = point.score
+            candidates.append(payload)
+            if len(candidates) >= k:
+                break
+        return candidates
+
     def preview_heat(
-        self, matched: dict | None, sources: set[str], earliest_source: str, earliest_published_at_unix: int,
+        self,
+        matched: dict | None,
+        sources: set[str],
+        earliest_source: str,
+        earliest_published_at_unix: int,
+        heat_multiplier: float = 1.0,
     ) -> tuple[float, int]:
         """Pure computation, no I/O — shared by main.py's pre-scoring
         preview (fed into the scoring prompt) and commit()'s final write,
@@ -309,12 +367,23 @@ class EventStore:
         corroboration does). Picking a fixed, deterministic source for that
         baseline matters — iterating a plain set in arbitrary order would
         make the total heat_score depend on hash order, not on anything
-        meaningful."""
+        meaningful.
+
+        `heat_multiplier` (2026-08-14, P0 subtype-weighted heat) — scales
+        only the INCREMENTAL contribution from this cluster's new sources
+        (never the brand-new-event 1.0 baseline, which has no "existing
+        event" to be a subtype of). Caller (main.py) sets this from
+        EventVerifier.classify_subtype() — RESTATEMENT barely moves heat,
+        CORE_UPDATE moves it more than plain CORROBORATION. Defaults to
+        1.0 (today's unweighted behavior) when the caller has no subtype
+        opinion, e.g. matched is None."""
         if matched is not None:
             existing_sources = set(matched.get("sources", []))
             heat = matched.get("heat_score", 1.0)
+            delta = 0.0
             for s in sources - existing_sources:
-                heat += self._major_outlet_weight if s in self._major_outlets else 1.0
+                delta += self._major_outlet_weight if s in self._major_outlets else 1.0
+            heat += delta * heat_multiplier
             first_seen = min(matched.get("first_seen_at", earliest_published_at_unix), earliest_published_at_unix)
             return heat, first_seen
 
@@ -331,8 +400,9 @@ class EventStore:
         earliest_published_at_unix: int,
         representative: tuple[list[float], str, int, str, set[str], str],
         extra_points: list[tuple[list[float], str, int, str, set[str], str]],
-        related_link: dict | None = None,
+        related_links: list[dict] | None = None,
         seed_frame: dict | None = None,
+        heat_multiplier: float = 1.0,
     ) -> tuple[float, int, str, set[str]]:
         """The actual write — called AFTER scoring, and only for a local
         cluster where at least one member cleared the score gate (see
@@ -354,19 +424,21 @@ class EventStore:
         any of their phrasings, not just the first one (mitigates
         fragmentation/drift, see class docstring).
 
-        `related_link` (2026-08-10) — only passed when `matched` is None
-        BECAUSE the entity verifier's AMBIGUOUS/LLM path just ruled
-        DIFFERENT_EVENT against some other event (shared/hub entities,
-        cosine matched, but a distinct action — e.g. "condemns the launch"
-        vs the launch itself): `{"event_id": ..., "cosine_score": ...}` of
-        that rejected match. Persisted once, at this new event's creation,
-        as a seed for storyline linking later — deliberately NOT recorded
-        for a NO_OVERLAP rejection, since zero entity relation is more
-        likely an unrelated cosine false-positive than a real storyline
-        neighbor. This does not itself group events into a storyline —
-        that needs its own, separately-thresholded pass (main.py's
-        2026-08-10 comment) — it only keeps the link from being silently
-        discarded before that pass exists.
+        `related_links` (2026-08-10, plural since 2026-08-14's Top-K
+        redesign) — only passed when `matched` is None BECAUSE the entity
+        verifier rejected one or more OTHER candidate events as
+        RELATED_DIFFERENT_EVENT while walking main.py's Top-K list (shared/
+        hub entities, cosine matched, but a distinct action — e.g.
+        "condemns the launch" vs the launch itself): a list of
+        `{"event_id": ..., "cosine_score": ...}`, one per rejected
+        candidate. Persisted once, at this new event's creation, as a seed
+        for storyline linking later — deliberately NOT recorded for a
+        NO_OVERLAP rejection, since zero entity relation is more likely an
+        unrelated cosine false-positive than a real storyline neighbor.
+        This does not itself group events into a storyline — that needs
+        its own, separately-thresholded pass (main.py's 2026-08-10 comment)
+        — it only keeps the links from being silently discarded before
+        that pass exists.
 
         `seed_frame` (2026-08-10) — core/event_identity.extract_event_frame()
         run on the representative's own title+description, always passed
@@ -377,12 +449,16 @@ class EventStore:
         seed_entities. Deliberately not LLM-generated — see the class
         docstring's payload note on why.
 
+        `heat_multiplier` (2026-08-14) — see preview_heat()'s docstring;
+        passed straight through so commit()'s final heat_score exactly
+        matches whatever preview_heat() returned earlier for this cluster.
+
         Returns (heat_score, first_seen_at_unix, event_id, core_entities) —
         heat_score/first_seen_at_unix should exactly equal whatever
         preview_heat() returned earlier for this same cluster; event_id and
         core_entities (core/event_identity.core_entities_of() on the just-
         written payload) are for the caller to pass to HubIndex.bump()."""
-        heat, first_seen = self.preview_heat(matched, sources, earliest_source, earliest_published_at_unix)
+        heat, first_seen = self.preview_heat(matched, sources, earliest_source, earliest_published_at_unix, heat_multiplier)
         now = int(time.time())
         event_id = matched.get("event_id") if matched is not None else str(uuid.uuid4())
 
@@ -396,7 +472,7 @@ class EventStore:
         related_event_ids = (
             list(matched.get("related_event_ids", []))
             if matched is not None
-            else ([{**related_link, "linked_at": now}] if related_link else [])
+            else [{**link, "linked_at": now} for link in (related_links or [])]
         )
         frame = seed_frame or {}
         canonical_title = matched.get("canonical_title", "") if matched is not None else frame.get("canonical_title", "")

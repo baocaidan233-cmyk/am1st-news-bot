@@ -124,6 +124,31 @@ class EntityVerifierConfig(BaseModel):
     update_subtype_prompt_file: str = "prompts/update_subtype_prompt.txt"
     log_path: str = "logs/event_identity_decisions.jsonl"
 
+    # Top-K event-candidate verification (2026-08-14 P0 redesign, per the
+    # research memo's "难点五" — the single most cosine-similar historical
+    # event isn't guaranteed to be the true match; a real match can rank
+    # #2+ if the top-ranked candidate is a coincidentally-closer but
+    # actually-unrelated event). main.py now walks up to top_k candidates
+    # in cosine-descending order, verifying each with the same rule/LLM
+    # tiers as before, and only creates a new event once every candidate
+    # is rejected (NO_OVERLAP or entity-verifier DIFFERENT_EVENT) — not
+    # after just the first one.
+    top_k: int = 5
+
+    # Subtype-weighted heat (2026-08-14 P0 — wires up EventVerifier.
+    # classify_subtype(), which existed but was never actually called by
+    # main.py before this). Applied as a multiplier on a matched cluster's
+    # incremental heat contribution (never on a brand-new event's 1.0
+    # baseline) — a real new development should move the needle more than
+    # an outlet just repeating yesterday's line in different words. Not
+    # applied to canonical_title/canonical_summary/timeline state — those
+    # stay seed-only/never-rewritten per the user's earlier explicit call
+    # (see EventStore.commit()'s docstring); this redesign only touches
+    # heat weighting, nothing else.
+    subtype_restatement_weight: float = 0.2   # repeats an already-known fact, different wording/outlet — barely moves heat
+    subtype_corroboration_weight: float = 1.0  # independent new source confirming the same facts — today's existing behavior, unchanged
+    subtype_core_update_weight: float = 1.5    # genuine new fact/decision/status — weighted above plain corroboration
+
 
 class HeatConfig(BaseModel):
     """Corroboration/heat scoring — event aggregation (redesigned 2026-08-06,
