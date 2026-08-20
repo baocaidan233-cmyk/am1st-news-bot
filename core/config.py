@@ -149,6 +149,23 @@ class EntityVerifierConfig(BaseModel):
     subtype_corroboration_weight: float = 1.0  # independent new source confirming the same facts — today's existing behavior, unchanged
     subtype_core_update_weight: float = 1.5    # genuine new fact/decision/status — weighted above plain corroboration
 
+    # IDF-weighted keyword overlap (2026-08-20) — a second, entity-
+    # independent lexical signal for verify_compatibility()'s FAIL_OPEN
+    # branch (new_tokens from NER came back empty — very short text, or a
+    # genuine entity-extraction miss). That branch previously just blindly
+    # trusted whatever cosine match it was handed with zero independent
+    # check. Ported from North_Korea_News's core/hashing.py (commit
+    # 1caea63) — same IDF-over-a-corpus math, no LLM call, no new database
+    # (the corpus is this cycle's own batch of candidate titles+
+    # descriptions, built in-memory in main.py, not a persisted store).
+    # NOTE: this threshold is carried over from North_Korea_News's own
+    # 642-real-item validation, NOT yet independently validated against
+    # AM1ST's own historical am1st_events data the way every other
+    # threshold in this class was (see the class docstring) — treat as a
+    # starting point, revisit once real am1st decisions have been logged
+    # and reviewed.
+    weighted_overlap_threshold: float = 0.15
+
 
 class HeatConfig(BaseModel):
     """Corroboration/heat scoring — event aggregation (redesigned 2026-08-06,

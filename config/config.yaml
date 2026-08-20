@@ -52,6 +52,7 @@ entity_verifier:
   subtype_restatement_weight: 0.2
   subtype_corroboration_weight: 1.0
   subtype_core_update_weight: 1.5
+  weighted_overlap_threshold: 0.15  # IDF-weighted keyword overlap floor for the FAIL_OPEN branch (2026-08-20, ported from North_Korea_News — not yet independently validated on am1st_events data)
 
 heat:
   related_threshold: 0.6      # cosine floor for "same event, different source" — below dedup.semantic_threshold

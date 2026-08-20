@@ -25,7 +25,10 @@ from pathlib import Path
 import redis.asyncio as redis
 import spacy
 
+from collections import Counter
+
 from core.config import AppConfig
+from core.hashing import tokenize, weighted_overlap
 from core.language import is_english
 from core.openai_client import create_openai_client
 
@@ -314,16 +317,45 @@ def core_entities_of(matched: dict) -> set[str]:
     return seed | recurring
 
 
-async def verify_compatibility(config: AppConfig, matched: dict, new_tokens: set[str], hub_index: HubIndex) -> str:
-    """Rule tier only — no LLM, no article text beyond new_tokens. Returns:
+async def verify_compatibility(
+    config: AppConfig,
+    matched: dict,
+    new_tokens: set[str],
+    hub_index: HubIndex,
+    new_text: str = "",
+    doc_freq: Counter | None = None,
+    doc_count: int = 0,
+) -> str:
+    """Rule tier only — no LLM. Returns:
       NO_OVERLAP  — confident DIFFERENT_EVENT, no LLM needed
       COMPATIBLE  — confident SAME_EVENT, no LLM needed
-      AMBIGUOUS   — every shared token is itself a known multi-event hub; needs the LLM
-      FAIL_OPEN   — new_tokens is empty (nothing extracted, e.g. very short text) — trust
-                    cosine's own match rather than treat "no evidence" as evidence of difference
+      AMBIGUOUS   — needs the LLM (either every shared entity token is a known
+                    multi-event hub, or new_tokens was empty and the lexical
+                    fallback below couldn't confirm a match either)
+      FAIL_OPEN   — new_tokens is empty AND no lexical fallback was available
+                    to this call (doc_freq/new_text not supplied) — trust
+                    cosine's own match, the pre-2026-08-20 behavior, kept only
+                    as a defensive default for callers that don't pass a corpus
+
+    2026-08-20: when new_tokens is empty (NER extracted nothing — very short
+    text, or a genuine extraction miss), this used to blindly trust
+    whatever cosine match it was handed, with zero independent check. Now,
+    if the caller supplies a doc_freq/doc_count corpus (see main.py — built
+    once per cycle from that cycle's own batch, no new database), an
+    IDF-weighted lexical overlap check (core/hashing.py's weighted_overlap,
+    ported from North_Korea_News's real-incident-driven design) gets a say:
+    confirms COMPATIBLE if it agrees, otherwise downgrades to AMBIGUOUS
+    (real LLM check) instead of blind trust. This can only make the
+    zero-entity case MORE scrutinized than before, never less.
     Not designed to be perfect — see EntityVerifierConfig's docstring on
     the accepted residual miss rate."""
     if not new_tokens:
+        rep_text = matched.get("representative_text", "")
+        if doc_freq is not None and new_text and rep_text:
+            overlap = weighted_overlap(tokenize(new_text), tokenize(rep_text), doc_freq, doc_count)
+            if overlap >= config.entity_verifier.weighted_overlap_threshold:
+                return "COMPATIBLE"
+            return "AMBIGUOUS"
         return "FAIL_OPEN"
     core = core_entities_of(matched)
     if not core:

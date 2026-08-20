@@ -55,6 +55,7 @@ import logging
 import random
 import sys
 import time
+from collections import Counter
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -65,7 +66,7 @@ from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex, entity_tokens, extract_event_frame, log_decision, verify_compatibility
-from core.hashing import cosine_similarity
+from core.hashing import cosine_similarity, tokenize
 from core.language import is_english
 from core.notion_candidates import write_candidate
 from core.notion_sources import load_rss_sources
@@ -139,6 +140,21 @@ async def run_cycle(
             backfilled += 1
     if empty_before:
         logger.info("run_cycle: backfilled og:description for %d/%d description-less candidate(s)", backfilled, empty_before)
+
+    # 2026-08-20: this cycle's own batch, tokenized, as an in-memory IDF
+    # corpus for core/event_identity.py's verify_compatibility() lexical
+    # fallback (see that function's docstring) — no new database, just a
+    # Counter built from data already fetched this cycle. Deliberately a
+    # per-cycle snapshot, not a persisted rolling window like
+    # North_Korea_News's 10-day store: this cycle's ~100+ source batch is
+    # already a reasonable sample of "what generic, expected vocabulary
+    # looks like in this domain right now" without needing to query/persist
+    # anything extra.
+    doc_freq: Counter = Counter()
+    batch_tokens = [tokenize(f"{c.title} {c.description}") for c in survivors]
+    for toks in batch_tokens:
+        doc_freq.update(toks)
+    doc_count = len(survivors)
 
     # --- Layer 2: intra-batch semantic CLUSTERING (title+description) ---
     # Groups this batch's own candidates into local clusters instead of a
@@ -284,7 +300,7 @@ async def run_cycle(
         heat_multiplier = 1.0
         related_links: list[dict] = []
         for candidate in event_candidates:
-            rule_verdict = await verify_compatibility(config, candidate, new_tokens, hub_index)
+            rule_verdict = await verify_compatibility(config, candidate, new_tokens, hub_index, cluster_text, doc_freq, doc_count)
             log_record = {
                 "event_id": candidate.get("event_id"),
                 "cosine_score": candidate.get("_score"),
