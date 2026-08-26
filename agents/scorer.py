@@ -22,12 +22,14 @@ class ScoreOutput(BaseModel):
 class Scorer:
     """AI relevancy scoring — same prompt/role/theme list as the original
     AM1ST n8n workflow's Scoring node, ported verbatim (prompts/scoring_prompt.txt).
-    On gpt-5-nano (config.openai.scoring_model), not the chat_model Writer/
-    PriorityRanker use — switched 2026-08-14 since this call is pure numeric
-    triage (never user-facing prose), and the ~2.4x real cost saving is worth
-    taking here specifically. No secondary Gemini autofix model; a single
-    retry with the parse error appended does the same job the original's
-    autoFix/second-model fallback did.
+    On gpt-5-nano (config.openai.nano_model), not the chat_model Writer
+    uses — switched 2026-08-14 since this call is pure numeric triage
+    (never user-facing prose), and the ~2.4x real cost saving is worth
+    taking here specifically (2026-08-26: PriorityRanker and EventVerifier
+    moved onto this same nano_model for the same reason, see core/config.py).
+    No secondary Gemini autofix model; a single retry with the parse error
+    appended does the same job the original's autoFix/second-model fallback
+    did.
 
     gpt-5-nano is a reasoning model — two real, empirically-found quirks
     that don't apply to gpt-4o-mini:
@@ -43,7 +45,7 @@ class Scorer:
 
     def __init__(self, config: AppConfig) -> None:
         self._client = create_openai_client(config)
-        self._model = config.openai.scoring_model
+        self._model = config.openai.nano_model
         self._system_prompt = Path(config.openai.scoring_prompt_file).read_text(encoding="utf-8")
 
     async def _call(self, user_message: str) -> str:

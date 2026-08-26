@@ -28,7 +28,13 @@ class PriorityRanker:
     picked — same prompt/rubric as the original n8n "LLM Rank Stories" node
     (prompts/priority_rank_prompt.txt), ranking on post_content itself
     (not title+description, which is what the ingestion-side llm_score used).
-    gpt-4o-mini, per standing model-tier rule.
+
+    On gpt-5-nano (config.openai.nano_model), not chat_model — switched
+    2026-08-26, same reasoning as agents/scorer.py's 2026-08-14 move: this
+    call assigns a 1-10 priority_score, it never writes user-facing prose.
+    Live-tested against the real API before switching (synthetic 2-story
+    batch, reasoning_effort="minimal") — returned a clean JSON array, 0
+    reasoning tokens, well inside the existing 500-token budget.
 
     Since 2026-08-06 also passes heat_score and an event_first_seen_at-based
     hours_old (see _call below) — the corroboration/heat signal computed at
@@ -36,7 +42,7 @@ class PriorityRanker:
 
     def __init__(self, config: AppConfig) -> None:
         self._client = create_openai_client(config)
-        self._model = config.openai.chat_model
+        self._model = config.openai.nano_model
         self._system_prompt = Path(config.publish.priority_rank_prompt_file).read_text(encoding="utf-8")
 
     async def _call(self, batch: list[PublishCandidate], trending_headlines: list[str]) -> str:
@@ -71,15 +77,20 @@ class PriorityRanker:
             },
             ensure_ascii=False,
         )
-        resp = await self._client.chat.completions.create(
+        kwargs = dict(
             model=self._model,
-            temperature=0.2,
-            max_tokens=500,
             messages=[
                 {"role": "system", "content": self._system_prompt},
                 {"role": "user", "content": user_message},
             ],
         )
+        if self._model.startswith("gpt-5"):
+            kwargs["max_completion_tokens"] = 500
+            kwargs["reasoning_effort"] = "minimal"
+        else:
+            kwargs["temperature"] = 0.2
+            kwargs["max_tokens"] = 500
+        resp = await self._client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content or ""
 
     @staticmethod

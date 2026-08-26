@@ -383,21 +383,32 @@ class EventVerifier:
     deliberately SEPARATE second call, made only when same_event() said
     True — see EntityVerifierConfig's docstring for the ablation test
     (2026-08-09) that found asking both in one prompt biases the model
-    toward SAME_EVENT on ~30% of real ambiguous pairs."""
+    toward SAME_EVENT on ~30% of real ambiguous pairs.
+
+    On gpt-5-nano (config.openai.nano_model), not chat_model — switched
+    2026-08-26, same reasoning as agents/scorer.py's 2026-08-14 move: both
+    calls return a short structured verdict, never user-facing prose. Both
+    prompts were live-tested against the real API before switching
+    (reasoning_effort="minimal") — same_event_prompt.txt came back at ~70
+    completion tokens, update_subtype_prompt.txt at ~34, both with 0
+    reasoning tokens — comfortably inside the existing 80/60-token budgets
+    below, no increase needed."""
 
     def __init__(self, config: AppConfig) -> None:
         self._client = create_openai_client(config)
-        self._model = config.openai.chat_model
+        self._model = config.openai.nano_model
         self._same_event_prompt = Path(config.entity_verifier.same_event_prompt_file).read_text(encoding="utf-8")
         self._subtype_prompt = Path(config.entity_verifier.update_subtype_prompt_file).read_text(encoding="utf-8")
 
     async def _ask(self, prompt: str, max_tokens: int) -> str:
-        resp = await self._client.chat.completions.create(
-            model=self._model,
-            temperature=0,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        kwargs = dict(model=self._model, messages=[{"role": "user", "content": prompt}])
+        if self._model.startswith("gpt-5"):
+            kwargs["max_completion_tokens"] = max_tokens
+            kwargs["reasoning_effort"] = "minimal"
+        else:
+            kwargs["temperature"] = 0
+            kwargs["max_tokens"] = max_tokens
+        resp = await self._client.chat.completions.create(**kwargs)
         return (resp.choices[0].message.content or "").strip()
 
     @staticmethod
