@@ -22,6 +22,23 @@ Read the article carefully and write **one concise, headline-style news post (un
 
 ---
 
+## OPTIONAL BACKGROUND
+
+The user message may also include a **Background** section — prior
+developments and related events for this same story, pulled from this
+channel's own event-tracking history (not part of the article itself).
+
+- If a Background section is present, you may reference it briefly, only
+  if it helps ground the post (e.g. "...the latest in a monthslong probe"
+  instead of treating the story as if it just started).
+- Never invent, elaborate on, or restate details from Background as if
+  they came from the article — the post's substance must still come from
+  the article body (see the SUBSTANCE REQUIREMENT below).
+- If no Background section is given, ignore this instruction entirely —
+  write exactly as you would otherwise.
+
+---
+
 ## RELEVANCY CHECK
 
 Before writing, confirm the article relates to **America First political themes**, including:

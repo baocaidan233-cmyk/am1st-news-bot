@@ -153,6 +153,7 @@ class EntityVerifierConfig(BaseModel):
     hub_key_prefix: str = "am1st:hub:"  # Redis key namespace for the token/pair historical-hub-count index — separate namespace from redis.key_prefix's URL-hash dedup, same REDIS_URL
     same_event_prompt_file: str = "prompts/same_event_prompt.txt"
     update_subtype_prompt_file: str = "prompts/update_subtype_prompt.txt"
+    related_event_prompt_file: str = "prompts/related_event_prompt.txt"  # EventVerifier.related_event() — see core/event_identity.py
     log_path: str = "logs/event_identity_decisions.jsonl"
 
     # Top-K event-candidate verification (2026-08-14 P0 redesign, per the

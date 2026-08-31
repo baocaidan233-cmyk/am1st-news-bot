@@ -60,6 +60,7 @@ import logging
 import random
 import sys
 import time
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
@@ -81,6 +82,30 @@ from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("main_publish")
+
+
+def _build_background(matched: dict | None) -> str:
+    """Formats a matched event's timeline + related_event_ids (2026-08-31,
+    core/qdrant_store.py's EventStore) into a short plain-text Background
+    for agents/writer.py's Writer.write(context=...) — see that method and
+    prompts/content_gen_prompt.txt's "OPTIONAL BACKGROUND" section for how
+    it's used. Most recent 3 of each, oldest to newest for the timeline
+    (reads as a chronology). Returns "" if there's nothing to say — the
+    caller then omits `context` entirely, reproducing today's behavior."""
+    if not matched:
+        return ""
+    parts = []
+    timeline = matched.get("timeline", [])[-3:]
+    entries = [
+        f"{e.get('summary', '')} ({datetime.fromtimestamp(e['ts'], tz=timezone.utc).strftime('%b %d')})"
+        for e in timeline if e.get("ts") and e.get("summary")
+    ]
+    if entries:
+        parts.append("Prior developments: " + "; ".join(entries) + ".")
+    titles = [r.get("title") for r in matched.get("related_event_ids", [])[-3:] if r.get("title")]
+    if titles:
+        parts.append("Related storylines: " + "; ".join(titles) + ".")
+    return " ".join(parts)
 
 
 async def run_cycle(
@@ -125,7 +150,22 @@ async def run_cycle(
             logger.info("run_cycle: %s dropped — non-English article content", c.url)
             continue
 
-        post_content = await writer.write(c.title, c.content)
+        # Background for the writer (2026-08-31) — peek() against the same
+        # title+description embedding space main.py already uses, so this
+        # is checked against every candidate in the batch (not just the
+        # eventual winner, since the winner isn't known until after
+        # ranking, but content-gen runs on the whole batch) — see
+        # _build_background()'s docstring and agents/writer.py's `context`
+        # param. Fails open to no background on any error, same as every
+        # other best-effort Qdrant read in this codebase.
+        background = ""
+        try:
+            title_desc_embedding = await embedder.embed(f"{c.title}\n{c.description}"[:6000])
+            background = _build_background(await event_store.peek(title_desc_embedding))
+        except Exception:
+            logger.exception("run_cycle: failed to build writer background for %s — continuing without it", c.url)
+
+        post_content = await writer.write(c.title, c.content, context=background)
         if Writer.is_no_comment(post_content):
             logger.info("run_cycle: %s — writer returned No comment, dropped from batch", c.url)
             continue

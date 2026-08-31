@@ -35,8 +35,18 @@ class Writer:
         self._model = config.openai.chat_model
         self._system_prompt = Path(config.openai.content_gen_prompt_file).read_text(encoding="utf-8")
 
-    async def write(self, title: str, article: str) -> str:
+    async def write(self, title: str, article: str, context: str = "") -> str:
+        """`context` (2026-08-31) — optional prior-developments/related-
+        events summary for this story, built by main_publish.py from
+        core/qdrant_store.py's EventStore (timeline + related_event_ids on
+        the matched event, if any). Kept as its own labeled section in the
+        USER message, separate from the static system prompt file (see
+        prompts/content_gen_prompt.txt's "OPTIONAL BACKGROUND" section for
+        the model-facing instructions on how to use it) — appended only
+        when non-empty, so omitting it reproduces today's exact behavior."""
         user_message = f"Title:  {title}\n\nArticle: {article}"
+        if context:
+            user_message += f"\n\nBackground: {context}"
         resp = await self._client.chat.completions.create(
             model=self._model,
             messages=[

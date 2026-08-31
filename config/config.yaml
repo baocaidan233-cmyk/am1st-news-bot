@@ -53,6 +53,7 @@ entity_verifier:
   hub_key_prefix: "am1st:hub:"
   same_event_prompt_file: "prompts/same_event_prompt.txt"
   update_subtype_prompt_file: "prompts/update_subtype_prompt.txt"
+  related_event_prompt_file: "prompts/related_event_prompt.txt"
   log_path: "logs/event_identity_decisions.jsonl"
   top_k: 5  # verify up to this many historical event candidates, not just the top-1 cosine match — see core/config.py
   subtype_restatement_weight: 0.2

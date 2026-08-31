@@ -404,6 +404,7 @@ class EventStore:
         seed_frame: dict | None = None,
         heat_multiplier: float = 1.0,
         hot_until: int = 0,
+        timeline_entry: dict | None = None,
     ) -> tuple[float, int, str, set[str], int]:
         """The actual write — called AFTER scoring, and only for a local
         cluster where at least one member cleared the score gate (see
@@ -499,6 +500,20 @@ class EventStore:
         target = matched.get("target", "") if matched is not None else (frame.get("target") or "")
         final_hot_until = max(matched.get("hot_until", 0) if matched is not None else 0, hot_until)
 
+        # Timeline (2026-08-31) — only a genuine new development (caller
+        # passes timeline_entry when EventVerifier.classify_subtype() said
+        # CORE_UPDATE, see main.py) gets appended; a brand-new event starts
+        # with an empty list (the origin article itself isn't "a new
+        # development" of anything). Capped at the most recent 20 entries —
+        # a self-imposed defensive limit (this list is denormalized onto
+        # every point of the event, so an unbounded list isn't free long-
+        # term), not something the design called for; drop the cap if it
+        # turns out unnecessary.
+        timeline = list(matched.get("timeline", [])) if matched is not None else []
+        if timeline_entry is not None:
+            timeline.append(timeline_entry)
+        timeline = timeline[-20:]
+
         shared_payload = {
             "heat_score": heat,
             "first_seen_at": first_seen,
@@ -515,6 +530,7 @@ class EventStore:
             "actor": actor,
             "target": target,
             "hot_until": final_hot_until,
+            "timeline": timeline,
         }
 
         if matched is not None:
@@ -583,6 +599,70 @@ class EventStore:
             )
         except Exception:
             logger.exception("EventStore: failed to mark event %s as published", event_id)
+
+    async def get_by_id(self, event_id: str) -> dict | None:
+        """Read-only, filter-only fetch (scroll(), not a vector query) —
+        translates an event_id (e.g. one HubIndex.token_events() returned)
+        back into that event's current payload, for the cross-event-linking
+        pass (main.py) to hand to EventVerifier.related_event() and to pull
+        a display title from. Returns None if not found or Qdrant isn't
+        configured — fail open, same convention as peek()/peek_top_k()."""
+        if self._client is None:
+            return None
+        try:
+            points, _ = await self._client.scroll(
+                collection_name=self._collection,
+                scroll_filter=Filter(must=[FieldCondition(key="event_id", match=MatchValue(value=event_id))]),
+                limit=1,
+                with_payload=True,
+            )
+        except Exception:
+            logger.exception("EventStore: get_by_id query failed for %s, treating as not found", event_id)
+            return None
+        return dict(points[0].payload or {}) if points else None
+
+    async def link_related_events(self, event_id_a: str, title_a: str, event_id_b: str, title_b: str) -> None:
+        """Cross-event storyline linking (2026-08-31) — a separate,
+        callable-anytime mutation path from commit()'s own related_event_ids
+        (which is only ever set ONCE, at a NEW event's creation, from a
+        cosine-matched-but-rejected candidate during THAT SAME cycle — see
+        commit()'s docstring). This is the other half: it can reach back
+        and update an OLD event that wasn't touched by this cycle's commit
+        at all, which is exactly what "storyline linking, found later, from
+        either side" requires.
+
+        Writes to BOTH sides (two separate set_payload calls) so either
+        event's related_event_ids can be walked to find the other,
+        regardless of which one was the "new" event when the link was
+        found. Skips (no-op) if this exact pair is already linked, so
+        calling this repeatedly across cycles is safe — main.py's caller
+        doesn't need to track what it's already linked itself."""
+        if self._client is None:
+            return
+        a = await self.get_by_id(event_id_a)
+        b = await self.get_by_id(event_id_b)
+        if a is None or b is None:
+            return
+        a_links = list(a.get("related_event_ids", []))
+        b_links = list(b.get("related_event_ids", []))
+        if any(link.get("event_id") == event_id_b for link in a_links):
+            return  # already linked — same check from either side, since both are written together below
+        now = int(time.time())
+        a_links.append({"event_id": event_id_b, "title": title_b, "linked_at": now})
+        b_links.append({"event_id": event_id_a, "title": title_a, "linked_at": now})
+        try:
+            await self._client.set_payload(
+                collection_name=self._collection,
+                payload={"related_event_ids": a_links},
+                points=Filter(must=[FieldCondition(key="event_id", match=MatchValue(value=event_id_a))]),
+            )
+            await self._client.set_payload(
+                collection_name=self._collection,
+                payload={"related_event_ids": b_links},
+                points=Filter(must=[FieldCondition(key="event_id", match=MatchValue(value=event_id_b))]),
+            )
+        except Exception:
+            logger.exception("EventStore: failed to link events %s <-> %s", event_id_a, event_id_b)
 
     async def close(self) -> None:
         if self._client is not None:

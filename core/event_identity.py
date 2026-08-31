@@ -281,6 +281,23 @@ class HubIndex:
             logger.exception("HubIndex: pair_score failed for %s|%s — treating as 0 (fail open)", token_a, token_b)
             return 0
 
+    async def token_events(self, token: str) -> set[str]:
+        """Reverse lookup (2026-08-31) — every distinct event_id this token
+        has been the CORE of, not just the count token_score() already
+        gave. Same underlying Redis SET bump() has always written
+        (`tok:{token}`); this just reads the members instead of SCARD.
+        Used by main.py's cross-event-linking pass to find storyline
+        neighbors for a freshly-committed event: a token specific enough to
+        pass token_score() < hub_event_count_threshold is unlikely to
+        return more than a couple of event_ids here."""
+        if self._client is None:
+            return set()
+        try:
+            return await self._client.smembers(f"{self._prefix}tok:{token}")
+        except Exception:
+            logger.exception("HubIndex: token_events failed for %s — treating as empty (fail open)", token)
+            return set()
+
     async def bump(self, event_id: str, core_tokens: set[str]) -> None:
         """Called once per EventStore.commit() with the event's current
         full core set — safe to call every time across an event's whole
@@ -399,6 +416,7 @@ class EventVerifier:
         self._model = config.openai.nano_model
         self._same_event_prompt = Path(config.entity_verifier.same_event_prompt_file).read_text(encoding="utf-8")
         self._subtype_prompt = Path(config.entity_verifier.update_subtype_prompt_file).read_text(encoding="utf-8")
+        self._related_event_prompt = Path(config.entity_verifier.related_event_prompt_file).read_text(encoding="utf-8")
 
     async def _ask(self, prompt: str, max_tokens: int) -> str:
         kwargs = dict(model=self._model, messages=[{"role": "user", "content": prompt}])
@@ -427,6 +445,16 @@ class EventVerifier:
         raw = await self._ask(self._subtype_prompt.format(a=text_a, b=text_b), max_tokens=60)
         subtype = self._extract_field(raw, "SUBTYPE").upper()
         return subtype, raw
+
+    async def related_event(self, text_a: str, text_b: str) -> tuple[bool, str]:
+        """Cross-event storyline check (2026-08-31) — called only on two
+        events ALREADY confirmed distinct (see main.py's cross-event-
+        linking pass); asks whether B is a genuine follow-up/consequence of
+        A's storyline, not whether they're the same occurrence. See
+        prompts/related_event_prompt.txt."""
+        raw = await self._ask(self._related_event_prompt.format(a=text_a, b=text_b), max_tokens=80)
+        verdict = self._extract_field(raw, "RELATED").upper()
+        return verdict.startswith("YES"), raw
 
 
 def log_decision(config: AppConfig, record: dict) -> None:

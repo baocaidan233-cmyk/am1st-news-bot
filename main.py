@@ -296,6 +296,16 @@ async def run_cycle(
     # hot_until — see that method's docstring for how it then propagates
     # to future corroborating commits on the same event_id automatically).
     cluster_hot_untils: list[int] = []
+    # Parallel lists for the timeline + cross-event-linking pass (2026-08-31,
+    # see core/qdrant_store.py's commit()/link_related_events() docstrings):
+    # cluster_subtypes carries forward classify_subtype()'s raw verdict (was
+    # only used for heat_multiplier before) so the commit loop below can
+    # tell whether this cluster is a genuine CORE_UPDATE worth a timeline
+    # entry; cluster_entity_tokens_list reuses this loop's own new_tokens
+    # (no second NER pass) as the seed set for the post-commit HubIndex
+    # reverse lookup.
+    cluster_subtypes: list[str] = []
+    cluster_entity_tokens_list: list[set[str]] = []
     scoring_candidates = []  # list of (Candidate, embedding, cluster_idx)
     for cluster_idx, members in enumerate(cluster_members):
         if not members:
@@ -303,6 +313,8 @@ async def run_cycle(
             cluster_related_links.append([])
             cluster_heat_multipliers.append(1.0)
             cluster_hot_untils.append(0)
+            cluster_subtypes.append("")
+            cluster_entity_tokens_list.append(set())
             continue
 
         cluster_text = f"{members[0][0].title}\n{members[0][0].description}"
@@ -322,6 +334,7 @@ async def run_cycle(
         # recurring silently forever.
         matched = None
         heat_multiplier = 1.0
+        subtype = ""
         related_links: list[dict] = []
         for candidate in event_candidates:
             rule_verdict = await verify_compatibility(config, candidate, new_tokens, hub_index, cluster_text, doc_freq, doc_count)
@@ -358,6 +371,8 @@ async def run_cycle(
         cluster_peeks.append(matched)
         cluster_related_links.append(related_links)
         cluster_heat_multipliers.append(heat_multiplier)
+        cluster_subtypes.append(subtype)
+        cluster_entity_tokens_list.append(new_tokens)
 
         cluster_hot_until = 0
         if hot_topic_embeddings:
@@ -452,6 +467,20 @@ async def run_cycle(
             "canonical_title": rep_c.title,
             "canonical_summary": rep_c.description or rep_c.title,
         }
+        # Timeline (2026-08-31) — only a genuine new development
+        # (classify_subtype() said CORE_UPDATE — computed earlier in the
+        # peek loop above, purely to reuse the existing call, not an extra
+        # LLM cost) is worth a timeline entry; RESTATEMENT/CORROBORATION
+        # and brand-new events (subtype == "") get None, see
+        # EventStore.commit()'s docstring.
+        timeline_entry = None
+        if cluster_subtypes[cluster_idx] == "CORE_UPDATE":
+            timeline_entry = {
+                "ts": cluster["earliest_unix"],
+                "source": cluster["earliest_source"],
+                "url": rep_c.url,
+                "summary": rep_c.title,
+            }
         heat_score, first_seen_unix, event_id, core_entities, hot_until = await event_store.commit(
             cluster_peeks[cluster_idx],
             cluster["sources"],
@@ -463,10 +492,50 @@ async def run_cycle(
             seed_frame=seed_frame,
             heat_multiplier=cluster_heat_multipliers[cluster_idx],
             hot_until=cluster_hot_untils[cluster_idx],
+            timeline_entry=timeline_entry,
         )
         await hub_index.bump(event_id, core_entities)
         first_seen_dt = datetime.fromtimestamp(first_seen_unix, tz=timezone.utc)
         is_hot = hot_until > int(time.time())
+
+        # Cross-event storyline linking (2026-08-31, core/qdrant_store.py's
+        # EventStore.get_by_id()/link_related_events(), core/event_identity.py's
+        # HubIndex.token_events()) — reverse-lookup this cluster's own
+        # sufficiently-specific entity tokens (same hub_event_count_threshold
+        # bar used elsewhere to mean "specific enough to be identity
+        # evidence") against every OTHER event that token has ever been the
+        # core of. Usually 0-2 candidates, since a token common enough to
+        # return many would already be over the hub threshold and get
+        # skipped. Each candidate gets one LLM call asking whether it's a
+        # genuine storyline follow-up, not just a shared token — a
+        # different question from same_event()'s "is this the same
+        # occurrence" above.
+        this_event_title = (
+            cluster_peeks[cluster_idx].get("canonical_title", "") if cluster_peeks[cluster_idx] is not None else seed_frame["canonical_title"]
+        )
+        candidate_event_ids: set[str] = set()
+        for tok in cluster_entity_tokens_list[cluster_idx]:
+            if await hub_index.token_score(tok) < config.entity_verifier.hub_event_count_threshold:
+                candidate_event_ids |= await hub_index.token_events(tok)
+        candidate_event_ids.discard(event_id)
+        for other_event_id in candidate_event_ids:
+            other = await event_store.get_by_id(other_event_id)
+            if other is None:
+                continue
+            other_text = other.get("representative_text", "") or other.get("canonical_summary", "")
+            related, llm_raw = await event_verifier.related_event(other_text, rep_text)
+            log_decision(
+                config,
+                {
+                    "event_id": event_id, "linked_candidate_event_id": other_event_id,
+                    "llm_related_raw": llm_raw, "final_verdict": "RELATED" if related else "NOT_RELATED",
+                    "candidate_text": rep_text, "matched_representative_text": other_text,
+                },
+            )
+            if related:
+                other_title = other.get("canonical_title", "") or other_text
+                await event_store.link_related_events(event_id, this_event_title, other_event_id, other_title)
+                logger.info("run_cycle: linked event %s <-> %s as related storyline", event_id, other_event_id)
 
         for c, embedding in survivors_in_cluster:
             try:

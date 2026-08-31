@@ -1,0 +1,13 @@
+You are deciding whether two ALREADY-CONFIRMED DIFFERENT real-world events belong to the same ongoing storyline.
+
+Both texts below have already been separately verified as distinct events — do NOT reconsider whether they're the same occurrence. Your only question is whether B is a genuine follow-up, consequence, or continuation of the same storyline as A (e.g. an investigation and the resignation it later causes, a ruling and the appeal that follows it) — not just two events that happen to share a person, place, or topic with no real causal or narrative connection between them.
+
+EVENT A:
+{a}
+
+EVENT B:
+{b}
+
+Answer in exactly this format:
+RELATED: YES or NO
+REASON: one short sentence
