@@ -75,7 +75,7 @@ from agents.writer import Writer
 from core.alerts import AlertNotifier
 from core.config import load_config
 from core.language import is_english
-from core.notion_candidates import mark_send_status, query_eligible_candidates
+from core.notion_candidates import has_unpublished_hot_candidate, mark_send_status, query_eligible_candidates
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
 
@@ -232,7 +232,26 @@ async def main() -> None:
                 logger.exception("run_cycle failed")
             logger.info("run_cycle: cycle took %.1fs", time.monotonic() - started)
             jitter = config.publish.interval_seconds * random.uniform(-0.1, 0.1)
-            await asyncio.sleep(config.publish.interval_seconds + jitter)
+            # Manual hot-topic fast lane (2026-08-31, core/hot_topics.py) —
+            # instead of one flat sleep, wait in fast_poll_seconds chunks and
+            # check in between whether a manually-flagged-hot candidate is
+            # sitting unsent; if so, cut the wait short and run the next
+            # cycle now instead of waiting out the full interval. The check
+            # itself is a cheap, existence-only Notion query (no LLM cost),
+            # so this is safe to run often. Bounded risk if something stays
+            # hot-flagged but never wins (e.g. repeatedly filtered/declined):
+            # worst case is one full cycle (real extraction+writer cost)
+            # every fast_poll_seconds instead of every interval_seconds —
+            # acceptable since it only happens while the user has
+            # deliberately flagged something as breaking, not automatically.
+            remaining = config.publish.interval_seconds + jitter
+            while remaining > 0:
+                chunk = min(config.hot_topics.fast_poll_seconds, remaining)
+                await asyncio.sleep(chunk)
+                remaining -= chunk
+                if remaining > 0 and await has_unpublished_hot_candidate(config):
+                    logger.info("run_cycle: unpublished hot-flagged candidate detected — triggering cycle early")
+                    break
     finally:
         await posted_store.close()
         await event_store.close()

@@ -55,6 +55,7 @@ async def write_candidate(config: AppConfig, item: Candidate) -> bool:
         props.event_first_seen_at: {
             "date": {"start": (item.event_first_seen_at or item.published_at).isoformat()}
         },
+        props.is_hot: {"checkbox": item.is_hot},
     }
     body = {"parent": {"database_id": notion.candidate_db_id}, "properties": properties}
 
@@ -167,6 +168,7 @@ async def query_eligible_candidates(config: AppConfig) -> list[PublishCandidate]
                             created_at=row.get("created_time"),
                             heat_score=_plain_text(p.get(props.heat_score, {})) or 1.0,
                             event_first_seen_at=_plain_text(p.get(props.event_first_seen_at, {})),
+                            is_hot=bool(_plain_text(p.get(props.is_hot, {}))),
                         )
                     )
                 except Exception:
@@ -178,6 +180,50 @@ async def query_eligible_candidates(config: AppConfig) -> list[PublishCandidate]
 
     logger.info("query_eligible_candidates: %d eligible candidate(s)", len(rows))
     return rows
+
+
+async def has_unpublished_hot_candidate(config: AppConfig) -> bool:
+    """Cheap existence check (page_size=1, no pagination) — is there at
+    least one manually-flagged-hot candidate (core/hot_topics.py) still
+    unsent in the eligibility window? Used by main_publish.py's fast-poll
+    loop (config.hot_topics.fast_poll_seconds) to decide whether to cut a
+    wait short instead of waiting out the full publish.interval_seconds —
+    see that module. Same filter shape as query_eligible_candidates() plus
+    is_hot, deliberately NOT reusing that function directly: this runs far
+    more often (every fast_poll_seconds vs every interval_seconds) and
+    only needs a yes/no, not the full candidate list. Fails open (False)
+    if the table isn't configured or the request fails."""
+    notion = config.notion
+    if not notion.candidate_key or not notion.candidate_db_id:
+        return False
+
+    props = notion.candidate_props
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=config.publish.candidate_max_age_hours)).isoformat()
+    headers = {
+        "Authorization": f"Bearer {notion.candidate_key}",
+        "Notion-Version": NOTION_VERSION,
+        "Content-Type": "application/json",
+    }
+    body = {
+        "page_size": 1,
+        "filter": {
+            "and": [
+                {"property": props.send_status, "checkbox": {"does_not_equal": True}},
+                {"property": props.is_hot, "checkbox": {"equals": True}},
+                {"timestamp": "created_time", "created_time": {"after": cutoff}},
+            ]
+        },
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                f"https://api.notion.com/v1/databases/{notion.candidate_db_id}/query", headers=headers, json=body,
+            )
+            resp.raise_for_status()
+        return bool(resp.json().get("results"))
+    except Exception:
+        logger.exception("has_unpublished_hot_candidate: Notion query failed")
+        return False
 
 
 async def mark_send_status(config: AppConfig, page_id: str) -> bool:

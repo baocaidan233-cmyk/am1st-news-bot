@@ -403,7 +403,8 @@ class EventStore:
         related_links: list[dict] | None = None,
         seed_frame: dict | None = None,
         heat_multiplier: float = 1.0,
-    ) -> tuple[float, int, str, set[str]]:
+        hot_until: int = 0,
+    ) -> tuple[float, int, str, set[str], int]:
         """The actual write — called AFTER scoring, and only for a local
         cluster where at least one member cleared the score gate (see
         main.py). `representative` and each of `extra_points` are now
@@ -453,11 +454,26 @@ class EventStore:
         passed straight through so commit()'s final heat_score exactly
         matches whatever preview_heat() returned earlier for this cluster.
 
-        Returns (heat_score, first_seen_at_unix, event_id, core_entities) —
-        heat_score/first_seen_at_unix should exactly equal whatever
-        preview_heat() returned earlier for this same cluster; event_id and
-        core_entities (core/event_identity.core_entities_of() on the just-
-        written payload) are for the caller to pass to HubIndex.bump()."""
+        `hot_until` (2026-08-31) — unix timestamp until which this event
+        counts as manually-flagged-hot (core/hot_topics.py, core/config.py's
+        HotTopicsConfig), or 0 if this cluster didn't match any currently-
+        live flag. The final stored value is max(existing hot_until already
+        on a matched event, this call's own hot_until) — so once ANY
+        commit to a given event_id has matched a hot-topic flag, every
+        later commit to that SAME event_id (future corroborating articles,
+        via the usual `matched is not None` carry-forward) inherits hot
+        status automatically, without needing to re-match the flag text
+        again each time. Never decreases on its own — it only moves
+        forward when a fresh match extends it, exactly like heat_score
+        only ever accumulating.
+
+        Returns (heat_score, first_seen_at_unix, event_id, core_entities,
+        hot_until) — heat_score/first_seen_at_unix should exactly equal
+        whatever preview_heat() returned earlier for this same cluster;
+        event_id and core_entities (core/event_identity.core_entities_of()
+        on the just-written payload) are for the caller to pass to
+        HubIndex.bump(); hot_until is the final stored value described
+        above, for the caller to derive is_hot = hot_until > now."""
         heat, first_seen = self.preview_heat(matched, sources, earliest_source, earliest_published_at_unix, heat_multiplier)
         now = int(time.time())
         event_id = matched.get("event_id") if matched is not None else str(uuid.uuid4())
@@ -481,6 +497,7 @@ class EventStore:
         canonical_action = matched.get("canonical_action", "") if matched is not None else (frame.get("action") or "")
         actor = matched.get("actor", "") if matched is not None else (frame.get("actor") or "")
         target = matched.get("target", "") if matched is not None else (frame.get("target") or "")
+        final_hot_until = max(matched.get("hot_until", 0) if matched is not None else 0, hot_until)
 
         shared_payload = {
             "heat_score": heat,
@@ -497,6 +514,7 @@ class EventStore:
             "canonical_action": canonical_action,
             "actor": actor,
             "target": target,
+            "hot_until": final_hot_until,
         }
 
         if matched is not None:
@@ -525,7 +543,7 @@ class EventStore:
             logger.exception("EventStore: failed to add representative point(s) for event %s", event_id)
 
         core_entities = seed_entities | {t for t, c in entity_doc_freq.items() if c >= 2}
-        return heat, first_seen, event_id, core_entities
+        return heat, first_seen, event_id, core_entities, final_hot_until
 
     async def mark_published(self, event_id: str) -> None:
         """Called by main_publish.py right after a candidate is actually

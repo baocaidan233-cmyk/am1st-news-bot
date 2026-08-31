@@ -67,6 +67,7 @@ from agents.scorer import Scorer
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex, entity_tokens, extract_event_frame, log_decision, verify_compatibility
 from core.hashing import cosine_similarity, tokenize
+from core.hot_topics import fetch_active_hot_topics
 from core.language import is_english
 from core.notion_candidates import write_candidate
 from core.notion_sources import load_rss_sources
@@ -155,6 +156,21 @@ async def run_cycle(
     for toks in batch_tokens:
         doc_freq.update(toks)
     doc_count = len(survivors)
+
+    # Manual breaking-news override (2026-08-31, core/hot_topics.py) — every
+    # currently-live flag for this bot's own channel, embedded once per
+    # cycle. Empty in the common case (no flag active right now); a failed
+    # Notion read also comes back empty (fail open), so this never blocks
+    # the cycle. See core/config.py's HotTopicsConfig docstring.
+    hot_topic_texts = await fetch_active_hot_topics(config)
+    hot_topic_embeddings = []
+    for text in hot_topic_texts:
+        try:
+            hot_topic_embeddings.append(await embedder.embed(text[:2000]))
+        except Exception:
+            logger.exception("run_cycle: failed to embed hot-topic flag %r, skipping it this cycle", text)
+    if hot_topic_embeddings:
+        logger.info("run_cycle: %d active hot-topic flag(s) this cycle", len(hot_topic_embeddings))
 
     # --- Layer 2: intra-batch semantic CLUSTERING (title+description) ---
     # Groups this batch's own candidates into local clusters instead of a
@@ -273,12 +289,20 @@ async def run_cycle(
     # from scratch later.
     cluster_related_links: list[list[dict]] = []
     cluster_heat_multipliers: list[float] = []
+    # Manual hot-topic match per cluster (2026-08-31) — unix timestamp until
+    # which this cluster counts as manually-flagged-hot, or 0. Parallel to
+    # cluster_peeks/cluster_related_links/cluster_heat_multipliers, same
+    # convention (populated below, passed to EventStore.commit() as
+    # hot_until — see that method's docstring for how it then propagates
+    # to future corroborating commits on the same event_id automatically).
+    cluster_hot_untils: list[int] = []
     scoring_candidates = []  # list of (Candidate, embedding, cluster_idx)
     for cluster_idx, members in enumerate(cluster_members):
         if not members:
             cluster_peeks.append(None)
             cluster_related_links.append([])
             cluster_heat_multipliers.append(1.0)
+            cluster_hot_untils.append(0)
             continue
 
         cluster_text = f"{members[0][0].title}\n{members[0][0].description}"
@@ -334,6 +358,14 @@ async def run_cycle(
         cluster_peeks.append(matched)
         cluster_related_links.append(related_links)
         cluster_heat_multipliers.append(heat_multiplier)
+
+        cluster_hot_until = 0
+        if hot_topic_embeddings:
+            best_hot_score = max(cosine_similarity(members[0][1], emb) for emb in hot_topic_embeddings)
+            if best_hot_score >= config.hot_topics.match_threshold:
+                cluster_hot_until = int(time.time()) + config.hot_topics.ttl_hours * 3600
+                logger.info("run_cycle: cluster %d matched an active hot-topic flag (%.3f)", cluster_idx, best_hot_score)
+        cluster_hot_untils.append(cluster_hot_until)
 
         # Already-published guard (2026-08-07) — if this cluster is a
         # near-verbatim rehash (>= dedup.semantic_threshold, the same bar
@@ -420,7 +452,7 @@ async def run_cycle(
             "canonical_title": rep_c.title,
             "canonical_summary": rep_c.description or rep_c.title,
         }
-        heat_score, first_seen_unix, event_id, core_entities = await event_store.commit(
+        heat_score, first_seen_unix, event_id, core_entities, hot_until = await event_store.commit(
             cluster_peeks[cluster_idx],
             cluster["sources"],
             cluster["earliest_source"],
@@ -430,14 +462,17 @@ async def run_cycle(
             related_links=cluster_related_links[cluster_idx],
             seed_frame=seed_frame,
             heat_multiplier=cluster_heat_multipliers[cluster_idx],
+            hot_until=cluster_hot_untils[cluster_idx],
         )
         await hub_index.bump(event_id, core_entities)
         first_seen_dt = datetime.fromtimestamp(first_seen_unix, tz=timezone.utc)
+        is_hot = hot_until > int(time.time())
 
         for c, embedding in survivors_in_cluster:
             try:
                 c.heat_score = heat_score
                 c.event_first_seen_at = first_seen_dt
+                c.is_hot = is_hot
                 if not await write_candidate(config, c):
                     logger.warning("run_cycle: candidate-pool write failed for %s", c.url)
                     continue

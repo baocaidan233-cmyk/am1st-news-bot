@@ -1,6 +1,7 @@
 notion:
   source_db_id: ""       # env: NOTION_SOURCE_DB_ID — RSS feed table (url + cookie + in_use)
   candidate_db_id: ""    # env: NOTION_CANDIDATE_DB_ID — "AM1ST-n8n-Channel" candidate pool, shared by ingestion + publish cycles
+  hot_topics_db_id: ""    # env: NOTION_HOT_TOPICS_DB_ID — shared "AM1ST热点标记" table, manual breaking-news flag, see core/hot_topics.py
   alert_user_id: ""       # env: NOTION_ALERT_USER_ID — @mentioned on cookie/extraction failures
   # Source props confirmed against the live "rss_n8n_am1st_news" database 2026-08-03.
   # Candidate props confirmed against the original n8n export's node field lists 2026-08-04 — not yet verified against a live schema read, check before first run.
@@ -24,6 +25,11 @@ notion:
     send_status: "send_status"
     heat_score: "heat_score"
     event_first_seen_at: "event_first_seen_at"
+    is_hot: "is_hot"
+  hot_topics_props:
+    name: "Name"
+    channel: "Channel"
+    active: "In_Use"
 
 redis:
   key_prefix: "am1st:url_hash:"
@@ -53,6 +59,12 @@ entity_verifier:
   subtype_corroboration_weight: 1.0
   subtype_core_update_weight: 1.5
   weighted_overlap_threshold: 0.15  # IDF-weighted keyword overlap floor for the FAIL_OPEN branch (2026-08-20, ported from North_Korea_News — not yet independently validated on am1st_events data)
+
+hot_topics:
+  channel_name: "AM1ST"      # this bot's own tag in the shared Notion table's Channel multi-select column
+  match_threshold: 0.5       # cosine floor for "this candidate is about a currently-flagged hot topic" — calibrated 2026-08-31 via live embedding tests (see core/config.py), still not independently validated against real am1st_events data
+  ttl_hours: 24               # both the Notion flag's own freshness window and how long a matched event stays "hot"
+  fast_poll_seconds: 180      # main_publish.py's short-poll interval while an unpublished is_hot candidate exists
 
 heat:
   related_threshold: 0.6      # cosine floor for "same event, different source" — below dedup.semantic_threshold

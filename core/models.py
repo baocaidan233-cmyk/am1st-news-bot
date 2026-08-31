@@ -41,6 +41,11 @@ class Candidate(BaseModel):
     heat_score: float = 1.0
     event_first_seen_at: Optional[datetime] = None
 
+    # Manual breaking-news override (2026-08-31) — set in main.py from
+    # EventStore.commit()'s returned hot_until vs now, see
+    # core/hot_topics.py / core/config.py's HotTopicsConfig.
+    is_hot: bool = False
+
 
 class PublishCandidate(BaseModel):
     """One row read back from the shared candidate-pool Notion database, as
@@ -68,5 +73,12 @@ class PublishCandidate(BaseModel):
     # reported) instead of this article's own published_at.
     heat_score: float = 1.0
     event_first_seen_at: Optional[datetime] = None
+
+    # Same manual breaking-news flag as Candidate, read back from Notion —
+    # see core/hot_topics.py / core/config.py's HotTopicsConfig.
+    # candidate_selector.select_batch() force-includes these regardless of
+    # score tier; agents/priority_ranker.py always ranks them above
+    # non-hot candidates.
+    is_hot: bool = False
 
     gettr_post_id: Optional[str] = None

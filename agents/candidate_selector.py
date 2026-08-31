@@ -135,4 +135,26 @@ def select_batch(candidates: list[PublishCandidate], config: AppConfig) -> list[
         # Last resort: newest overall, regardless of score.
         batch = sorted(candidates, key=hours_old)[: pub.batch_min]
 
+    # Manual hot-topic force-include (2026-08-31, core/hot_topics.py) — a
+    # candidate the user has explicitly flagged as breaking must never be
+    # silently excluded from the batch just because its llm_score tier
+    # didn't make the cut above; by the time agents/priority_ranker.py sees
+    # it, it's too late (same reasoning as the 2026-08-06 tier-cascade
+    # change above, applied to a stronger signal). Evicts the current
+    # lowest-scored non-hot member if the batch is already full, rather
+    # than growing past batch_max.
+    picked_ids = {c.page_id for c in batch}
+    missing_hot = [c for c in candidates if c.is_hot and c.page_id not in picked_ids]
+    for c in missing_hot:
+        if len(batch) < pub.batch_max:
+            batch.append(c)
+            continue
+        evict_idx = min(
+            (i for i, b in enumerate(batch) if not b.is_hot),
+            key=lambda i: batch[i].llm_score,
+            default=None,
+        )
+        if evict_idx is not None:
+            batch[evict_idx] = c
+
     return batch[: pub.batch_max]

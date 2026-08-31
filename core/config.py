@@ -41,20 +41,40 @@ class NotionCandidateProps(BaseModel):
     send_status: str = "send_status"  # checkbox — set true only once the publish cycle actually posts it
     heat_score: str = "heat_score"  # number — corroboration signal, see HeatConfig
     event_first_seen_at: str = "event_first_seen_at"  # date — earliest time any related source was seen, vs published_at's own single-article timestamp
+    is_hot: str = "is_hot"  # checkbox — set from the manual hot-topic flag match, see HotTopicsConfig; added 2026-08-31
+
+
+class NotionHotTopicProps(BaseModel):
+    """Column names of the shared "AM1ST热点标记" database (notion.hot_topics_db_id)
+    — a small table the user edits directly (2026-08-31), NOT written by
+    any bot. Multiple sibling bots read the same table, each filtering to
+    its own tag in the `channel` multi-select column via
+    HotTopicsConfig.channel_name — see core/hot_topics.py."""
+
+    name: str = "Name"
+    channel: str = "Channel"
+    active: str = "In_Use"
 
 
 class NotionConfig(BaseModel):
     api_key: str = ""  # env: NOTION_API_KEY — used for source_db_id (and alerts, which live on source rows)
     candidate_api_key: str = ""  # env: NOTION_CANDIDATE_API_KEY — separate integration for candidate_db_id, since the two databases don't have to share one integration's Connections. Falls back to api_key if left blank.
+    hot_topics_api_key: str = ""  # env: NOTION_HOT_TOPICS_API_KEY — separate integration for hot_topics_db_id, since this table is shared across multiple sibling bots' own Notion connections. Falls back to api_key if left blank.
     source_db_id: str = ""  # env: NOTION_SOURCE_DB_ID
     candidate_db_id: str = ""  # env: NOTION_CANDIDATE_DB_ID — shared by both the ingestion and publish cycles
+    hot_topics_db_id: str = ""  # env: NOTION_HOT_TOPICS_DB_ID — shared across sibling bots, see NotionHotTopicProps
     alert_user_id: str = ""  # env: NOTION_ALERT_USER_ID
     source_props: NotionSourceProps = Field(default_factory=NotionSourceProps)
     candidate_props: NotionCandidateProps = Field(default_factory=NotionCandidateProps)
+    hot_topics_props: NotionHotTopicProps = Field(default_factory=NotionHotTopicProps)
 
     @property
     def candidate_key(self) -> str:
         return self.candidate_api_key or self.api_key
+
+    @property
+    def hot_topics_key(self) -> str:
+        return self.hot_topics_api_key or self.api_key
 
 
 class RedisConfig(BaseModel):
@@ -178,6 +198,51 @@ class EntityVerifierConfig(BaseModel):
     weighted_overlap_threshold: float = 0.15
 
 
+class HotTopicsConfig(BaseModel):
+    """Manual breaking-news override (2026-08-31) — the user, not any
+    automatic heat_score threshold, tells the system a specific topic
+    matters right now, by adding/editing a row in a small shared Notion
+    database (notion.hot_topics_db_id) multiple sibling bots read from,
+    each filtering to their own `channel_name` tag in that row's Channel
+    multi-select column (core/hot_topics.py).
+
+    A row counts as currently live only while its In_Use checkbox is
+    checked AND its own last_edited_time is within ttl_hours —
+    deliberately anchored to last_edited_time, not created_time: nudging
+    a still-developing topic (toggle the checkbox, edit the title) keeps
+    it live without creating a new row, and forgetting to ever uncheck it
+    can't leave it live forever. Chosen this way per the user's explicit
+    2026-08-31 feedback that relying on someone remembering to uncheck it
+    manually every day "肯定会忘记" (they'll definitely forget).
+
+    main.py embeds every currently-live topic text once per ingestion
+    cycle and compares against each local cluster's representative
+    embedding (match_threshold). A match sets that event's hot_until
+    (core/qdrant_store.py's EventStore) — which then flows through
+    unchanged to every future corroborating article on the SAME event via
+    EventStore.commit()'s usual "carry forward from matched" pattern, so
+    later follow-up coverage inherits hot status automatically without
+    needing to re-match against the original flag text every time. Not
+    yet independently validated against real am1st_events data — a
+    starting point, like weighted_overlap_threshold was."""
+
+    channel_name: str = "AM1ST"  # this bot's own tag in the shared table's Channel multi-select column
+    # Cosine floor for "this candidate is about a currently-flagged hot
+    # topic," on text-embedding-3-small (openai.embedding_model). Calibrated
+    # 2026-08-31 with live embedding calls, not guessed: a genuinely related
+    # follow-up on the same event ("Trump reacts to X-Y meeting" vs the flag
+    # text "X and Y meet at [event]") scored 0.588-0.636, a same-broad-topic
+    # but different-event story scored 0.220, an unrelated domestic story
+    # scored 0.134 — a first attempt at 0.65 would have MISSED the genuine
+    # follow-ups (the whole point of this feature), so 0.5 was chosen
+    # instead, comfortably above the unrelated cluster (<=0.22) and below
+    # every related score observed. Still just a handful of synthetic
+    # examples, not independently validated against real am1st_events data.
+    match_threshold: float = 0.5
+    ttl_hours: int = 24  # both the Notion flag's own last_edited_time freshness window AND how long a matched event stays "hot" after its last matching commit
+    fast_poll_seconds: int = 180  # main_publish.py's short-poll interval while an unpublished is_hot candidate exists, instead of waiting out the full publish.interval_seconds — see main_publish.py
+
+
 class HeatConfig(BaseModel):
     """Corroboration/heat scoring — event aggregation (redesigned 2026-08-06,
     see project_am1st_migration memory's "event aggregation" note for the
@@ -271,6 +336,7 @@ class AppConfig(BaseModel):
     openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
     dedup: DedupConfig = Field(default_factory=DedupConfig)
     entity_verifier: EntityVerifierConfig = Field(default_factory=EntityVerifierConfig)
+    hot_topics: HotTopicsConfig = Field(default_factory=HotTopicsConfig)
     heat: HeatConfig = Field(default_factory=HeatConfig)
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
@@ -285,8 +351,10 @@ class AppConfig(BaseModel):
 _ENV_OVERRIDES = {
     ("notion", "api_key"): "NOTION_API_KEY",
     ("notion", "candidate_api_key"): "NOTION_CANDIDATE_API_KEY",
+    ("notion", "hot_topics_api_key"): "NOTION_HOT_TOPICS_API_KEY",
     ("notion", "source_db_id"): "NOTION_SOURCE_DB_ID",
     ("notion", "candidate_db_id"): "NOTION_CANDIDATE_DB_ID",
+    ("notion", "hot_topics_db_id"): "NOTION_HOT_TOPICS_DB_ID",
     ("notion", "alert_user_id"): "NOTION_ALERT_USER_ID",
     ("redis", "url"): "REDIS_URL",
     ("openai", "api_key"): "OPENAI_API_KEY",

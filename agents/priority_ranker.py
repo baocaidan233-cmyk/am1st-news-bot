@@ -127,9 +127,14 @@ class PriorityRanker:
                 entries = self._parse(retry_raw)
             except (json.JSONDecodeError, ValidationError, TypeError):
                 logger.error("PriorityRanker: gave up after retry — falling back to llm_score order")
-                return sorted(batch, key=lambda c: c.llm_score, reverse=True)
+                return sorted(batch, key=lambda c: (c.is_hot, c.llm_score), reverse=True)
 
         scores = {e.id: e.priority_score for e in entries}
         ranked = [c.model_copy(update={"priority_score": scores.get(c.page_id, 0.0)}) for c in batch]
-        ranked.sort(key=lambda c: (c.priority_score, c.published_at), reverse=True)
+        # is_hot (2026-08-31, core/hot_topics.py) sorts ahead of
+        # priority_score, not just as an input to it — a deterministic
+        # guarantee that a manually-flagged breaking candidate always wins
+        # this cycle's publish slot over anything not flagged, rather than
+        # relying on the LLM to correctly weigh a new field it's never seen.
+        ranked.sort(key=lambda c: (c.is_hot, c.priority_score, c.published_at), reverse=True)
         return ranked
