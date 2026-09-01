@@ -29,12 +29,17 @@ class PriorityRanker:
     (prompts/priority_rank_prompt.txt), ranking on post_content itself
     (not title+description, which is what the ingestion-side llm_score used).
 
-    On gpt-5-nano (config.openai.nano_model), not chat_model — switched
-    2026-08-26, same reasoning as agents/scorer.py's 2026-08-14 move: this
-    call assigns a 1-10 priority_score, it never writes user-facing prose.
-    Live-tested against the real API before switching (synthetic 2-story
-    batch, reasoning_effort="minimal") — returned a clean JSON array, 0
-    reasoning tokens, well inside the existing 500-token budget.
+    On config.openai.chat_model (gpt-4o-mini). Moved onto gpt-5-nano
+    2026-08-26, then back to chat_model on 2026-09-01 along with every
+    other nano_model consumer (agents/scorer.py, core/event_identity.py) —
+    see agents/scorer.py's docstring for the confirmed cause: nano's
+    verification at the time only checked well-formed JSON output, never
+    actual judgment quality, and a live multi-cycle test found the same
+    family of models unreliable across every subjective-judgment role it
+    was given (Scorer scored clearly off-theme content as passing;
+    EventVerifier's related_event()/same_event() both misjudged real
+    pairs, in opposite directions). Not worth re-litigating per call site —
+    reverted everywhere at once, per the user's explicit call.
 
     Since 2026-08-06 also passes heat_score and an event_first_seen_at-based
     hours_old (see _call below) — the corroboration/heat signal computed at
@@ -42,7 +47,7 @@ class PriorityRanker:
 
     def __init__(self, config: AppConfig) -> None:
         self._client = create_openai_client(config)
-        self._model = config.openai.nano_model
+        self._model = config.openai.chat_model
         self._system_prompt = Path(config.publish.priority_rank_prompt_file).read_text(encoding="utf-8")
 
     async def _call(self, batch: list[PublishCandidate], trending_headlines: list[str]) -> str:

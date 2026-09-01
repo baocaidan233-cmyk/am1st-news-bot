@@ -415,18 +415,23 @@ class EventVerifier:
     (2026-08-09) that found asking both in one prompt biases the model
     toward SAME_EVENT on ~30% of real ambiguous pairs.
 
-    On gpt-5-nano (config.openai.nano_model), not chat_model — switched
-    2026-08-26, same reasoning as agents/scorer.py's 2026-08-14 move: both
-    calls return a short structured verdict, never user-facing prose. Both
-    prompts were live-tested against the real API before switching
-    (reasoning_effort="minimal") — same_event_prompt.txt came back at ~70
-    completion tokens, update_subtype_prompt.txt at ~34, both with 0
-    reasoning tokens — comfortably inside the existing 80/60-token budgets
-    below, no increase needed."""
+    On config.openai.chat_model (gpt-4o-mini). Moved onto gpt-5-nano
+    2026-08-26, then back on 2026-09-01 — a live multi-cycle test found
+    real judgment failures on both same_event() and related_event(), in
+    OPPOSITE directions: same_event() wrongly split a genuine same-event
+    paraphrase pair ("charged" vs "indicted" on the same fraud case) into
+    two different events, while related_event() (see prompts/
+    related_event_prompt.txt) rationalized a string of topically-adjacent
+    but unrelated financial-news articles as the same storyline. The
+    2026-08-26 switch had only verified well-formed, non-empty output at
+    the time, never actual judgment quality — see agents/scorer.py's
+    docstring, which found the same gap independently for Scorer's own
+    role. Reverted every nano_model consumer at once rather than
+    re-litigating per call site, per the user's explicit call."""
 
     def __init__(self, config: AppConfig) -> None:
         self._client = create_openai_client(config)
-        self._model = config.openai.nano_model
+        self._model = config.openai.chat_model
         self._same_event_prompt = Path(config.entity_verifier.same_event_prompt_file).read_text(encoding="utf-8")
         self._subtype_prompt = Path(config.entity_verifier.update_subtype_prompt_file).read_text(encoding="utf-8")
         self._related_event_prompt = Path(config.entity_verifier.related_event_prompt_file).read_text(encoding="utf-8")

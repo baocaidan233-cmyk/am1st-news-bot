@@ -86,19 +86,18 @@ class RedisConfig(BaseModel):
 class OpenAIConfig(BaseModel):
     api_key: str = ""  # env: OPENAI_API_KEY
     fallback_api_key: str = ""  # env: OPENAI_API_KEY_FALLBACK — only used if the primary key hits RateLimitError (rate limit or exhausted quota), see core/openai_client.py
-    chat_model: str = "gpt-4o-mini"  # Writer ONLY — actual published post prose, kept on 4o-mini per the user's 2026-08-14 call after comparing real Writer output side by side
-    # 2026-08-26: renamed from scoring_model (Scorer-only) to nano_model — now
-    # shared by every call that isn't user-facing prose generation: Scorer,
-    # PriorityRanker, and EventVerifier's same_event()/classify_subtype()
-    # (all three are numeric/categorical judgment calls, not writing). Each
-    # was live-tested against the real OpenAI API before switching (2026-08-26,
-    # same_event/classify_subtype/priority-rank prompts, reasoning_effort=
-    # "minimal") — all returned correctly-formatted, non-empty output with
-    # reasoning_tokens=0, comfortably inside each call's existing token
-    # budget, no budget increase needed. See agents/scorer.py for the
-    # gpt-5-family kwargs every consumer of this model needs
-    # (max_completion_tokens instead of max_tokens, no temperature).
-    nano_model: str = "gpt-5-nano"
+    # Every OpenAI-backed call in this codebase (Writer prose, Scorer,
+    # PriorityRanker, EventVerifier) shares this one model. A 2026-08-26
+    # experiment moved the non-prose judgment calls (Scorer/PriorityRanker/
+    # EventVerifier) onto a separate gpt-5-nano field (nano_model) for
+    # cost reasons; reverted 2026-09-01 after a live multi-cycle test found
+    # real judgment-quality failures in every one of those roles — the
+    # 2026-08-26 switch had only verified well-formed output, never actual
+    # judgment quality. See agents/scorer.py's docstring for the specific
+    # failures found. nano_model removed entirely rather than left as dead
+    # config — nothing in this codebase should reference gpt-5-nano again
+    # without a fresh, judgment-quality-focused live test first.
+    chat_model: str = "gpt-4o-mini"
     embedding_model: str = "text-embedding-3-small"
     scoring_prompt_file: str = "prompts/scoring_prompt.txt"
     content_gen_prompt_file: str = "prompts/content_gen_prompt.txt"

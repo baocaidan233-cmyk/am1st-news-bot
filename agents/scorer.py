@@ -42,10 +42,12 @@ class Scorer:
     cases) was apparently read by gpt-5-nano as blanket permission to
     always find SOME angle rather than firmly reject clearly off-theme
     content — a failure mode gpt-4o-mini did not previously exhibit in
-    this role. PriorityRanker and EventVerifier stay on nano_model
-    (config.openai.nano_model) — this regression was specific to Scorer's
-    own rubric-following, not a general nano_model problem; see
-    agents/priority_ranker.py and core/event_identity.py.
+    this role. 2026-09-01, same day: PriorityRanker and EventVerifier also
+    moved back to chat_model — a live test found each of their own
+    nano_model-era judgment calls unreliable too (see
+    agents/priority_ranker.py and core/event_identity.py), so this was not
+    a Scorer-only problem after all; nothing in this codebase runs on
+    gpt-5-nano anymore.
 
     No secondary Gemini autofix model; a single retry with the parse error
     appended does the same job the original's autoFix/second-model fallback
