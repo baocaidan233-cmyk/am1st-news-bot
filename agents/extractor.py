@@ -142,6 +142,14 @@ class Extractor:
 
     async def _fail(self, url: str, source: RssSource | None, reason: str, alert_message: str | None = None) -> None:
         logger.warning("Extractor: %s for %s", reason, url)
+        if source and source.cookie:
+            # 2026-09-01: paid paywall cookies are expired and not being
+            # renewed (user decision) — extraction failure on a
+            # cookie-configured source is now a permanent, expected state,
+            # not something to page on. Still logged above, just not
+            # @mentioned in Notion.
+            logger.info("Extractor: suppressing alert for %s — known-expired paywall cookie", url)
+            return
         if source:
             await self._alerts.alert(source.page_id, alert_message or f"全文抓取失败(可能是cookie失效/反爬拦截): {url}")
 
