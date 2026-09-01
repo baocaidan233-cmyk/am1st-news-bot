@@ -84,7 +84,22 @@ def select_batch(candidates: list[PublishCandidate], config: AppConfig) -> list[
     DOES see trending_headlines, a real chance to surface it. Tier 5 (the
     pure "newest regardless of score" last resort) still gates on
     batch_min only — it exists for when there's nothing real to pick from
-    at all, not to pad out a batch that already has legitimate candidates."""
+    at all, not to pad out a batch that already has legitimate candidates.
+
+    2026-09-01 — hard, unconditional published_at ceiling added (user's
+    explicit "iron rule": only same-day news, publish nothing rather than
+    something stale). Confirmed live: a 3-day-old CNBC article that only
+    entered the candidate pool THAT DAY (query_eligible_candidates()'s own
+    12h eligibility window is keyed on Notion's created_time — when this
+    bot first saw it — not the article's own published_at) sailed through
+    tier 3 below, which only checks llm_score, not freshness at all, and
+    got published as if it were breaking. Every tier below, including the
+    hot-topic force-include and the batch_min last-resort fallback, now
+    only ever draws from `candidates` after this filter — none of them can
+    bypass it. candidate_max_age_hours (12h) is reused here deliberately,
+    not a new number: on a genuinely slow news day this can leave the
+    batch under batch_min, even empty — that's the accepted trade-off,
+    not a bug to work around."""
     pub = config.publish
     now = datetime.now(timezone.utc)
     is_weekday = _is_weekday(now)
@@ -93,6 +108,8 @@ def select_batch(candidates: list[PublishCandidate], config: AppConfig) -> list[
 
     def hours_old(c: PublishCandidate) -> float:
         return (now - c.published_at).total_seconds() / 3600
+
+    candidates = [c for c in candidates if hours_old(c) <= pub.candidate_max_age_hours]
 
     fresh = [c for c in candidates if hours_old(c) <= pub.fresh_hours]
 
