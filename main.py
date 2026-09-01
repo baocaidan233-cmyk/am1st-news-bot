@@ -163,14 +163,14 @@ async def run_cycle(
     # Notion read also comes back empty (fail open), so this never blocks
     # the cycle. See core/config.py's HotTopicsConfig docstring.
     hot_topic_texts = await fetch_active_hot_topics(config)
-    hot_topic_embeddings = []
+    hot_topics: list[tuple[str, list[float]]] = []
     for text in hot_topic_texts:
         try:
-            hot_topic_embeddings.append(await embedder.embed(text[:2000]))
+            hot_topics.append((text, await embedder.embed(text[:2000])))
         except Exception:
             logger.exception("run_cycle: failed to embed hot-topic flag %r, skipping it this cycle", text)
-    if hot_topic_embeddings:
-        logger.info("run_cycle: %d active hot-topic flag(s) this cycle", len(hot_topic_embeddings))
+    if hot_topics:
+        logger.info("run_cycle: %d active hot-topic flag(s) this cycle", len(hot_topics))
 
     # --- Layer 2: intra-batch semantic CLUSTERING (title+description) ---
     # Groups this batch's own candidates into local clusters instead of a
@@ -207,6 +207,23 @@ async def run_cycle(
                 score = cosine_similarity(embedding, member_embedding)
                 if score > best_score:
                     best_score, best_ci = score, ci
+
+        # 2026-09-01: this decision (unlike the event-store match below) has
+        # no entity/LLM check backing it at all — purely cosine. Logging the
+        # score isn't itself a correctness check, but without it there was
+        # no way to even ask "how often does semantic_threshold land on a
+        # genuinely ambiguous case" — see project_am1st_news_bot memory's
+        # 0.8-0.9-band finding from the event-store data as the reason this
+        # matters. No candidate_text here (unlike other check_types) to keep
+        # this per-article, every-cycle log line cheap.
+        if best_ci is not None:
+            log_decision(config, {
+                "check_type": "intra_batch_cluster",
+                "candidate_url": c.url,
+                "matched_cluster_id": best_ci,
+                "cosine_score": best_score,
+                "decision": "merged_duplicate" if best_score >= threshold else ("joined_related" if best_score >= related_threshold else "new_cluster"),
+            })
 
         published_unix = int(c.published_at.timestamp())
 
@@ -375,9 +392,25 @@ async def run_cycle(
         cluster_entity_tokens_list.append(new_tokens)
 
         cluster_hot_until = 0
-        if hot_topic_embeddings:
-            best_hot_score = max(cosine_similarity(members[0][1], emb) for emb in hot_topic_embeddings)
-            if best_hot_score >= config.hot_topics.match_threshold:
+        if hot_topics:
+            best_hot_score, best_hot_text = max(
+                ((cosine_similarity(members[0][1], emb), text) for text, emb in hot_topics), key=lambda x: x[0],
+            )
+            is_hot_match = best_hot_score >= config.hot_topics.match_threshold
+            # 2026-09-01: logged for EVERY comparison, not just matches, so
+            # match_threshold's score distribution (including near-misses)
+            # can eventually be recalibrated on real am1st data instead of
+            # staying an un-validated 2026-08-31 guess — see
+            # project_am1st_news_bot memory.
+            log_decision(config, {
+                "check_type": "hot_topic_match",
+                "cluster_representative_url": members[0][0].url,
+                "best_hot_score": best_hot_score,
+                "matched_flag_text": best_hot_text,
+                "threshold": config.hot_topics.match_threshold,
+                "matched": is_hot_match,
+            })
+            if is_hot_match:
                 cluster_hot_until = int(time.time()) + config.hot_topics.ttl_hours * 3600
                 logger.info("run_cycle: cluster %d matched an active hot-topic flag (%.3f)", cluster_idx, best_hot_score)
         cluster_hot_untils.append(cluster_hot_until)

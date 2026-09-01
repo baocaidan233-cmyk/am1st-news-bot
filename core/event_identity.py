@@ -370,9 +370,22 @@ async def verify_compatibility(
         rep_text = matched.get("representative_text", "")
         if doc_freq is not None and new_text and rep_text:
             overlap = weighted_overlap(tokenize(new_text), tokenize(rep_text), doc_freq, doc_count)
-            if overlap >= config.entity_verifier.weighted_overlap_threshold:
-                return "COMPATIBLE"
-            return "AMBIGUOUS"
+            verdict = "COMPATIBLE" if overlap >= config.entity_verifier.weighted_overlap_threshold else "AMBIGUOUS"
+            # 2026-09-01: this branch's own hit rate/score distribution was
+            # previously invisible in event_identity_decisions.jsonl — a rule-
+            # tier COMPATIBLE/AMBIGUOUS from here looked identical to one from
+            # the normal entity-overlap path below. Logged separately
+            # (check_type) so weighted_overlap_threshold can eventually be
+            # recalibrated on AM1ST's own data instead of North_Korea_News's.
+            log_decision(config, {
+                "check_type": "lexical_fallback",
+                "candidate_event_id": matched.get("event_id"),
+                "cosine_score": matched.get("_score"),
+                "weighted_overlap_score": overlap,
+                "threshold": config.entity_verifier.weighted_overlap_threshold,
+                "rule_verdict": verdict,
+            })
+            return verdict
         return "FAIL_OPEN"
     core = core_entities_of(matched)
     if not core:
