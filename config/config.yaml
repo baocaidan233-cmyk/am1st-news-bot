@@ -50,10 +50,21 @@ dedup:
   # were actually RELATED_DIFFERENT_EVENT, not the same occurrence — most
   # exposed on Layer 2 intra-batch clustering (main.py), which merges on
   # cosine alone with no entity/LLM check. Baseline snapshot before this
-  # change: 1677 distinct event_ids / 2211 points in am1st_events. See
-  # project_am1st_news_bot memory for the full ledger — do not revert this
-  # without checking there first, an active review is in progress.
-  semantic_threshold: 0.85  # cosine similarity, both intra-batch and cross-cycle layers
+  # change: 1677 distinct event_ids / 2211 points in am1st_events.
+  #
+  # 2026-09-01, later same day: reverted back to 0.8 — the 0.85 change
+  # above was justified by analyzing event_identity_decisions.jsonl
+  # entries logged by EventVerifier.same_event(), but that same live test
+  # run separately confirmed same_event()/related_event() were making real
+  # judgment errors in both directions while running on gpt-5-nano (see
+  # agents/scorer.py's docstring, core/event_identity.py's EventVerifier
+  # docstring) — every log entry from that window was labeled by the same
+  # unreliable judge, so the "~19% of 0.80-0.90 pairs were actually
+  # different events" analysis behind the 0.85 change can't be trusted
+  # either. Per the user's explicit call: don't act on data produced
+  # during the nano_model window until it's been reproduced with the
+  # reverted gpt-4o-mini judge.
+  semantic_threshold: 0.8  # cosine similarity, both intra-batch and cross-cycle layers
 
 entity_verifier:
   hub_event_count_threshold: 2   # shared token only counts as evidence if it's been the core of fewer than this many past events
