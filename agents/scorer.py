@@ -22,30 +22,38 @@ class ScoreOutput(BaseModel):
 class Scorer:
     """AI relevancy scoring — same prompt/role/theme list as the original
     AM1ST n8n workflow's Scoring node, ported verbatim (prompts/scoring_prompt.txt).
-    On gpt-5-nano (config.openai.nano_model), not the chat_model Writer
-    uses — switched 2026-08-14 since this call is pure numeric triage
-    (never user-facing prose), and the ~2.4x real cost saving is worth
-    taking here specifically (2026-08-26: PriorityRanker and EventVerifier
-    moved onto this same nano_model for the same reason, see core/config.py).
+
+    Moved BACK to config.openai.chat_model (gpt-4o-mini) on 2026-09-01,
+    reverting the 2026-08-14 move to gpt-5-nano — a ~19-hour live test run
+    (real RSS data, real Notion candidate pool, real Gettr test-account
+    publishes) surfaced a judgment-quality regression the original switch's
+    verification never checked: 2026-08-14 only confirmed gpt-5-nano
+    returned well-formed, non-empty JSON, never whether its actual scores
+    stayed editorially sound. Confirmed live, 2026-09-01, by re-scoring
+    several REAL candidates gpt-5-nano had just passed at the 5.0 floor: a
+    Rheinmetall drone story with zero US angle (Germany's own aviation
+    authority certifying a German company's drone), a Karim Benzema soccer
+    transfer, a Cuba retail-policy story, a Texas crane rescue — all
+    scored >=5, each with reasoning that rationalized a tenuous "could
+    plausibly relate if reframed" angle rather than applying
+    prompts/scoring_prompt.txt's own explicit "sports, weather, celebrity
+    gossip with no political dimension" rejection list. The prompt's "lean
+    toward passing when thin" guidance (written for genuinely ambiguous
+    cases) was apparently read by gpt-5-nano as blanket permission to
+    always find SOME angle rather than firmly reject clearly off-theme
+    content — a failure mode gpt-4o-mini did not previously exhibit in
+    this role. PriorityRanker and EventVerifier stay on nano_model
+    (config.openai.nano_model) — this regression was specific to Scorer's
+    own rubric-following, not a general nano_model problem; see
+    agents/priority_ranker.py and core/event_identity.py.
+
     No secondary Gemini autofix model; a single retry with the parse error
     appended does the same job the original's autoFix/second-model fallback
-    did.
-
-    gpt-5-nano is a reasoning model — two real, empirically-found quirks
-    that don't apply to gpt-4o-mini:
-    - It rejects `temperature`/`max_tokens`; needs `max_completion_tokens`.
-    - Without `reasoning_effort="minimal"`, it can burn the entire
-      max_completion_tokens budget on invisible reasoning tokens (still
-      billed at the output rate) and return EMPTY content — verified
-      2026-08-14: with the default reasoning effort and this budget, the
-      scoring call came back with content=None. `minimal` fixed it and
-      also made the real per-call cost cheaper than gpt-4o-mini, not more
-      expensive (default effort's hidden reasoning tokens made a "cheaper"
-      model cost MORE per call)."""
+    did."""
 
     def __init__(self, config: AppConfig) -> None:
         self._client = create_openai_client(config)
-        self._model = config.openai.nano_model
+        self._model = config.openai.chat_model
         self._system_prompt = Path(config.openai.scoring_prompt_file).read_text(encoding="utf-8")
 
     async def _call(self, user_message: str) -> str:
