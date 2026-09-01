@@ -44,7 +44,17 @@ openai:
   score_threshold: 5.0  # inclusive — score >= 5.0 passes
 
 dedup:
-  semantic_threshold: 0.8  # cosine similarity, both intra-batch and cross-cycle layers
+  # 2026-09-01: raised 0.8 -> 0.85, live A/B test at Caidan's request. Real
+  # data from logs/event_identity_decisions.jsonl (818 lines, pulled and
+  # analyzed 2026-09-01) showed the 0.80-0.90 cosine band was NOT a safe
+  # "definite duplicate" zone: 21/113 (~19%) of real pairs scoring there
+  # were actually RELATED_DIFFERENT_EVENT, not the same occurrence — most
+  # exposed on Layer 2 intra-batch clustering (main.py), which merges on
+  # cosine alone with no entity/LLM check. Baseline snapshot before this
+  # change: 1677 distinct event_ids / 2211 points in am1st_events. See
+  # project_am1st_news_bot memory for the full ledger — do not revert this
+  # without checking there first, an active review is in progress.
+  semantic_threshold: 0.85  # cosine similarity, both intra-batch and cross-cycle layers
 
 entity_verifier:
   hub_event_count_threshold: 2   # shared token only counts as evidence if it's been the core of fewer than this many past events
