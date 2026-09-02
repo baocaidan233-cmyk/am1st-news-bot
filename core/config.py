@@ -335,7 +335,7 @@ class PublishConfig(BaseModel):
     candidate_max_age_hours: int = 12  # candidate pool eligibility window
     fresh_hours: int = 4  # freshness tier line used by the batch-selection cascade
     batch_min: int = 3
-    batch_max: int = 10  # was 5; raised 2026-08-05 now that extraction/content-gen only run on the selected batch, not every scored candidate — a bigger batch costs much less than it used to
+    batch_max: int = 5  # was 5, raised to 10 on 2026-08-05 (extraction/content-gen only run on the selected batch now, not every scored candidate — a bigger batch costs much less than it used to). Lowered back to 5 on 2026-09-02: real data (8 real publish cycles that day, logs/main_publish.log) showed the batch always hit the 10 ceiling, every cycle's Writer/Extractor calls were "10 full captions written, 1 used" — and the eventual winner was always found within the top 3 of the final ranked order, never lower, so 5 keeps a real safety margin while cutting the wasted majority of calls.
     priority_rank_prompt_file: str = "prompts/priority_rank_prompt.txt"
     posted_dedup_window_hours: int = 240  # was 24h — widened 2026-08-07 as a defensive backstop once the ingestion-side EventStore.mark_published() check exists (core/qdrant_store.py); matches heat.window_hours so both "have we already covered this" checks agree on how long an event stays "recent"
     posted_dedup_threshold: float = 0.70  # stricter than the ingestion side's 0.8 — deliberate, per the user: fully autonomous posting should err toward under-posting

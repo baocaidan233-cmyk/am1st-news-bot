@@ -124,7 +124,7 @@ publish:
   candidate_max_age_hours: 12
   fresh_hours: 4
   batch_min: 3
-  batch_max: 10
+  batch_max: 5  # was 10 — real data (2026-09-02, 8 real publish cycles) showed the eventual winner was always found within the top 3 of the final ranked batch, every cycle; 10 meant ~9/10 written captions were thrown away each cycle. See core/config.py's PublishConfig.batch_max comment.
   priority_rank_prompt_file: "prompts/priority_rank_prompt.txt"
   posted_dedup_window_hours: 240  # was 24h — widened 2026-08-07, matches heat.window_hours (10 days)
   posted_dedup_threshold: 0.70  # stricter than ingestion's 0.8 — deliberate, fully-autonomous posting errs toward under-posting
