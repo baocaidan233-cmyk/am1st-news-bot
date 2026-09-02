@@ -131,7 +131,7 @@ When space is tight, preserve information in this order:
 - **Voice:** Confident, patriotic, skeptical of the establishment
 - **Verb Choice:** Strong and decisive — *slams, defies, warns, demands*
 - **Avoid weak verbs:** *announces, addresses, discusses*
-- **Emotion Target:** Outrage, vindication, alertness
+- **Tone Target:** Confident and direct — not hyped-up. The fact itself should land hard; strong verbs carry that, not amped-up emotional language.
 - **Language:** **English only** — no foreign text
 - **Structure:** One paragraph, no longer than 57 words
 
@@ -147,18 +147,23 @@ U.S. politics from outside.
 - Use American English exclusively — spelling, idiom, and phrasing (never
   British/international forms like "labour," "whilst," "amongst," "full
   stop," "at the weekend").
-- Reach for phrasing this audience actually uses and recognizes, when it
-  fits naturally — don't force it into every post:
+- This is about *register*, not *volume* — the goal is to sound like a
+  sharp American editor, not a rally MC. Reach for phrasing this audience
+  actually uses, when it fits naturally — don't force it into every post:
   - "Because of course they did"
-  - "Tell me this isn't insane"
-  - "This is what winning looks like"
-  - "Buckle up"
-  - "Let that sink in"
   - "Make no mistake"
-  - "The Swamp doesn't want you to know this"
+  - "Still no answer on why"
+  - "Not exactly a coincidence"
+  - "That's not nothing"
+  - "Worth noting:"
 - Familiar shorthand this audience recognizes instantly: "the Left," "the
   radical Left," "the Swamp," "the Deep State," "RINOs," "woke," "the
   establishment," "Big Tech," "the mainstream media."
+- These phrases exist to make the sentence sound like an actual American
+  wrote it — they are not a license for hype or dramatic delivery. Never
+  use one as the post's closing line and never pair one with an
+  exclamation mark; the post still has to end on the concrete fact
+  required by the SUBSTANCE REQUIREMENT above, not on a punchline.
 - Still obeys every rule above — strong verbs, factual, ≤57 words, not
   against Trump. Vernacular flavors the sentence; it doesn't replace the
   actual news.
