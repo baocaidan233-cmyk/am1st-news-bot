@@ -703,14 +703,16 @@ class PostedHistoryStore:
             )
             logger.info("PostedHistoryStore: created collection %s", self._collection)
 
-    async def most_similar_recent(self, embedding: list[float]) -> tuple[float, str]:
+    async def most_similar_recent(self, embedding: list[float]) -> tuple[float, str, str]:
         """Highest cosine similarity against post_content embeddings whose
         source article was published in the last window, plus that match's
-        url for logging. Returns (0.0, "") if Qdrant isn't configured, the
-        collection is empty, or the query fails — fail open, same as
-        QdrantStore.most_similar_recent."""
+        url and its own stored content (2026-09-02, for agents/
+        posted_dedup_checker.py's observational entity-overlap logging — see
+        that module's docstring) for logging. Returns (0.0, "", "") if
+        Qdrant isn't configured, the collection is empty, or the query
+        fails — fail open, same as QdrantStore.most_similar_recent."""
         if self._client is None:
-            return 0.0, ""
+            return 0.0, "", ""
         cutoff = time.time() - self._window_seconds
         try:
             result = await self._client.query_points(
@@ -722,13 +724,13 @@ class PostedHistoryStore:
             )
         except Exception:
             logger.exception("PostedHistoryStore: query failed, treating as no match")
-            return 0.0, ""
+            return 0.0, "", ""
         points = result.points
         if not points:
-            return 0.0, ""
+            return 0.0, "", ""
         best = max(points, key=lambda p: p.score)
         payload = best.payload or {}
-        return best.score, payload.get("url", "")
+        return best.score, payload.get("url", ""), payload.get("content", "")
 
     async def write(self, url: str, url_hash: str, content: str, published_at_unix: int, embedding: list[float]) -> None:
         """Called once, right after the publish cycle's winner is chosen —
