@@ -124,6 +124,47 @@ def _clean_entity_span(span_text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+_LOCATION_LABELS = {"GPE", "LOC", "FAC"}
+_NUMERIC_LABELS = {"CARDINAL", "QUANTITY", "PERCENT", "MONEY"}
+
+
+def no_conflicting_specifics(text_a: str, text_b: str) -> bool:
+    """True only if A and B name the same set of places/facilities and the
+    same set of numbers. Added 2026-09-02 as a pre-check before
+    classify_subtype(): high overall cosine similarity alone doesn't mean
+    "no new information" — two sentences that are otherwise identical
+    except for one swapped location ("Kuwait" -> "Qatar") or one changed
+    figure ("10 dead" -> "20 dead") still score high on cosine while
+    describing a materially different fact. Deliberately conservative:
+    ANY difference in either set (including an added, not just a swapped,
+    place/number) returns False, sending the pair to the LLM as before —
+    this only short-circuits the genuinely unambiguous case."""
+    if not text_a or not text_b:
+        return False
+
+    def _locations(text: str) -> set[str]:
+        doc = nlp(text)
+        return {
+            tok
+            for ent in doc.ents
+            if ent.label_ in _LOCATION_LABELS
+            for tok in _TOKEN_RE.findall(_clean_entity_span(ent.text).lower())
+            if tok not in _STOPWORDS and len(tok) > 1
+        }
+
+    def _numbers(text: str) -> set[str]:
+        doc = nlp(text)
+        return {
+            cleaned
+            for ent in doc.ents
+            if ent.label_ in _NUMERIC_LABELS
+            for cleaned in [re.sub(r"[^0-9.]", "", ent.text)]
+            if cleaned
+        }
+
+    return _locations(text_a) == _locations(text_b) and _numbers(text_a) == _numbers(text_b)
+
+
 def entity_tokens(text: str) -> set[str]:
     """PERSON/ORG/GPE/LOC/NORP/FAC/EVENT spans, decomposed into lowercase
     word tokens (not kept as whole spans) so "Andy Ogles" and "Ogles"

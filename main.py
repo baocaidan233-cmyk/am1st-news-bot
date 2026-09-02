@@ -65,7 +65,7 @@ from agents.og_metadata import fetch_link_preview
 from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
 from core.config import load_config
-from core.event_identity import EventVerifier, HubIndex, entity_tokens, extract_event_frame, log_decision, verify_compatibility
+from core.event_identity import EventVerifier, HubIndex, entity_tokens, extract_event_frame, log_decision, no_conflicting_specifics, verify_compatibility
 from core.hashing import cosine_similarity, tokenize
 from core.hot_topics import fetch_active_hot_topics
 from core.language import is_english
@@ -380,7 +380,14 @@ async def run_cycle(
                 log_decision(config, {**log_record, "final_verdict": "SAME_OCCURRENCE"})
                 matched = candidate
 
-            subtype, subtype_raw = await event_verifier.classify_subtype(candidate.get("representative_text", ""), cluster_text)
+            rep_text = candidate.get("representative_text", "")
+            if (
+                candidate.get("_score", 0.0) >= config.entity_verifier.restatement_cosine_floor
+                and no_conflicting_specifics(rep_text, cluster_text)
+            ):
+                subtype, subtype_raw = "RESTATEMENT", "auto: near-identical text, no conflicting places/numbers (LLM call skipped)"
+            else:
+                subtype, subtype_raw = await event_verifier.classify_subtype(rep_text, cluster_text)
             heat_multiplier = subtype_weights.get(subtype, 1.0)  # unparseable/unexpected subtype -> plain corroboration weight (fail open)
             log_decision(config, {**log_record, "subtype": subtype, "subtype_raw": subtype_raw, "heat_multiplier": heat_multiplier})
             break

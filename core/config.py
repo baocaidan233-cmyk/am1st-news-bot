@@ -180,6 +180,17 @@ class EntityVerifierConfig(BaseModel):
     subtype_corroboration_weight: float = 1.0  # independent new source confirming the same facts — today's existing behavior, unchanged
     subtype_core_update_weight: float = 1.5    # genuine new fact/decision/status — weighted above plain corroboration
 
+    # 2026-09-02: skip the classify_subtype() LLM call entirely when A/B are
+    # this cosine-similar AND name the same places/facilities and the same
+    # numbers (see no_conflicting_specifics() in core/event_identity.py) —
+    # a live review found the LLM asked to classify byte-identical A/B text
+    # still hallucinating a "new development" instead of answering
+    # RESTATEMENT. High cosine alone isn't sufficient: "Iran strikes Kuwait
+    # base" vs "Iran strikes Qatar base" (or "10 dead" vs "20 dead") can
+    # score just as high on cosine while describing a materially different
+    # fact — the location/number check guards against that.
+    restatement_cosine_floor: float = 0.92
+
     # IDF-weighted keyword overlap (2026-08-20) — a second, entity-
     # independent lexical signal for verify_compatibility()'s FAIL_OPEN
     # branch (new_tokens from NER came back empty — very short text, or a
