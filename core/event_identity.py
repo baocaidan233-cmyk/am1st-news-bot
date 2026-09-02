@@ -15,6 +15,7 @@ by the caller — see that function's docstring for why."""
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
@@ -124,6 +125,24 @@ def _clean_entity_span(span_text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html(text: str) -> str:
+    """Some RSS feeds' description field is raw HTML (img tags, class
+    attributes, byline spans), not plain text — confirmed 2026-09-02 by
+    tracing a real false cross-event-link candidate back to the literal
+    word "alt" (from an `alt="..."` attribute) getting NER-tagged as an
+    entity, alongside other markup fragments ("item", "field", "em") from
+    class names and tag scaffolding elsewhere in the same batch. Every
+    caller that runs spaCy NER on article title+description should strip
+    tags first — a whole tag (brackets and everything inside, including
+    attribute values) is removed rather than just the bracket characters,
+    since the attribute values themselves are the actual source of the
+    noise words, not just the tag names."""
+    return html.unescape(_HTML_TAG_RE.sub(" ", text))
+
+
 _LOCATION_LABELS = {"GPE", "LOC", "FAC"}
 _NUMERIC_LABELS = {"CARDINAL", "QUANTITY", "PERCENT", "MONEY"}
 
@@ -143,7 +162,7 @@ def no_conflicting_specifics(text_a: str, text_b: str) -> bool:
         return False
 
     def _locations(text: str) -> set[str]:
-        doc = nlp(text)
+        doc = nlp(_strip_html(text))
         return {
             tok
             for ent in doc.ents
@@ -153,7 +172,7 @@ def no_conflicting_specifics(text_a: str, text_b: str) -> bool:
         }
 
     def _numbers(text: str) -> set[str]:
-        doc = nlp(text)
+        doc = nlp(_strip_html(text))
         return {
             cleaned
             for ent in doc.ents
@@ -169,10 +188,22 @@ def entity_tokens(text: str) -> set[str]:
     """PERSON/ORG/GPE/LOC/NORP/FAC/EVENT spans, decomposed into lowercase
     word tokens (not kept as whole spans) so "Andy Ogles" and "Ogles"
     overlap. DATE/TIME excluded on purpose — date extraction needs its own
-    relevance judgment, not NER on/off (see project_am1st_migration memory)."""
+    relevance judgment, not NER on/off (see project_am1st_migration memory).
+
+    2026-09-02: PERSON spans keep only their LAST word (the surname in
+    Western name order) instead of every constituent word — a real false
+    cross-event-link candidate was traced to "Tony" alone (from "Judge Tony
+    Graf") coincidentally matching an unrelated article about "Gov. Tony
+    Evers," two different people who just share a first name. A bare given
+    name is common enough across unrelated people to be weak, risky
+    identity evidence on its own; the surname is what actually
+    distinguishes someone, and this keeps the original "Andy Ogles"/
+    "Ogles" partial-match goal intact for the more identifying half of the
+    name. Non-PERSON labels are unaffected — "Supreme Court" both words
+    matter, "Kuwait" is one word regardless."""
     if not text:
         return set()
-    doc = nlp(text)
+    doc = nlp(_strip_html(text))
     tokens: set[str] = set()
     for ent in doc.ents:
         if ent.label_ not in _ENTITY_LABELS:
@@ -180,7 +211,10 @@ def entity_tokens(text: str) -> set[str]:
         cleaned = _clean_entity_span(ent.text)
         if len(cleaned) < 2 or cleaned.lower() in KNOWN_BYLINE_NOISE:
             continue
-        for tok in _TOKEN_RE.findall(cleaned.lower()):
+        words = _TOKEN_RE.findall(cleaned.lower())
+        if ent.label_ == "PERSON" and len(words) > 1:
+            words = words[-1:]
+        for tok in words:
             if tok not in _STOPWORDS and len(tok) > 1:
                 tokens.add(tok)
     return tokens
@@ -247,7 +281,7 @@ def extract_event_frame(text: str) -> dict:
     empty = {"action": None, "actor": None, "target": None, "event_type": None}
     if not text or not is_english(text):
         return empty
-    doc = nlp(text)
+    doc = nlp(_strip_html(text))
     entity_spans = [
         (ent.start, ent.end, _clean_entity_span(ent.text))
         for ent in doc.ents
