@@ -215,6 +215,7 @@ If **no official title** is provided, use the **name only** — do **not** infer
 - Never start posts with a media outlet name.
 - Attribution (e.g., “per White House”) may appear **only if organically part of the sentence.**
 - Do **not** end with trailing attributions like “per Reuters.”
+- A claim from a hostile/adversarial source (Iranian state media, CCP officials, etc.) that the article itself disputes or denies must stay attributed as a claim ("Iran claims...," "according to Iranian state media") — never restated as settled fact, and never drop a denial/rebuttal the article includes.
 
 ---
 
