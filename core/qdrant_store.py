@@ -185,7 +185,7 @@ class EventStore:
       seed_entities     — entity tokens (core/event_identity.entity_tokens) of this event's FIRST article, set once at creation and never changed — see core/event_identity.py's core_entities_of()
       entity_doc_freq   — {token: how many of this event's own accumulated articles contain it}, updated every commit()
       representative_text — title+description of whichever article was this commit()'s representative — a rolling anchor (updates to the latest), used as the "TEXT A" side of EventVerifier's LLM comparisons
-      related_event_ids  — [{event_id, cosine_score, linked_at}], set once at this event's creation when it exists BECAUSE a cosine-matched, entity-related candidate was ruled DIFFERENT_EVENT (see core/event_identity.py and main.py's 2026-08-10 note) — a breadcrumb for a future storyline-linking pass, not itself storyline grouping
+      related_event_ids  — list of link entries, each tagged `source` so the two ways a link gets created stay distinguishable (2026-09-02, see link_related_events()'s docstring for why): `{event_id, cosine_score, linked_at, source: "seed_cosine_reject"}` set once at this event's creation when it exists BECAUSE a cosine-matched, entity-related candidate was ruled DIFFERENT_EVENT (see core/event_identity.py and main.py's 2026-08-10 note) — a breadcrumb, not itself storyline grouping; or `{event_id, title, linked_at, source: "entity_reverse_lookup"}` written any time by link_related_events() — no cosine_score, since that path isn't a vector match at all
       canonical_title, canonical_summary — the seed article's own title/description, set once at creation and never changed (same permanence as seed_entities) — deliberately NOT an LLM-rewritten title/summary; see 2026-08-10 event-identity note: the user explicitly ruled out a new LLM call for this once event_time was dropped from scope
       event_type, canonical_action, actor, target — core/event_identity.extract_event_frame()'s free, no-LLM guess (spaCy dependency parse of the seed article, not an LLM) — set once at creation from `seed_frame`, fail-open to empty string when unclear rather than guessing; NOT re-derived on later commits to the same event
 
@@ -636,7 +636,17 @@ class EventStore:
         regardless of which one was the "new" event when the link was
         found. Skips (no-op) if this exact pair is already linked, so
         calling this repeatedly across cycles is safe — main.py's caller
-        doesn't need to track what it's already linked itself."""
+        doesn't need to track what it's already linked itself.
+
+        2026-09-02: tags each entry `"source": "entity_reverse_lookup"` —
+        unlike commit()'s own related_event_ids entries (`"source":
+        "seed_cosine_reject"`, see main.py), this path has no cosine_score
+        at all (HubIndex token reverse-lookup + related_event() LLM
+        confirmation, not a vector match) — added after a real data pull
+        showed a mix of both link types in the same field with no way to
+        tell them apart other than "does cosine_score happen to be
+        present," which silently read as a bogus 0.0 for this path instead
+        of "not applicable." """
         if self._client is None:
             return
         a = await self.get_by_id(event_id_a)
@@ -648,8 +658,8 @@ class EventStore:
         if any(link.get("event_id") == event_id_b for link in a_links):
             return  # already linked — same check from either side, since both are written together below
         now = int(time.time())
-        a_links.append({"event_id": event_id_b, "title": title_b, "linked_at": now})
-        b_links.append({"event_id": event_id_a, "title": title_a, "linked_at": now})
+        a_links.append({"event_id": event_id_b, "title": title_b, "linked_at": now, "source": "entity_reverse_lookup"})
+        b_links.append({"event_id": event_id_a, "title": title_a, "linked_at": now, "source": "entity_reverse_lookup"})
         try:
             await self._client.set_payload(
                 collection_name=self._collection,

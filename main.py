@@ -372,7 +372,7 @@ async def run_cycle(
                 log_decision(config, {**log_record, "llm_same_event_raw": llm_raw, "final_verdict": "SAME_OCCURRENCE" if same else "RELATED_DIFFERENT_EVENT"})
                 if not same:
                     logger.info("run_cycle: cluster %d — candidate event %s is RELATED_DIFFERENT_EVENT (LLM tier), trying next candidate", cluster_idx, candidate.get("event_id"))
-                    related_links.append({"event_id": candidate.get("event_id"), "cosine_score": candidate.get("_score")})
+                    related_links.append({"event_id": candidate.get("event_id"), "cosine_score": candidate.get("_score"), "source": "seed_cosine_reject"})
                     continue
                 matched = candidate
             else:
