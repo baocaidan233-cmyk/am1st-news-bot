@@ -143,6 +143,51 @@ def _strip_html(text: str) -> str:
     return html.unescape(_HTML_TAG_RE.sub(" ", text))
 
 
+_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+(?=[A-Z"“])')
+
+
+def _first_sentence(text: str) -> str:
+    """A cheap, regex-based first-sentence cut — no second spaCy parse just
+    to find a sentence boundary (entity_tokens()/extract_event_frame()
+    already run the real parse on whatever this returns). Same fail-open
+    spirit as the rest of this module: an imperfect split (missed
+    abbreviation, no match at all) just returns more or less text than a
+    perfect parser would, never raises, never blocks anything."""
+    cleaned = _strip_html(text).strip()
+    if not cleaned:
+        return ""
+    return _SENTENCE_SPLIT_RE.split(cleaned, maxsplit=1)[0].strip()
+
+
+def event_identity_text(title: str, description: str) -> str:
+    """Title + only the description's FIRST SENTENCE — the text every
+    event-identity judgment (entity_tokens(), extract_event_frame(),
+    same_event(), classify_subtype(), related_event(), and
+    verify_compatibility()'s IDF lexical fallback corpus) is built from,
+    2026-09-02. Modeled on the EU Joint Research Centre's EMM/NEXUS
+    production system, which deliberately narrows per-cluster main-event
+    detection to each article's title and first sentence rather than its
+    full body — the same design independently explains a real anomaly
+    found earlier (2026-08-14): a long, multi-topic Zero Hedge market-
+    digest article's full description fanned out into an unusually high
+    entity-token count, producing 31 spurious cross-event-link candidates
+    from tangential mentions buried deep in the piece, none of which were
+    its actual main event. RSS descriptions vary wildly in length and
+    shape — some feeds give a one-line summary, others dump the entire
+    article body into this field (see agents/rss_fetcher.py) — but the
+    title and lead sentence are the one place a news article reliably
+    states its own main event, regardless of how long or multi-topic the
+    rest of the body is.
+
+    Deliberately scoped to ONLY the event-identity chain — agents/
+    scorer.py (relevance) and agents/writer.py (caption generation) still
+    see the full article; this is a different, narrower question ("which
+    event is this") than "is this worth covering" or "what should the post
+    say," and narrowing their input would lose real substance those steps
+    need."""
+    return f"{title}\n{_first_sentence(description)}"
+
+
 _LOCATION_LABELS = {"GPE", "LOC", "FAC"}
 _NUMERIC_LABELS = {"CARDINAL", "QUANTITY", "PERCENT", "MONEY"}
 

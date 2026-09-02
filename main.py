@@ -65,7 +65,7 @@ from agents.og_metadata import fetch_link_preview
 from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
 from core.config import load_config
-from core.event_identity import EventVerifier, HubIndex, entity_tokens, extract_event_frame, log_decision, no_conflicting_specifics, verify_compatibility
+from core.event_identity import EventVerifier, HubIndex, entity_tokens, event_identity_text, extract_event_frame, log_decision, no_conflicting_specifics, verify_compatibility
 from core.hashing import cosine_similarity, tokenize
 from core.hot_topics import fetch_active_hot_topics
 from core.language import is_english
@@ -152,7 +152,7 @@ async def run_cycle(
     # looks like in this domain right now" without needing to query/persist
     # anything extra.
     doc_freq: Counter = Counter()
-    batch_tokens = [tokenize(f"{c.title} {c.description}") for c in survivors]
+    batch_tokens = [tokenize(event_identity_text(c.title, c.description)) for c in survivors]
     for toks in batch_tokens:
         doc_freq.update(toks)
     doc_count = len(survivors)
@@ -334,7 +334,7 @@ async def run_cycle(
             cluster_entity_tokens_list.append(set())
             continue
 
-        cluster_text = f"{members[0][0].title}\n{members[0][0].description}"
+        cluster_text = event_identity_text(members[0][0].title, members[0][0].description)
         new_tokens = entity_tokens(cluster_text)
         event_candidates = await event_store.peek_top_k(members[0][1], config.entity_verifier.top_k)
 
@@ -488,11 +488,11 @@ async def run_cycle(
             continue
 
         rep_c, rep_embedding = survivors_in_cluster[0]
-        rep_text = f"{rep_c.title}\n{rep_c.description}"
+        rep_text = event_identity_text(rep_c.title, rep_c.description)
         extra_points = [
             (
                 emb, c.source_name, int(c.published_at.timestamp()),
-                f"{c.title}\n{c.description}", entity_tokens(f"{c.title}\n{c.description}"), c.url,
+                event_identity_text(c.title, c.description), entity_tokens(event_identity_text(c.title, c.description)), c.url,
             )
             for c, emb in survivors_in_cluster[1:]
         ]
