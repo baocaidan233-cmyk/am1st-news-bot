@@ -118,6 +118,69 @@ _STOPWORDS = {
 _TOKEN_RE = re.compile(r"[a-zA-Z']+")
 _TRAILING_POSSESSIVE_RE = re.compile(r"’s$|'s$")
 
+# Acronym/full-name normalization (2026-09-04) — real production
+# fragmentation traced to entity_tokens() decomposing "Immigration and
+# Customs Enforcement" into {immigration, customs, enforcement} while the
+# same org's own acronym "ICE" tokenizes to {ice} — zero word-level
+# overlap despite being the identical entity, so verify_compatibility()'s
+# NO_OVERLAP short-circuit wrongly split real duplicate events (confirmed:
+# an ICE-whistleblower story and a USPS/mail-voting story both fragmented
+# this way). Keyed on the ORG span's full cleaned+lowercased text (not
+# decomposed into individual words) so this only fires on the complete
+# phrase, never on an incidental shared word like "customs" alone.
+_ORG_ACRONYM_MAP = {
+    "immigration and customs enforcement": "ice",
+    "u.s. immigration and customs enforcement": "ice",
+    "customs and border protection": "cbp",
+    "u.s. customs and border protection": "cbp",
+    "u.s. postal service": "usps",
+    "united states postal service": "usps",
+    "department of justice": "doj",
+    "u.s. department of justice": "doj",
+    "federal bureau of investigation": "fbi",
+    "department of homeland security": "dhs",
+    "u.s. department of homeland security": "dhs",
+    "department of health and human services": "hhs",
+    "internal revenue service": "irs",
+    "environmental protection agency": "epa",
+    "centers for disease control and prevention": "cdc",
+    "centers for disease control": "cdc",
+    "food and drug administration": "fda",
+    "drug enforcement administration": "dea",
+    "central intelligence agency": "cia",
+    "national security agency": "nsa",
+    "department of defense": "dod",
+    "department of state": "dos",
+    "department of education": "ed",
+    "justice department": "doj",
+    "homeland security department": "dhs",
+    "homeland security": "dhs",
+    "postal service": "usps",
+}
+
+# Direct acronym scan, independent of spaCy NER entirely (2026-09-04) —
+# confirmed on real production headlines that en_core_web_sm frequently
+# fails to tag well-known government-agency acronyms as entities at all in
+# Title-Case headline text ("DOJ threatens...", "ICE Skipped..."), instead
+# mis-tagging unrelated capitalized words nearby (e.g. "Whistle-Blower",
+# "Recruits" as PERSON/ORG). _ORG_ACRONYM_MAP above only helps when spaCy
+# DID find the full-name ORG span; this catches the bare acronym directly
+# via regex when spaCy found nothing there to normalize. False-positive
+# risk is low — these are short, curated, low-ambiguity tokens (not
+# generic words), and a spurious hit only adds a token that doesn't help
+# a match, same as any other noise token already tolerated elsewhere in
+# this module.
+_KNOWN_GOV_ACRONYMS = {
+    "ice", "doj", "fbi", "cbp", "usps", "dhs", "irs", "epa", "cdc", "fda",
+    "dea", "cia", "nsa", "dod", "dos", "hhs", "atf", "swat", "nypd", "lapd",
+    "opm", "gsa", "cbo", "gao", "ftc", "sec", "faa", "nsc", "nih", "who",
+}
+_ACRONYM_SCAN_RE = re.compile(r"\b[A-Z]{2,5}\b")
+
+
+def _scan_known_acronyms(text: str) -> set[str]:
+    return {tok.lower() for tok in _ACRONYM_SCAN_RE.findall(text) if tok.lower() in _KNOWN_GOV_ACRONYMS}
+
 
 def _clean_entity_span(span_text: str) -> str:
     t = span_text.strip().strip("\"'“”‘’")
@@ -256,12 +319,22 @@ def entity_tokens(text: str) -> set[str]:
         cleaned = _clean_entity_span(ent.text)
         if len(cleaned) < 2 or cleaned.lower() in KNOWN_BYLINE_NOISE:
             continue
+        if ent.label_ == "ORG":
+            org_key = cleaned.lower()
+            for article in ("the ", "a ", "an "):
+                if org_key.startswith(article):
+                    org_key = org_key[len(article):]
+                    break
+            acronym = _ORG_ACRONYM_MAP.get(org_key)
+            if acronym:
+                tokens.add(acronym)
         words = _TOKEN_RE.findall(cleaned.lower())
         if ent.label_ == "PERSON" and len(words) > 1:
             words = words[-1:]
         for tok in words:
             if tok not in _STOPWORDS and len(tok) > 1:
                 tokens.add(tok)
+    tokens |= _scan_known_acronyms(text)
     return tokens
 
 
