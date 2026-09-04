@@ -70,7 +70,7 @@ from agents.extractor import Extractor
 from agents.gettr_publisher import GettrPublisher
 from agents.og_metadata import fetch_link_preview
 from agents.posted_dedup_checker import content_for_embedding, find_publishable
-from agents.priority_ranker import PriorityRanker
+from agents.priority_ranker import PriorityRanker, log_publish_outcome
 from agents.trending import fetch_trending_headlines
 from agents.writer import Writer
 from core.alerts import AlertNotifier
@@ -193,6 +193,7 @@ async def run_cycle(
     ranked = await ranker.rank(generated, trending_headlines)
 
     winner = await find_publishable(ranked, embedder, posted_store, config)
+    log_publish_outcome(len(ranked), winner)
     if winner is None:
         return
 
