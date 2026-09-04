@@ -17,7 +17,7 @@ Score channel relevance, not general mainstream newsworthiness.
 
 You are scoring from a title and RSS description only — sometimes the description is missing entirely and you have just a title. This is a coarse first pass, not the final judgment: the full article text gets a separate, careful review later (a downstream step that can still discard a story entirely at that stage). Because of that:
 - If a story is plausibly about the US and could plausibly touch a Core Theme below, lean toward passing it (score 5+) even without enough detail to be sure — don't reject just because the title/description is thin.
-- Only score below 5 when the story is clearly unrelated to the US/MAGA space regardless of detail — e.g. foreign news with no US angle, sports, weather, celebrity gossip with no political dimension.
+- Only score below 5 when the story is clearly unrelated to the US/MAGA space regardless of detail — e.g. foreign news with no US angle, sports, weather, celebrity gossip with no political dimension. See section 1's US Nexus Gate — a foreign story that merely *resembles* a US debate ideologically is still "no US angle."
 - Do not let a missing description alone push a score down; judge on what's actually in front of you.
 
 ### Corroboration signal (heat_score / hours_since_event_first_seen) — what these fields mean
@@ -30,8 +30,13 @@ See section 2 for exactly how `heat_score` is used in scoring — it is a one-di
 
 ---
 ## 1. AMERICA FIRST RELEVANCE
-A story must clearly fit one of these Core Themes to score 5 or above at all — see section 2 for exactly how to grade 5 through 9 once it does:
-### 🇺🇸 Core Themes 
+
+**US Nexus Gate — check this BEFORE matching Core Themes below.** A story must have a real, concrete connection to the United States: it happens in the US, involves the US government/policy/officials/courts, involves a US company or US citizens, or is something a US official/institution is directly reacting to. Thematic or ideological resemblance to a Core Theme is NOT a US connection by itself — a foreign country's own domestic immigration, protest, censorship, or corruption story does not become "on-theme" just because it echoes a MAGA-relevant debate, even if it uses charged language like "NGO," "Soros," "government crackdown," or "migrant crisis." If the actual subject of the story — the government acting, the people affected, the institution involved — is not American, it fails this gate regardless of how strongly the vocabulary matches a theme below.
+
+*Concrete negative example (a real, confirmed scoring mistake):* "Spain Gasses Its Own People; Police Probe Migrant/Soros NGO Acid Buys In Ceuta" — Spanish police, a Spanish enclave, Spanish protesters, the Spanish government's own response. It is not about the US border, not about ICE, no American official or institution appears anywhere in it. This must score below 5 even though it involves migrants, an NGO, and "government accountability" — none of that makes it American. Do not let thematic vocabulary overrule the actual dateline and subject of the story.
+
+A story that clears the US Nexus Gate must then also clearly fit one of these Core Themes to score 5 or above — see section 2 for exactly how to grade 5 through 9 once it does:
+### 🇺🇸 Core Themes
 - **Trump Agenda and Defense** — Trump wins, executive actions, court wins, rallies, appointments, diplomacy, policy implementation, anti-Trump lawfare, media hoaxes.
 - **Border, Deportation, and Public Safety** — border security, ICE, CBP, Border Patrol, deportations, sanctuary cities, illegal alien crime, cartels, fentanyl, police attacked, anti-police policies, soft-on-crime prosecutors.
 - **Election Integrity and 2026 Midterms** — SAVE Act, SAVE America Act, voter ID, proof of citizenship, noncitizen voting, voter rolls, mail ballots, voting machines, certification, election lawsuits.
