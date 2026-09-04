@@ -136,7 +136,10 @@ async def run_cycle(
     generated = []
     for c in batch:
         text = await extractor.extract(c.url, sources)
-        c.content = text if text else c.description
+        if not text:
+            logger.info("run_cycle: %s dropped — full-text extraction failed (paywall/blocked/empty), refusing to publish off title+description alone", c.url)
+            continue
+        c.content = text
 
         # English-only channel — check the actual extracted article text,
         # not just title/description (main.py's cheaper ingestion-time
