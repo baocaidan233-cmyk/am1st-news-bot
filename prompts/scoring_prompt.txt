@@ -20,17 +20,11 @@ You are scoring from a title and RSS description only — sometimes the descript
 - Only score below 5 when the story is clearly unrelated to the US/MAGA space regardless of detail — e.g. foreign news with no US angle, sports, weather, celebrity gossip with no political dimension. See section 1's US Nexus Gate — a foreign story that merely *resembles* a US debate ideologically is still "no US angle."
 - Do not let a missing description alone push a score down; judge on what's actually in front of you.
 
-### Corroboration signal (heat_score / hours_since_event_first_seen) — what these fields mean
+### Corroboration signals — what these fields mean
 
-Alongside the title/description, you'll also receive `heat_score` and `hours_since_event_first_seen` — an automated measurement of how many other sources are covering this same underlying event, and how long ago the earliest one appeared:
-- `heat_score=1.0` means this is (so far) the only source reporting it. Higher values mean more outlets — weighted higher for major wire/TV outlets — are covering the same event right now.
-- `hours_since_event_first_seen` reflects when the underlying event was FIRST reported anywhere, which can be much earlier than this particular article's own publish time.
+Alongside the title/description, you'll also receive `heat_score`, `hours_since_event_first_seen`, and sometimes a short list of currently trending US headlines (Google News) — two independent ways of measuring "is this actually significant right now": `heat_score` counts how many of AM1ST's own RSS sources are covering this same underlying event (1.0 = only this one so far, weighted higher for major wire/TV outlets); the trending list reflects what mainstream US news is surfacing right now, independent of AM1ST's own sources. `hours_since_event_first_seen` is when the underlying event was FIRST reported anywhere, which can predate this article's own publish time.
 
-See section 2 for exactly how `heat_score` is used in scoring — it is a one-directional signal (it can only raise a score, never lower one), not a general-purpose importance meter.
-
-### Trending headlines — what this field means
-
-You may also receive a list of currently trending US news headlines (Google News). This is a DIFFERENT signal from `heat_score`: `heat_score` reflects how many of AM1ST's own RSS sources have corroborated this specific candidate's underlying event, while trending headlines reflect what mainstream US news is actively surfacing as significant right now, independent of AM1ST's own source list. If a candidate's topic clearly overlaps with one of these trending headlines, treat that as real, independent evidence the story is currently significant — see section 2's corroboration bullets for exactly how this factors into the band. Same one-directional rule as `heat_score`: not appearing in this list is not evidence a story is unimportant (the list is short, refreshes constantly, and plenty of real, on-theme stories simply won't be on it at any given moment) — absence here must never be used to lower a score.
+Both corroboration signals are one-directional (see section 2) — presence can only raise a score, never lower one; absence (low heat_score, no trending overlap) is never evidence a story is unimportant.
 
 ---
 ## 1. AMERICA FIRST RELEVANCE
@@ -90,8 +84,7 @@ Anything below 5 is rejected and never enters the candidate pool — do not spen
 - Patriot Shock Factor: enrages or vindicates the base (faith-based attacks, gun-rights erosion, targeting of whistleblowers/J6 defendants/MAGA donors)
 - Opposition Challenge: MAGA is directly attacked by Democrats, mainstream media, federal agencies (FBI/DOJ), Big Tech, universities/activist groups, or an aggressive/mocking foreign adversary
 - GOP Internal Conflict or MAGA Traitor: RINOs sabotaging MAGA priorities, Freedom Caucus vs. establishment fights, a figure widely seen as betraying the movement
-- **Corroboration bullet:** `heat_score` 4.0–9.9 — real, active multi-outlet coverage of this exact event right now.
-- **Corroboration bullet:** this candidate's topic clearly overlaps with one of the currently trending US headlines supplied.
+- **Corroboration bullet:** `heat_score` 4.0–9.9, OR the topic clearly overlaps a currently trending US headline — real, active coverage of this exact event right now, from either signal.
 
 **6 — Solid, routine on-theme coverage.** Clearly fits one of the Core Themes in section 1, but doesn't hit any escalation criteria above — the ordinary, steady-state story that belongs on this channel.
 - **Corroboration bullet:** `heat_score` 2.0–3.9 — a couple of other outlets already corroborating this exact event.
