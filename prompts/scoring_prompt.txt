@@ -20,12 +20,13 @@ You are scoring from a title and RSS description only — sometimes the descript
 - Only score below 5 when the story is clearly unrelated to the US/MAGA space regardless of detail — e.g. foreign news with no US angle, sports, weather, celebrity gossip with no political dimension.
 - Do not let a missing description alone push a score down; judge on what's actually in front of you.
 
-### Corroboration signal (heat_score / hours_since_event_first_seen)
+### Corroboration signal (heat_score / hours_since_event_first_seen) — what these fields mean
 
-Alongside the title/description, you'll also receive `heat_score` and `hours_since_event_first_seen` — an automated measurement of how many other sources are covering this same underlying event, and how long ago the earliest one appeared. This is a real signal, not a guess:
-- `heat_score=1.0` means this is (so far) the only source reporting it. Higher values mean more outlets — weighted higher for major wire/TV outlets — are covering the same event right now. A high heat_score is a genuine signal of a real, significant, currently-developing story — weigh it toward the higher score bands in section 2, on top of (not instead of) thematic fit.
-- `hours_since_event_first_seen` reflects when the underlying event was FIRST reported anywhere, which can be much earlier than this particular article's own publish time — a story that's actually old news being rehashed by a new outlet should NOT score as if it were breaking. A `heat_score` of 1.0 (no corroboration yet) with a low `hours_since_event_first_seen` is the genuine "breaking, unconfirmed" case — don't penalize that combination just because nothing else is covering it yet.
-- Don't over-index on this alone — a low-heat, thematically strong story can still score well; a high-heat story with no real America First angle still doesn't clear the 5 floor in section 1.
+Alongside the title/description, you'll also receive `heat_score` and `hours_since_event_first_seen` — an automated measurement of how many other sources are covering this same underlying event, and how long ago the earliest one appeared:
+- `heat_score=1.0` means this is (so far) the only source reporting it. Higher values mean more outlets — weighted higher for major wire/TV outlets — are covering the same event right now.
+- `hours_since_event_first_seen` reflects when the underlying event was FIRST reported anywhere, which can be much earlier than this particular article's own publish time.
+
+See section 2 for exactly how `heat_score` is used in scoring — it is a one-directional signal (it can only raise a score, never lower one), not a general-purpose importance meter.
 
 ---
 ## 1. AMERICA FIRST RELEVANCE
@@ -55,7 +56,9 @@ A story must clearly fit one of these Core Themes to score 5 or above at all —
 
 ## 2. SCORE BANDS — 5 IS THE FLOOR, DIFFERENTIATE 6-9
 
-Anything below 5 is rejected and never enters the candidate pool — do not spend effort fine-grading rejects. Everything at 5 or above must land in exactly one of these bands, applied consistently story after story:
+Anything below 5 is rejected and never enters the candidate pool — do not spend effort fine-grading rejects. Everything at 5 or above must land in exactly one of these bands: check 9-10 first, then 8, then 7, then 6, and use the highest band where ANY one bullet (thematic or corroboration) applies.
+
+**Corroboration (`heat_score`) is one of several ways to qualify for a band — it can only pull a score UP, never down.** A band's corroboration bullet is an alternative trigger, exactly like its other bullets: satisfying it is enough on its own, regardless of whether this specific article's own angle matches any other bullet in that band. There is no bullet anywhere for "low heat_score" or "no corroboration yet" — that is intentional. A `heat_score` of 1.0, or a hot topic mainstream outlets aren't covering at all, is not evidence the story is unimportant: real suppression of real stories by mainstream media happens often, and surfacing exactly those stories is a core reason this channel exists. When no corroboration bullet applies, simply grade the band on its other bullets, same as if `heat_score` didn't exist. The one exception: if `hours_since_event_first_seen` shows the underlying event is old news being rehashed by a new outlet, do not apply a corroboration bullet as if it were fresh breaking corroboration of something still actively unfolding.
 
 **9-10 — Peak / historic-scale.** Reserve for the most severe version of a structural escalation event:
 - Border invasion / CBP completely overwhelmed
@@ -72,13 +75,16 @@ Anything below 5 is rejected and never enters the candidate pool — do not spen
 - Censorship leak, moderation exposure, whistleblower drop
 - White House gaffe, official stumble, protest disruption
 - A single MAGA influencer post already at 100k+ views within 12 hours
+- **Corroboration bullet:** `heat_score` >= 10 — a dozen or more outlets actively covering this exact event right now.
 
 **7 — Strong thematic engagement, no single trigger event.** On-theme (section 1) and additionally hits one of:
 - Patriot Shock Factor: enrages or vindicates the base (faith-based attacks, gun-rights erosion, targeting of whistleblowers/J6 defendants/MAGA donors)
 - Opposition Challenge: MAGA is directly attacked by Democrats, mainstream media, federal agencies (FBI/DOJ), Big Tech, universities/activist groups, or an aggressive/mocking foreign adversary
 - GOP Internal Conflict or MAGA Traitor: RINOs sabotaging MAGA priorities, Freedom Caucus vs. establishment fights, a figure widely seen as betraying the movement
+- **Corroboration bullet:** `heat_score` 4.0–9.9 — real, active multi-outlet coverage of this exact event right now.
 
 **6 — Solid, routine on-theme coverage.** Clearly fits one of the Core Themes in section 1, but doesn't hit any escalation criteria above — the ordinary, steady-state story that belongs on this channel.
+- **Corroboration bullet:** `heat_score` 2.0–3.9 — a couple of other outlets already corroborating this exact event.
 
 **5 — Marginal.** Tangential connection to a Core Theme; borderline whether it belongs at all. This is the floor — below 5, reject without further grading.
 
