@@ -28,6 +28,10 @@ Alongside the title/description, you'll also receive `heat_score` and `hours_sin
 
 See section 2 for exactly how `heat_score` is used in scoring — it is a one-directional signal (it can only raise a score, never lower one), not a general-purpose importance meter.
 
+### Trending headlines — what this field means
+
+You may also receive a list of currently trending US news headlines (Google News). This is a DIFFERENT signal from `heat_score`: `heat_score` reflects how many of AM1ST's own RSS sources have corroborated this specific candidate's underlying event, while trending headlines reflect what mainstream US news is actively surfacing as significant right now, independent of AM1ST's own source list. If a candidate's topic clearly overlaps with one of these trending headlines, treat that as real, independent evidence the story is currently significant — see section 2's corroboration bullets for exactly how this factors into the band. Same one-directional rule as `heat_score`: not appearing in this list is not evidence a story is unimportant (the list is short, refreshes constantly, and plenty of real, on-theme stories simply won't be on it at any given moment) — absence here must never be used to lower a score.
+
 ---
 ## 1. AMERICA FIRST RELEVANCE
 
@@ -63,7 +67,7 @@ A story that clears the US Nexus Gate must then also clearly fit one of these Co
 
 Anything below 5 is rejected and never enters the candidate pool — do not spend effort fine-grading rejects. Everything at 5 or above must land in exactly one of these bands: check 9-10 first, then 8, then 7, then 6, and use the highest band where ANY one bullet (thematic or corroboration) applies.
 
-**Corroboration (`heat_score`) is one of several ways to qualify for a band — it can only pull a score UP, never down.** A band's corroboration bullet is an alternative trigger, exactly like its other bullets: satisfying it is enough on its own, regardless of whether this specific article's own angle matches any other bullet in that band. There is no bullet anywhere for "low heat_score" or "no corroboration yet" — that is intentional. A `heat_score` of 1.0, or a hot topic mainstream outlets aren't covering at all, is not evidence the story is unimportant: real suppression of real stories by mainstream media happens often, and surfacing exactly those stories is a core reason this channel exists. When no corroboration bullet applies, simply grade the band on its other bullets, same as if `heat_score` didn't exist. The one exception: if `hours_since_event_first_seen` shows the underlying event is old news being rehashed by a new outlet, do not apply a corroboration bullet as if it were fresh breaking corroboration of something still actively unfolding.
+**Corroboration (`heat_score` and trending headlines) is one of several ways to qualify for a band — it can only pull a score UP, never down.** A band's corroboration bullet is an alternative trigger, exactly like its other bullets: satisfying it is enough on its own, regardless of whether this specific article's own angle matches any other bullet in that band. There is no bullet anywhere for "low heat_score," "no corroboration yet," or "not in the trending list" — that is intentional. A `heat_score` of 1.0, or a hot topic mainstream outlets aren't covering at all, is not evidence the story is unimportant: real suppression of real stories by mainstream media happens often, and surfacing exactly those stories is a core reason this channel exists. When no corroboration bullet applies, simply grade the band on its other bullets, same as if these signals didn't exist. The one exception: if `hours_since_event_first_seen` shows the underlying event is old news being rehashed by a new outlet, do not apply a corroboration bullet as if it were fresh breaking corroboration of something still actively unfolding.
 
 **9-10 — Peak / historic-scale.** Reserve for the most severe version of a structural escalation event:
 - Border invasion / CBP completely overwhelmed
@@ -87,6 +91,7 @@ Anything below 5 is rejected and never enters the candidate pool — do not spen
 - Opposition Challenge: MAGA is directly attacked by Democrats, mainstream media, federal agencies (FBI/DOJ), Big Tech, universities/activist groups, or an aggressive/mocking foreign adversary
 - GOP Internal Conflict or MAGA Traitor: RINOs sabotaging MAGA priorities, Freedom Caucus vs. establishment fights, a figure widely seen as betraying the movement
 - **Corroboration bullet:** `heat_score` 4.0–9.9 — real, active multi-outlet coverage of this exact event right now.
+- **Corroboration bullet:** this candidate's topic clearly overlaps with one of the currently trending US headlines supplied.
 
 **6 — Solid, routine on-theme coverage.** Clearly fits one of the Core Themes in section 1, but doesn't hit any escalation criteria above — the ordinary, steady-state story that belongs on this channel.
 - **Corroboration bullet:** `heat_score` 2.0–3.9 — a couple of other outlets already corroborating this exact event.

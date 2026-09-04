@@ -64,6 +64,7 @@ from agents.embedder import Embedder
 from agents.og_metadata import fetch_link_preview
 from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
+from agents.trending import fetch_trending_headlines
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex, entity_tokens, event_identity_text, extract_event_frame, log_decision, no_conflicting_specifics, verify_compatibility
 from core.hashing import cosine_similarity, tokenize
@@ -460,10 +461,18 @@ async def run_cycle(
     # the score gate never touches am1st_events at all, without needing a
     # separate (and inevitably imperfect) cheap relevance classifier: the
     # score gate we're already paying for IS that classifier. ---
+    # Fetched once per cycle, not once per candidate (agents/trending.py is
+    # already a proven, free, no-key mechanism — main_publish.py's own
+    # priority_ranker has used it since 2026-08-xx; this reuses the exact
+    # same feed for the ingestion-side Scorer too, 2026-09-04, so it has an
+    # external "what's actually trending right now" signal to weigh
+    # alongside heat_score, which only reflects AM1ST's own accumulated
+    # RSS-source corroboration).
+    trending_headlines = await fetch_trending_headlines()
     scored: list[tuple] = []  # (candidate, embedding, cluster_idx, passed)
     for c, embedding, cluster_idx in scoring_candidates:
         try:
-            score_output = await scorer.score(c)
+            score_output = await scorer.score(c, trending_headlines)
             if score_output is None:
                 continue
             c.llm_score = score_output.llm_score
