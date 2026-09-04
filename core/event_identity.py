@@ -182,6 +182,61 @@ def _scan_known_acronyms(text: str) -> set[str]:
     return {tok.lower() for tok in _ACRONYM_SCAN_RE.findall(text) if tok.lower() in _KNOWN_GOV_ACRONYMS}
 
 
+# Role-title -> current officeholder surname (2026-09-04) — the harder
+# fragmentation case neither the acronym map nor a better NER model can
+# close: one article names the officeholder ("Markwayne Mullin"), another
+# refers to the same person only by role ("Trump's DHS Boss") with zero
+# shared words between them. An LLM's own general knowledge was tested and
+# found unreliable here (same_event() failed this exact DHS case with
+# both the old and new prompt) — officeholders change and any model's
+# knowledge can be stale, so this needs AM1ST's own ground truth, not the
+# model's. Every mapping below was verified by grepping AM1ST's own
+# ingested article text for the officeholder's name co-occurring with the
+# title (logs/*.jsonl), NOT assumed from general knowledge — the DHS
+# Secretary and Attorney General in this administration are not who
+# real-world 2025 news would suggest, so an unverified guess would have
+# been wrong. Deliberately excludes "Secretary of State" and "Attorney
+# General" despite having verified names for both (Rubio, Blanche) — both
+# titles collide with common state-level equivalents ("Texas Attorney
+# General," a state's own "Secretary of State" election official), and a
+# wrong match here risks a false MERGE (harder to recover from than a
+# missed one, per this module's own design bias elsewhere). Needs manual
+# upkeep on a cabinet reshuffle — same maintenance tradeoff as the rest of
+# this gazetteer, accepted for this small, bounded list. "Vice President"
+# is excluded too, for a different reason — too generic (corporate titles,
+# foreign officials) to safely assume it means Vance.
+_ROLE_TITLE_MAP = {
+    "treasury secretary": "bessent",
+    "secretary of the treasury": "bessent",
+    "defense secretary": "hegseth",
+    "secretary of defense": "hegseth",
+    "interior secretary": "burgum",
+    "secretary of the interior": "burgum",
+    "agriculture secretary": "rollins",
+    "secretary of agriculture": "rollins",
+    "commerce secretary": "lutnick",
+    "secretary of commerce": "lutnick",
+    "hud secretary": "turner",
+    "secretary of housing and urban development": "turner",
+    "transportation secretary": "duffy",
+    "secretary of transportation": "duffy",
+    "energy secretary": "wright",
+    "secretary of energy": "wright",
+    "dhs secretary": "mullin",
+    "dhs boss": "mullin",
+    "dhs chief": "mullin",
+    "secretary of homeland security": "mullin",
+    "homeland security secretary": "mullin",
+    "u.s. trade representative": "greer",
+    "trade representative": "greer",
+}
+_ROLE_TITLE_RE = re.compile("|".join(re.escape(k) for k in _ROLE_TITLE_MAP), re.IGNORECASE)
+
+
+def _scan_role_titles(text: str) -> set[str]:
+    return {_ROLE_TITLE_MAP[m.group(0).lower()] for m in _ROLE_TITLE_RE.finditer(text)}
+
+
 def _clean_entity_span(span_text: str) -> str:
     t = span_text.strip().strip("\"'“”‘’")
     t = _TRAILING_POSSESSIVE_RE.sub("", t)
@@ -335,6 +390,7 @@ def entity_tokens(text: str) -> set[str]:
             if tok not in _STOPWORDS and len(tok) > 1:
                 tokens.add(tok)
     tokens |= _scan_known_acronyms(text)
+    tokens |= _scan_role_titles(text)
     return tokens
 
 
@@ -535,13 +591,16 @@ async def verify_compatibility(
     new_text: str = "",
     doc_freq: Counter | None = None,
     doc_count: int = 0,
+    cosine_score: float = 0.0,
 ) -> str:
     """Rule tier only — no LLM. Returns:
       NO_OVERLAP  — confident DIFFERENT_EVENT, no LLM needed
       COMPATIBLE  — confident SAME_EVENT, no LLM needed
-      AMBIGUOUS   — needs the LLM (either every shared entity token is a known
-                    multi-event hub, or new_tokens was empty and the lexical
-                    fallback below couldn't confirm a match either)
+      AMBIGUOUS   — needs the LLM (every shared entity token is a known
+                    multi-event hub; new_tokens was empty and the lexical
+                    fallback below couldn't confirm a match either; or
+                    overlap was empty but cosine_score cleared
+                    no_overlap_llm_review_floor)
       FAIL_OPEN   — new_tokens is empty AND no lexical fallback was available
                     to this call (doc_freq/new_text not supplied) — trust
                     cosine's own match, the pre-2026-08-20 behavior, kept only
@@ -585,6 +644,15 @@ async def verify_compatibility(
         return "COMPATIBLE"  # shouldn't normally happen once seed_entities is always set at event creation
     overlap = core & new_tokens
     if not overlap:
+        # 2026-09-04: zero literal entity overlap at high cosine is not
+        # always a different event — see EntityVerifierConfig's
+        # no_overlap_llm_review_floor docstring. Below the floor, still a
+        # confident NO_OVERLAP (no LLM call); at/above it, downgraded to
+        # AMBIGUOUS so the LLM's own world knowledge gets a chance to
+        # catch the "same actor/institution, different surface form" case
+        # that no dictionary or NER fix can close.
+        if cosine_score >= config.entity_verifier.no_overlap_llm_review_floor:
+            return "AMBIGUOUS"
         return "NO_OVERLAP"
     threshold = config.entity_verifier.hub_event_count_threshold
     non_hub = set()

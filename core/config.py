@@ -191,6 +191,34 @@ class EntityVerifierConfig(BaseModel):
     # fact — the location/number check guards against that.
     restatement_cosine_floor: float = 0.92
 
+    # 2026-09-04: verify_compatibility()'s NO_OVERLAP short-circuit
+    # (entity overlap == empty set -> confident DIFFERENT_EVENT, no LLM)
+    # was found, via a full audit of am1st_events, to wrongly fragment
+    # real duplicate events whenever the two articles refer to the same
+    # actor/institution through different surface forms with zero shared
+    # words (a role vs. a name — "Trump's DHS Boss" vs. "Markwayne
+    # Mullin"; an institution vs. its political head — "Treasury
+    # Considers..." vs. "Trump Admin Moves To..."). No dictionary or NER
+    # fix can close this — the shared word simply doesn't exist in either
+    # text. Recommended externally (GPT architecture review, 2026-09-04)
+    # and matches this module's own asymmetry principle elsewhere: at
+    # this cosine floor, zero overlap is downgraded from NO_OVERLAP to
+    # AMBIGUOUS (one extra same_event() LLM call) instead of confidently
+    # rejecting — the LLM's world knowledge (who currently holds an
+    # office, which agency executes which administration's policy) covers
+    # exactly the gap entity-overlap can't. Deliberately NOT set below the
+    # existing peek_top_k() candidate floor (heat.related_threshold, 0.6)
+    # — this only reconsiders candidates already deemed plausible on
+    # semantic grounds. 0.75 chosen from this session's own audit: every
+    # confirmed real same-event pair with zero entity overlap scored at or
+    # above this cosine; genuinely-different pairs (e.g. a recurring
+    # "which gun does this veteran recommend" column, cosine ~0.81) also
+    # sit above it, but that's fine — routing them to the LLM instead of a
+    # rule-tier guess is the whole point, not a regression to guard
+    # against. Not independently re-validated on a labeled dataset the way
+    # every other threshold in this class was — treat as a starting point.
+    no_overlap_llm_review_floor: float = 0.75
+
     # IDF-weighted keyword overlap (2026-08-20) — a second, entity-
     # independent lexical signal for verify_compatibility()'s FAIL_OPEN
     # branch (new_tokens from NER came back empty — very short text, or a

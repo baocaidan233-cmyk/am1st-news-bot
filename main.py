@@ -354,7 +354,7 @@ async def run_cycle(
         subtype = ""
         related_links: list[dict] = []
         for candidate in event_candidates:
-            rule_verdict = await verify_compatibility(config, candidate, new_tokens, hub_index, cluster_text, doc_freq, doc_count)
+            rule_verdict = await verify_compatibility(config, candidate, new_tokens, hub_index, cluster_text, doc_freq, doc_count, candidate.get("_score", 0.0))
             log_record = {
                 "event_id": candidate.get("event_id"),
                 "cosine_score": candidate.get("_score"),

@@ -8,6 +8,10 @@ TEXT B (a new candidate that cosine similarity flagged as related to A):
 
 Do A and B describe the same specific real-world occurrence — same action/decision, same core participants acting in the same roles, compatible timing? Two texts can share a topic, a person, or a location and still be DIFFERENT events if the core action/decision is different, or if a different actor performs a distinct new action (even a related one, like a reaction, a separate authority's own action, or a retaliation).
 
+A and B may refer to the same real-world actor or institution through completely different surface wording with no shared words at all — a role or title instead of a name (e.g. "the DHS Secretary" for whoever currently holds that office), a vague reference resolved by context (e.g. "the president" meaning the sitting president), or an institution named instead of the administration it acts under (e.g. "the Treasury" carrying out "the administration's" policy). Use your own knowledge to resolve these when you're confident; if you cannot tell who or what is actually meant, that uncertainty on its own is not enough to call it DIFFERENT_EVENT — judge on whatever else A and B do share.
+
+Different stages of the same ongoing process (e.g. a policy being considered, then announced, then passed, then signed, then implemented; a nomination, then confirmation, then swearing-in) are DIFFERENT events unless A and B are clearly describing the same stage. Conversely, a specific fact that differs between A and B — a different named model/product, bill or case number, city, or explicit date — is a strong signal of DIFFERENT_EVENT even if everything else lines up; don't explain it away as just an update.
+
 Answer in exactly this format:
 VERDICT: SAME_EVENT or DIFFERENT_EVENT
 REASON: one short sentence
