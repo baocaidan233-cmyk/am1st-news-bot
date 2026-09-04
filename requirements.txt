@@ -15,8 +15,8 @@ spacy>=3.7
 # (core/event_identity.py's entity_tokens() needs this model on disk — not
 # pip-installable as a plain dependency, must be fetched separately, on
 # both this machine and the VM)
-playwright>=1.44
-# after installing requirements: python -m playwright install chromium
-# (agents/extractor.py's browser-render fallback needs the actual browser
-# binary on disk, same non-pip-installable pattern as the spacy model
-# above — fetch on both this machine and the VM)
+# playwright removed 2026-09-04 — agents/extractor.py's browser-render
+# fallback now goes through the shared render service (core/
+# render_client.py, a plain httpx POST), not a Playwright instance this
+# process launches itself. The actual Chromium dependency now lives only
+# in that separate, shared service's own venv.

@@ -6,11 +6,11 @@ from urllib.parse import urlparse
 
 import httpx
 import trafilatura
-from playwright.async_api import async_playwright
 
 from core.alerts import AlertNotifier
 from core.config import AppConfig
 from core.models import RssSource
+from core.render_client import render as render_service_render
 
 logger = logging.getLogger(__name__)
 
@@ -40,16 +40,9 @@ _BROWSER_REQUIRED_DOMAINS = (
 # These sites use real bot-detection vendors (DataDome/PerimeterX-class),
 # not just a basic UA check — confirmed 2026-08-11: a bare Playwright
 # render against a live nytimes.com article was itself served a DataDome
-# CAPTCHA page. Same stealth measures as
-# China_Scandal_News/agents/headless_scraper.py's _STEALTH_INIT_SCRIPT,
-# reused here rather than reinvented.
-_STEALTH_INIT_SCRIPT = """
-Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-window.chrome = window.chrome || { runtime: {} };
-"""
-_VIEWPORT = {"width": 1366, "height": 900}
+# CAPTCHA page. Routed through the shared render service (2026-09-04,
+# core/render_client.py) rather than this module launching its own
+# Playwright instance per call — stealth measures now live there.
 
 # Confirmed 2026-08-11 on a real FT article: an expired paywall cookie
 # doesn't make the fetch fail — it "succeeds" with the site's own marketing
@@ -166,48 +159,21 @@ class Extractor:
             return None
 
     async def _fetch_browser(self, url: str, headers: dict) -> str | None:
-        """Real Chromium render — only reached for _BROWSER_REQUIRED_DOMAINS,
-        after the plain fetch already proved insufficient. One launch per
-        call rather than a shared long-lived browser: this path is rare
-        (a handful of paywall domains, only within the small publish-cycle
-        batch), so the launch cost isn't worth the extra lifecycle
-        management a persistent instance would need — same call shape as
-        China_Scandal_News/agents/headless_scraper.py, including its
-        stealth init script (see _STEALTH_INIT_SCRIPT above)."""
-        try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                try:
-                    context = await browser.new_context(
-                        user_agent=headers["User-Agent"],
-                        viewport=_VIEWPORT,
-                        locale="en-US",
-                    )
-                    try:
-                        await context.add_init_script(_STEALTH_INIT_SCRIPT)
-                        if "cookie" in headers:
-                            await context.set_extra_http_headers({"cookie": headers["cookie"]})
-                        page = await context.new_page()
-                        try:
-                            await page.goto(
-                                url,
-                                wait_until="domcontentloaded",
-                                timeout=self._config.extraction.timeout_seconds * 1000,
-                            )
-                            # DataDome-class challenges resolve client-side a
-                            # couple seconds after load — give the page a
-                            # moment before reading content back out.
-                            await page.wait_for_timeout(2500)
-                            return await page.content()
-                        finally:
-                            await page.close()
-                    finally:
-                        await context.close()
-                finally:
-                    await browser.close()
-        except Exception as e:
-            logger.info("Extractor: browser fetch failed for %s (%s)", url, e)
+        """Real Chromium render via the shared render service (2026-09-04)
+        — only reached for _BROWSER_REQUIRED_DOMAINS, after the plain fetch
+        already proved insufficient. No longer launches its own Playwright
+        instance per call; see core/render_client.py."""
+        result = await render_service_render(
+            url,
+            mode="rendered",
+            wait_ms=2500,
+            timeout_ms=self._config.extraction.timeout_seconds * 1000,
+            cookie=headers.get("cookie"),
+        )
+        if result is None:
             return None
+        _status, content = result
+        return content
 
     async def extract(self, url: str, sources: list[RssSource]) -> str | None:
         """Returns the extracted main-content text, or None if extraction
