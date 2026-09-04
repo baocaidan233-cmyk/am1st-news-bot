@@ -209,15 +209,20 @@ class EntityVerifierConfig(BaseModel):
     # exactly the gap entity-overlap can't. Deliberately NOT set below the
     # existing peek_top_k() candidate floor (heat.related_threshold, 0.6)
     # — this only reconsiders candidates already deemed plausible on
-    # semantic grounds. 0.75 chosen from this session's own audit: every
-    # confirmed real same-event pair with zero entity overlap scored at or
-    # above this cosine; genuinely-different pairs (e.g. a recurring
-    # "which gun does this veteran recommend" column, cosine ~0.81) also
-    # sit above it, but that's fine — routing them to the LLM instead of a
-    # rule-tier guess is the whole point, not a regression to guard
-    # against. Not independently re-validated on a labeled dataset the way
-    # every other threshold in this class was — treat as a starting point.
-    no_overlap_llm_review_floor: float = 0.75
+    # semantic grounds.
+    #
+    # 2026-09-04, recalibrated from an initial 0.75 guess: sampled 12 real
+    # zero-overlap pairs per 0.05-wide cosine bucket from 0.60 up, and used
+    # same_event() itself as the ground-truth oracle for each (this only
+    # tests "is asking the LLM worth it here," not same_event()'s own
+    # accuracy, so it's a valid comparison even though same_event() isn't
+    # perfect). Actual SAME_EVENT rate despite zero entity overlap:
+    # [0.60,0.70)=17%, [0.70,0.75)=50%, [0.75,0.80)=50%, [0.80,0.85)=50%,
+    # [0.85,0.90)=58%, [0.90,1.0]=100%. The real jump is at 0.70, not 0.75
+    # — 0.75-0.90 is roughly flat at ~50-58%, meaning the original 0.75
+    # guess was missing an entire bucket (0.70-0.75) where half of all
+    # zero-overlap pairs are genuine duplicates. Moved to 0.70.
+    no_overlap_llm_review_floor: float = 0.70
 
     # IDF-weighted keyword overlap (2026-08-20) — a second, entity-
     # independent lexical signal for verify_compatibility()'s FAIL_OPEN

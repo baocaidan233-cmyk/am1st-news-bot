@@ -684,6 +684,15 @@ async def verify_compatibility(
                 "weighted_overlap_score": overlap,
                 "threshold": config.entity_verifier.weighted_overlap_threshold,
                 "rule_verdict": verdict,
+                # 2026-09-04: added after finding the first 85 logged
+                # entries here couldn't be used to recalibrate
+                # weighted_overlap_threshold at all — no text fields, no
+                # way to reconstruct what was actually being compared.
+                # Without these, "recalibrate once real am1st decisions
+                # have been logged and reviewed" (this class's own
+                # docstring) was never actually possible.
+                "candidate_text": new_text,
+                "matched_representative_text": rep_text,
             })
             return verdict
         return "FAIL_OPEN"
