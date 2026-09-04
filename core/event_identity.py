@@ -347,6 +347,54 @@ def no_conflicting_specifics(text_a: str, text_b: str) -> bool:
     return _locations(text_a) == _locations(text_b) and _numbers(text_a) == _numbers(text_b)
 
 
+# 2026-09-04: recurring periodic-indicator reports (mortgage rates, jobless
+# claims, PMI surveys) use highly formulaic language, share only generic
+# entities (if any), and can still score high on cosine and entity overlap
+# purely from that shared formula — a real audit found "Today's Mortgage
+# Rates... Sept. 2" wrongly merged with "...Sept. 3" (different days) into
+# one persistent event. Perigon's public dedup writeup names this exact
+# failure mode ("Tesla reports Q1 earnings" vs "Tesla reports Q2 earnings"
+# — same company/topic, incompatible time) and prescribes a temporal-
+# compatibility signal alongside entity/semantic agreement — this is that
+# signal for AM1ST. Deliberately narrow, same conservative philosophy as
+# no_conflicting_specifics() above: only fires on an unambiguous absolute
+# "Month Day" mention (regex-normalized so "Sept. 2" == "September 2"),
+# never on vague/relative dates ("Tuesday," "last week") — those are too
+# easy to misjudge, so they're just ignored rather than risking a false
+# conflict.
+_MONTH_DAY_RE = re.compile(
+    r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
+    r"Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(\d{1,2})\b",
+    re.IGNORECASE,
+)
+
+
+def _absolute_dates(text: str) -> set[tuple[str, str]]:
+    doc = nlp(_strip_html(text))
+    found = set()
+    for ent in doc.ents:
+        if ent.label_ != "DATE":
+            continue
+        m = _MONTH_DAY_RE.search(ent.text)
+        if m:
+            found.add((m.group(1)[:3].lower(), m.group(2).lstrip("0") or "0"))
+    return found
+
+
+def has_date_conflict(text_a: str, text_b: str) -> bool:
+    """True only if both A and B name an explicit, unambiguous "Month Day"
+    date and those dates disagree. Silent (False) whenever either side has
+    no such date, or both name the same one, or one side names several
+    (deliberately conservative — an actual conflict must be unanimous, not
+    just "the sets differ") — mirrors no_conflicting_specifics()'s bias
+    toward under- rather than over-triggering."""
+    dates_a = _absolute_dates(text_a)
+    dates_b = _absolute_dates(text_b)
+    if len(dates_a) != 1 or len(dates_b) != 1:
+        return False
+    return dates_a != dates_b
+
+
 def entity_tokens(text: str) -> set[str]:
     """PERSON/ORG/GPE/LOC/NORP/FAC/EVENT spans, decomposed into lowercase
     word tokens (not kept as whole spans) so "Andy Ogles" and "Ogles"
@@ -643,6 +691,15 @@ async def verify_compatibility(
     if not core:
         return "COMPATIBLE"  # shouldn't normally happen once seed_entities is always set at event creation
     overlap = core & new_tokens
+    if overlap and has_date_conflict(new_text, matched.get("representative_text", "")):
+        # 2026-09-04: entity overlap alone doesn't rule out two different
+        # occurrences of the same recurring periodic report (see
+        # has_date_conflict()'s docstring — mortgage rates, jobless
+        # claims, PMI). An explicit, unambiguous date disagreement
+        # overrides an otherwise-COMPATIBLE entity match; the LLM (not a
+        # rule-tier guess) decides whether this is a genuine multi-day
+        # story or two distinct periodic reports.
+        return "AMBIGUOUS"
     if not overlap:
         # 2026-09-04: zero literal entity overlap at high cosine is not
         # always a different event — see EntityVerifierConfig's
