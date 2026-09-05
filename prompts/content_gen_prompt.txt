@@ -55,6 +55,41 @@ If the article **is NOT related to any of the ABOVE CONDITIONS, return exactly:
 
 ---
 
+## 🔎 ROUNDUP CHECK — DO THIS BEFORE WRITING ANYTHING
+
+Some sources publish periodic multi-topic digests instead of a single article
+about one event — e.g. a "security news this week" roundup, a morning
+briefing, a linkdump. The article's own text often signals this directly:
+phrases like "Plus:", "And there's more", "each week we round up...", or a
+title that itself lists multiple unrelated topics separated by "Plus" or "&".
+
+**Test: could you summarize this article's actual subject in ONE sentence
+without using the word "and" to join two unrelated topics?** If no — if a
+faithful one-sentence summary would have to mention several separate,
+unrelated news items (e.g. "a data leak, a military policy change, AND an
+AI safety incident") — this is a roundup, not a story.
+
+- ❌ WRONG (writing a post anyway by mashing several of the roundup's items
+  into one sentence): "Tens of millions of driver's licenses are for sale on
+  the dark web, the US military is disabling ad trackers, and OpenAI's new
+  model raises cybersecurity concerns." — this is three different stories
+  stitched together, not one event. Even though every fact in it is true,
+  it fails SUBSTANCE REQUIREMENT's actual intent (one event, described in
+  depth) and misrepresents the source as if it were about one thing.
+- ✅ CORRECT: recognize this is a digest and return exactly **No comment**
+  — even if one item buried in the digest (e.g. the OpenAI item) would, on
+  its own, otherwise be worth a post. This channel isn't the right place
+  to extract one sub-item out of someone else's weekly roundup.
+
+This is different from a single article that covers ONE event from several
+angles (e.g. "Trump signs order X — here's what's in it and who opposes
+it"). That is still one story and should be written normally.
+
+Before writing, confirm out loud to yourself which case this is. Only
+proceed to write a post if it is genuinely one story.
+
+---
+
 ## OUTPUT FORMAT
 
 Return a **single string of English text only.**
