@@ -17,14 +17,23 @@ Cycle order (every publish.interval_seconds, 30 min by default):
      docstring for why), dropping anything the writer judges "No comment"
   -> re-check the former-Trump filter now that full text/post_content
      exist, in case only the article body (not title/description) had it
-  -> LLM priority re-rank (gpt-4o-mini, on post_content, second opinion vs
-     the ingestion-side llm_score), given a read-only snapshot of Google
-     News' current top US-politics headlines as trending context (see
-     agents/trending.py — never ingested/scored/published from directly)
-  -> walk the ranked list, skipping anything that's a near-duplicate of
-     content this channel already posted in the last 24h (threshold 0.70 —
-     stricter than the ingestion side's 0.8, deliberately, since this is a
-     fully-autonomous post: see feedback in project_am1st_migration memory)
+  -> deterministic priority formula (agents/priority_ranker.py, 2026-09-04 —
+     replaced the old LLM re-rank call after a live audit found it unstable
+     in exactly the range that decides most cycles): llm_score + heat_bonus
+     + trending_bonus - freshness_penalty, given the same trending-headlines
+     snapshot as before (agents/trending.py — never ingested/scored/
+     published from directly)
+  -> walk the ranked list, skipping anything whose embedding is a near-
+     match (threshold 0.70 — stricter than the ingestion side's 0.8,
+     deliberately, since this is a fully-autonomous post: see feedback in
+     project_am1st_migration memory) of content this channel already
+     posted in the last 24h AND that core/event_identity.py's
+     EventVerifier.same_event() also confirms is the same real-world
+     occurrence, not just a lexically-similar next-stage development
+     (2026-09-05 — a live audit found cosine alone wrongly blocked genuine
+     escalations in an ongoing story, e.g. a state court ruling vs. the
+     later federal Supreme Court appeal of that same ruling, as "duplicates"
+     of the earlier stage; see agents/posted_dedup_checker.py's docstring)
   -> the first survivor is the winner; mark it sent + record its embedding
      in the posted-history collection.
 
@@ -75,6 +84,7 @@ from agents.trending import fetch_trending_headlines
 from agents.writer import Writer
 from core.alerts import AlertNotifier
 from core.config import load_config
+from core.event_identity import EventVerifier
 from core.language import is_english
 from core.notion_candidates import has_unpublished_hot_candidate, mark_send_status, query_eligible_candidates
 from core.notion_sources import load_rss_sources
@@ -114,6 +124,7 @@ async def run_cycle(
     ranker: PriorityRanker,
     posted_store: PostedHistoryStore,
     event_store: EventStore,
+    event_verifier: EventVerifier,
     publisher: GettrPublisher,
     extractor: Extractor,
     writer: Writer,
@@ -192,7 +203,7 @@ async def run_cycle(
     trending_headlines = await fetch_trending_headlines()
     ranked = await ranker.rank(generated, trending_headlines)
 
-    winner = await find_publishable(ranked, embedder, posted_store, config)
+    winner = await find_publishable(ranked, embedder, posted_store, event_verifier, config)
     log_publish_outcome(len(ranked), winner)
     if winner is None:
         return
@@ -248,6 +259,7 @@ async def main() -> None:
     ranker = PriorityRanker(config)
     posted_store = PostedHistoryStore(config)
     event_store = EventStore(config)
+    event_verifier = EventVerifier(config)
     publisher = GettrPublisher(config, dry_run=dry_run)
     alerts = AlertNotifier(config)
     extractor = Extractor(config, alerts)
@@ -263,7 +275,7 @@ async def main() -> None:
             started = time.monotonic()
             try:
                 await asyncio.wait_for(
-                    run_cycle(config, embedder, ranker, posted_store, event_store, publisher, extractor, writer, dry_run),
+                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, dry_run),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:
