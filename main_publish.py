@@ -8,8 +8,8 @@ something to post.
 
 Cycle order (every publish.interval_seconds by default, 30 min — but see
 compute_dynamic_interval() below, 2026-09-05: the actual wait each cycle
-scales 0.6x-1.3x that base on real-time news volume, clamped to
-[15min, 45min], on top of which core/hot_topics.py's manual fast lane can
+scales 0.6x-6x that base on real-time news volume, clamped to
+[15min, 4h], on top of which core/hot_topics.py's manual fast lane can
 still cut things short for a human-flagged breaking story):
   query eligible candidates (Notion: not sent, <=24h old at the query level,
      llm_score>=6 — select_batch() then applies the real day-aware freshness
@@ -364,6 +364,8 @@ async def compute_dynamic_interval(config) -> float:
     count = await count_recent_high_score(config, dp.hot_score_floor, dp.lookback_hours)
     if count >= dp.busy_count:
         scale = dp.busy_scale
+    elif count == 0:
+        scale = dp.dead_scale
     elif count <= dp.quiet_count:
         scale = dp.quiet_scale
     else:

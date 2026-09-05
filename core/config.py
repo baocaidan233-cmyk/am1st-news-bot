@@ -405,16 +405,40 @@ class DynamicPublishConfig(BaseModel):
     trailing 2h): min=0, p25=1, median=3, p75=8, p90=14, max=18 — busy_count
     is the observed p75, quiet_count is the observed p25, so roughly the
     quietest quarter of real history slows down and the busiest quarter
-    speeds up, leaving the middle half at the unscaled base interval."""
+    speeds up, leaving the middle half at the unscaled base interval.
+
+    2026-09-05, second pass: the user pointed out this was never actually
+    slowing anything down in practice — quiet_scale (1.3) applied to the
+    30min base gives ~39min, which max_interval_seconds (1800s = 30min,
+    tightened the same day for the busy/normal case) immediately clamped
+    right back down to 30min, silently cancelling the one thing the
+    quiet-tier branch exists for. The user confirmed real "dynamic" should
+    mean a genuinely dead stretch (e.g. overnight, weekends) is allowed to
+    go much longer than 30min between posts rather than forcing one out on
+    a fixed cadence regardless of whether there's anything worth posting —
+    up to roughly the same 24h ballpark as weekend_max_age_hours (a
+    different knob — candidate eligibility age, not publish cadence — but
+    the same "don't force it when the pool is this thin" intent). Added a
+    DEAD tier (count == 0, the rarer, more extreme case the original p25
+    sample didn't need to distinguish from "just quiet") on top of the
+    existing quiet tier, and raised max_interval_seconds so neither tier's
+    scale-up is clamped away. dead_scale/quiet_scale are a reasoned
+    starting point, not independently calibrated against a real sustained-
+    zero-count sample the way busy/quiet_count were — the hot-topic fast
+    lane (core/hot_topics.py) still coexists underneath this and can always
+    cut a long wait short the moment something genuinely breaking shows
+    up, so a high ceiling only ever lengthens truly quiet stretches, never
+    delays real news."""
 
     hot_score_floor: float = 8.0
     lookback_hours: float = 2.0
-    quiet_count: int = 1  # <= this many -> slow down (real p25)
+    quiet_count: int = 1  # <= this many (but not zero) -> slow down (real p25)
     busy_count: int = 8  # >= this many -> speed up (real p75)
-    quiet_scale: float = 1.3  # 30min base -> ~39min
+    quiet_scale: float = 2.5  # 30min base -> 75min
+    dead_scale: float = 6.0  # 30min base -> 3h — count == 0 in the lookback window specifically
     busy_scale: float = 0.6  # 30min base -> ~18min
     min_interval_seconds: int = 900  # 15 min floor — never faster than this regardless of volume
-    max_interval_seconds: int = 1800  # 30 min ceiling — never slower than this regardless of quiet (tightened from 45min 2026-09-05 per the user's explicit "频道在15~30分钟内发布一条" cadence requirement)
+    max_interval_seconds: int = 14400  # 4h ceiling (was 1800s/30min — that value clamped away the quiet/dead slowdown entirely, see docstring's 2026-09-05 second-pass note) — still a hard ceiling, so a genuinely dead multi-hour stretch doesn't turn into total silence
 
 
 class AppConfig(BaseModel):
