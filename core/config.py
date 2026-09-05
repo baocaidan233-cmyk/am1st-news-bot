@@ -224,22 +224,27 @@ class EntityVerifierConfig(BaseModel):
     # zero-overlap pairs are genuine duplicates. Moved to 0.70.
     no_overlap_llm_review_floor: float = 0.70
 
-    # IDF-weighted keyword overlap (2026-08-20) — a second, entity-
-    # independent lexical signal for verify_compatibility()'s FAIL_OPEN
-    # branch (new_tokens from NER came back empty — very short text, or a
-    # genuine entity-extraction miss). That branch previously just blindly
-    # trusted whatever cosine match it was handed with zero independent
-    # check. Ported from North_Korea_News's core/hashing.py (commit
-    # 1caea63) — same IDF-over-a-corpus math, no LLM call, no new database
-    # (the corpus is this cycle's own batch of candidate titles+
-    # descriptions, built in-memory in main.py, not a persisted store).
-    # NOTE: this threshold is carried over from North_Korea_News's own
-    # 642-real-item validation, NOT yet independently validated against
-    # AM1ST's own historical am1st_events data the way every other
-    # threshold in this class was (see the class docstring) — treat as a
-    # starting point, revisit once real am1st decisions have been logged
-    # and reviewed.
-    weighted_overlap_threshold: float = 0.15
+    # IDF-weighted keyword overlap (2026-08-20, REMOVED as a decision gate
+    # 2026-09-05) — was a second, entity-independent lexical signal for
+    # verify_compatibility()'s FAIL_OPEN branch (new_tokens from NER came
+    # back empty), ported from North_Korea_News's core/hashing.py (commit
+    # 1caea63) with its threshold (0.15) carried over unvalidated. Once
+    # AM1ST's own decisions accumulated enough real text to check (36
+    # logged pairs, 2026-09-05), found a real false positive AT that
+    # threshold: two installments of a recurring gun-review column (each
+    # about a different specific model — a case this session already
+    # established must stay separate) shared enough near-identical
+    # boilerplate phrasing ("I Am a Retired US Army Special Forces NCO:
+    # There Is Nothing Like the...") to score 0.294 — well above 0.15 —
+    # and got silently merged as COMPATIBLE with no LLM check at all. Only
+    # 2 real observations existed above the old threshold (one of them
+    # this false positive), nowhere near enough to trust picking a new
+    # number instead. This branch (a rare fallback: both sides' NER came
+    # back with zero entities) now always returns AMBIGUOUS instead —
+    # negligible added cost, and removes the only place in this class that
+    # skipped the LLM without ever having been genuinely data-validated.
+    # weighted_overlap() itself (core/hashing.py) is untouched and still
+    # computed/logged for visibility, just no longer gates a verdict.
 
 
 class HotTopicsConfig(BaseModel):
@@ -268,7 +273,9 @@ class HotTopicsConfig(BaseModel):
     later follow-up coverage inherits hot status automatically without
     needing to re-match against the original flag text every time. Not
     yet independently validated against real am1st_events data — a
-    starting point, like weighted_overlap_threshold was."""
+    starting point, revisit once enough real matches accumulate to
+    check (same caution that led to removing the old
+    weighted_overlap_threshold decision gate elsewhere in this class)."""
 
     channel_name: str = "AM1ST"  # this bot's own tag in the shared table's Channel multi-select column
     # Cosine floor for "this candidate is about a currently-flagged hot

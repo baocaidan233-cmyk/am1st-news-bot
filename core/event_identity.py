@@ -645,8 +645,9 @@ async def verify_compatibility(
       NO_OVERLAP  — confident DIFFERENT_EVENT, no LLM needed
       COMPATIBLE  — confident SAME_EVENT, no LLM needed
       AMBIGUOUS   — needs the LLM (every shared entity token is a known
-                    multi-event hub; new_tokens was empty and the lexical
-                    fallback below couldn't confirm a match either; or
+                    multi-event hub; new_tokens was empty [NER extracted
+                    nothing — very short text, or a genuine extraction
+                    miss] and a lexical-overlap corpus was available; or
                     overlap was empty but cosine_score cleared
                     no_overlap_llm_review_floor)
       FAIL_OPEN   — new_tokens is empty AND no lexical fallback was available
@@ -654,47 +655,45 @@ async def verify_compatibility(
                     cosine's own match, the pre-2026-08-20 behavior, kept only
                     as a defensive default for callers that don't pass a corpus
 
-    2026-08-20: when new_tokens is empty (NER extracted nothing — very short
-    text, or a genuine extraction miss), this used to blindly trust
-    whatever cosine match it was handed, with zero independent check. Now,
-    if the caller supplies a doc_freq/doc_count corpus (see main.py — built
-    once per cycle from that cycle's own batch, no new database), an
-    IDF-weighted lexical overlap check (core/hashing.py's weighted_overlap,
-    ported from North_Korea_News's real-incident-driven design) gets a say:
-    confirms COMPATIBLE if it agrees, otherwise downgrades to AMBIGUOUS
-    (real LLM check) instead of blind trust. This can only make the
+    2026-08-20: when new_tokens is empty, this used to blindly trust
+    whatever cosine match it was handed, with zero independent check. An
+    IDF-weighted lexical overlap check (core/hashing.py's weighted_overlap)
+    was added as a second opinion — briefly (2026-08-20 to 2026-09-05) it
+    could confirm COMPATIBLE outright above a threshold, but real data
+    found a genuine false positive there (see EntityVerifierConfig's
+    docstring) with only 2 real observations above the old threshold to
+    justify picking a new number instead — so this branch now always
+    returns AMBIGUOUS (real LLM check) when a corpus is available, never
+    trusting lexical overlap alone to skip the LLM. This can only make the
     zero-entity case MORE scrutinized than before, never less.
     Not designed to be perfect — see EntityVerifierConfig's docstring on
     the accepted residual miss rate."""
     if not new_tokens:
         rep_text = matched.get("representative_text", "")
         if doc_freq is not None and new_text and rep_text:
+            # 2026-09-05: this branch no longer trusts a high weighted_overlap
+            # score as COMPATIBLE on its own — always AMBIGUOUS (ask the LLM)
+            # instead. Real data found a genuine false positive at the old
+            # 0.15 threshold: two installments of a recurring gun-review
+            # column (different specific models, established elsewhere this
+            # session as needing to stay separate events) shared enough
+            # near-identical boilerplate phrasing to score 0.294 and got
+            # silently merged with zero LLM check. Only 2 real observations
+            # existed above that threshold — not enough to trust a new
+            # number instead of removing the shortcut. weighted_overlap()
+            # is still computed and logged (observational only) in case
+            # enough data accumulates later to reconsider.
             overlap = weighted_overlap(tokenize(new_text), tokenize(rep_text), doc_freq, doc_count)
-            verdict = "COMPATIBLE" if overlap >= config.entity_verifier.weighted_overlap_threshold else "AMBIGUOUS"
-            # 2026-09-01: this branch's own hit rate/score distribution was
-            # previously invisible in event_identity_decisions.jsonl — a rule-
-            # tier COMPATIBLE/AMBIGUOUS from here looked identical to one from
-            # the normal entity-overlap path below. Logged separately
-            # (check_type) so weighted_overlap_threshold can eventually be
-            # recalibrated on AM1ST's own data instead of North_Korea_News's.
             log_decision(config, {
                 "check_type": "lexical_fallback",
                 "candidate_event_id": matched.get("event_id"),
                 "cosine_score": matched.get("_score"),
                 "weighted_overlap_score": overlap,
-                "threshold": config.entity_verifier.weighted_overlap_threshold,
-                "rule_verdict": verdict,
-                # 2026-09-04: added after finding the first 85 logged
-                # entries here couldn't be used to recalibrate
-                # weighted_overlap_threshold at all — no text fields, no
-                # way to reconstruct what was actually being compared.
-                # Without these, "recalibrate once real am1st decisions
-                # have been logged and reviewed" (this class's own
-                # docstring) was never actually possible.
+                "rule_verdict": "AMBIGUOUS",
                 "candidate_text": new_text,
                 "matched_representative_text": rep_text,
             })
-            return verdict
+            return "AMBIGUOUS"
         return "FAIL_OPEN"
     core = core_entities_of(matched)
     if not core:
