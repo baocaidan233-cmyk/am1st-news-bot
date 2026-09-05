@@ -4,7 +4,7 @@ import logging
 
 from agents.embedder import Embedder
 from core.config import AppConfig
-from core.event_identity import EventVerifier, entity_tokens, log_decision
+from core.event_identity import EventVerifier, entity_tokens, has_date_conflict, log_decision
 from core.models import PublishCandidate
 from core.qdrant_store import PostedHistoryStore
 
@@ -72,6 +72,27 @@ async def find_publishable(
     (typically 0-3 times per publish cycle per the 2026-09-05 audit), so
     the added cost is negligible.
 
+    Rule-tier pre-filter (2026-09-05, same day, per the user's "先用算法，
+    然后哪个阈值交给llm做判断" request): before asking the LLM, check
+    has_date_conflict() (core/event_identity.py, already validated on 1384
+    real historical event-identity pairs at 0.6% flag rate, 0 harmful) — if
+    both sides name a single explicit "Month Day" date and they disagree,
+    that's strong independent evidence of a different specific occurrence
+    regardless of how similar the text otherwise reads, so skip the LLM
+    call and treat as NOT duplicate outright. Deliberately NOT adding the
+    mirror-image shortcut (skip the LLM and assume duplicate above some
+    high cosine/entity-overlap cutoff) — real same-day data argues against
+    it: the SCMP Witkoff/Kushner-to-Moscow story scored 0.738-0.747 cosine
+    against an older Putin-meeting story across several cycles (all
+    wrongly auto-flagged "duplicate" under the pre-LLM pure-cosine rule)
+    before same_event() correctly called it DIFFERENT_EVENT at a similar
+    0.731 — i.e. the exact cosine/entity-overlap range that would tempt a
+    "confident duplicate" shortcut is also where a real false positive
+    just happened. Revisit only once enough same_event()-adjudicated
+    posted_dedup pairs accumulate to bucket-calibrate a genuinely safe
+    floor, the same way no_overlap_llm_review_floor was calibrated —
+    not before.
+
     Fallback (2026-09-05, same day): same_event() is a real OpenAI call
     with no fail-open wrapper of its own (core/openai_client.py's
     FallbackOpenAI only retries same-cause RateLimitError across keys —
@@ -97,9 +118,16 @@ async def find_publishable(
             looks_similar = similarity > threshold
             is_duplicate = False
             same_event_raw = ""
+            resolved_by = ""
             if looks_similar:
                 matched_content = content_for_embedding(matched_content_raw, matched_url)
-                is_duplicate, same_event_raw = await event_verifier.same_event(candidate_content, matched_content)
+                if has_date_conflict(candidate_content, matched_content):
+                    is_duplicate = False
+                    same_event_raw = "RULE: has_date_conflict() — explicit conflicting dates, skipped LLM call"
+                    resolved_by = "date_conflict_rule"
+                else:
+                    is_duplicate, same_event_raw = await event_verifier.same_event(candidate_content, matched_content)
+                    resolved_by = "llm"
         except Exception:
             logger.exception(
                 "find_publishable: dedup check failed for %s — skipping this candidate (not a confirmed verdict), trying next",
@@ -122,6 +150,7 @@ async def find_publishable(
                 candidate_entities = entity_tokens(candidate_content)
                 matched_entities = entity_tokens(matched_content_raw)
                 log_record.update({
+                    "resolved_by": resolved_by,
                     "same_event_raw": same_event_raw,
                     "candidate_entities": sorted(candidate_entities),
                     "matched_entities": sorted(matched_entities),
@@ -140,10 +169,11 @@ async def find_publishable(
             continue
         if looks_similar:
             logger.info(
-                "find_publishable: %s cosine-flagged (%.3f > %.2f) but same_event() said DIFFERENT — not treating as duplicate, matched %s",
+                "find_publishable: %s cosine-flagged (%.3f > %.2f) but %s said DIFFERENT — not treating as duplicate, matched %s",
                 candidate.url,
                 similarity,
                 threshold,
+                "has_date_conflict()" if resolved_by == "date_conflict_rule" else "same_event()",
                 matched_url,
             )
 

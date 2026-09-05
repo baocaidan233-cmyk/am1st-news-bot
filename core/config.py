@@ -372,6 +372,7 @@ class PublishConfig(BaseModel):
     priority_rank_prompt_file: str = "prompts/priority_rank_prompt.txt"
     posted_dedup_window_hours: int = 240  # was 24h — widened 2026-08-07 as a defensive backstop once the ingestion-side EventStore.mark_published() check exists (core/qdrant_store.py); matches heat.window_hours so both "have we already covered this" checks agree on how long an event stays "recent"
     posted_dedup_threshold: float = 0.70  # stricter than the ingestion side's 0.8 — deliberate, per the user: fully autonomous posting should err toward under-posting
+    max_widen_attempts: int = 3  # 2026-09-05 — how many batch_max-sized chunks of the eligible pool to try before accepting "nothing to publish this cycle" as real, not just "the first batch_max happened to all be duplicates"; each attempt costs a real extraction+content-gen pass, so this isn't unbounded search over the whole pool (which real cycles have seen run into the hundreds)
 
 
 class DynamicPublishConfig(BaseModel):

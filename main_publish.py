@@ -15,7 +15,10 @@ still cut things short for a human-flagged breaking story):
   -> drop stale "former president Trump" phrasing (cheap pass, title+
      description only)
   -> tiered batch selection (fresh+high-score preferred, cascading fallback,
-     3-5 candidates)
+     3-10 candidates) -> extraction/content-gen/rank/dedup on that batch;
+     if nothing survives to publish, widen to the next batch_max-sized
+     chunk of the still-untried eligible pool and repeat, up to
+     publish.max_widen_attempts times (2026-09-05 — see run_cycle())
   -> full-text extraction + content generation for just this small batch
      (moved here from main.py, 2026-08-05 — see agents/extractor.py's
      docstring for why), dropping anything the writer judges "No comment"
@@ -144,72 +147,98 @@ async def run_cycle(
         logger.info("run_cycle: all candidates dropped by former-Trump filter")
         return
 
-    batch = select_batch(candidates, config)
-    logger.info("run_cycle: selected batch of %d for extraction/content-gen", len(batch))
-
     sources = await load_rss_sources(config)
-    generated = []
-    for c in batch:
-        text = await extractor.extract(c.url, sources)
-        if not text:
-            logger.info("run_cycle: %s dropped — full-text extraction failed (paywall/blocked/empty), refusing to publish off title+description alone", c.url)
-            continue
-        c.content = text
-
-        # English-only channel — check the actual extracted article text,
-        # not just title/description (main.py's cheaper ingestion-time
-        # filter already covers those). A real published post (2026-08-06)
-        # was a Portuguese-language Reuters article that made it all the
-        # way to publish because the writer's own "decline" signal was, in
-        # that instance, missed by a separate formatting bug — see
-        # core/language.py's docstring. This check doesn't depend on the
-        # model noticing at all.
-        if not is_english(c.content[:1000]):
-            logger.info("run_cycle: %s dropped — non-English article content", c.url)
-            continue
-
-        # Background for the writer (2026-08-31) — peek() against the same
-        # title+description embedding space main.py already uses, so this
-        # is checked against every candidate in the batch (not just the
-        # eventual winner, since the winner isn't known until after
-        # ranking, but content-gen runs on the whole batch) — see
-        # _build_background()'s docstring and agents/writer.py's `context`
-        # param. Fails open to no background on any error, same as every
-        # other best-effort Qdrant read in this codebase.
-        background = ""
-        try:
-            title_desc_embedding = await embedder.embed(f"{c.title}\n{c.description}"[:6000])
-            background = _build_background(await event_store.peek(title_desc_embedding))
-        except Exception:
-            logger.exception("run_cycle: failed to build writer background for %s — continuing without it", c.url)
-
-        post_content = await writer.write(c.title, c.content, context=background)
-        if Writer.is_no_comment(post_content):
-            logger.info("run_cycle: %s — writer returned No comment, dropped from batch", c.url)
-            continue
-        # Link appended after generation, not counted against the writer's
-        # word cap — the AI's own output stays pure caption text.
-        c.post_content = f"{post_content}\n\n{c.url}"
-        generated.append(c)
-
-    if not generated:
-        logger.info("run_cycle: nothing survived extraction/content-gen this cycle")
-        return
-
-    # Re-check now that full text/post_content exist — the first pass only
-    # had title+description to work with, so this catches stale phrasing
-    # that only shows up in the article body or the generated caption.
-    generated = filter_former_trump(generated)
-    if not generated:
-        logger.info("run_cycle: all candidates dropped by post-extraction former-Trump filter")
-        return
-
     trending_headlines = await fetch_trending_headlines()
-    ranked = await ranker.rank(generated, trending_headlines)
 
-    winner = await find_publishable(ranked, embedder, posted_store, event_verifier, config)
-    log_publish_outcome(len(ranked), winner)
+    # Widen-on-empty (2026-09-05, per the user's "扩大范围，如果找不到合适的"
+    # request): select_batch() only ever looks at `remaining` — the pool
+    # shrinks each attempt as tried page_ids are removed, so a widen never
+    # re-extracts/re-writes a candidate it already paid for this cycle.
+    # Bounded by max_widen_attempts (not unbounded — extraction+content-gen
+    # is real per-candidate cost, not free): each attempt is up to
+    # batch_max candidates, so the default of 3 tries up to 30 total before
+    # accepting "nothing to publish this cycle" is the real outcome, not
+    # just "the first 10 happened to all be duplicates/stale."
+    remaining = candidates
+    winner = None
+    ranked_len = 0
+    for attempt in range(1, config.publish.max_widen_attempts + 1):
+        batch = select_batch(remaining, config)
+        if not batch:
+            logger.info("run_cycle: widen attempt %d — no more candidates left to try", attempt)
+            break
+        logger.info("run_cycle: widen attempt %d — selected batch of %d for extraction/content-gen", attempt, len(batch))
+        tried_ids = {c.page_id for c in batch}
+        remaining = [c for c in remaining if c.page_id not in tried_ids]
+
+        generated = []
+        for c in batch:
+            text = await extractor.extract(c.url, sources)
+            if not text:
+                logger.info("run_cycle: %s dropped — full-text extraction failed (paywall/blocked/empty), refusing to publish off title+description alone", c.url)
+                continue
+            c.content = text
+
+            # English-only channel — check the actual extracted article text,
+            # not just title/description (main.py's cheaper ingestion-time
+            # filter already covers those). A real published post (2026-08-06)
+            # was a Portuguese-language Reuters article that made it all the
+            # way to publish because the writer's own "decline" signal was, in
+            # that instance, missed by a separate formatting bug — see
+            # core/language.py's docstring. This check doesn't depend on the
+            # model noticing at all.
+            if not is_english(c.content[:1000]):
+                logger.info("run_cycle: %s dropped — non-English article content", c.url)
+                continue
+
+            # Background for the writer (2026-08-31) — peek() against the same
+            # title+description embedding space main.py already uses, so this
+            # is checked against every candidate in the batch (not just the
+            # eventual winner, since the winner isn't known until after
+            # ranking, but content-gen runs on the whole batch) — see
+            # _build_background()'s docstring and agents/writer.py's `context`
+            # param. Fails open to no background on any error, same as every
+            # other best-effort Qdrant read in this codebase.
+            background = ""
+            try:
+                title_desc_embedding = await embedder.embed(f"{c.title}\n{c.description}"[:6000])
+                background = _build_background(await event_store.peek(title_desc_embedding))
+            except Exception:
+                logger.exception("run_cycle: failed to build writer background for %s — continuing without it", c.url)
+
+            post_content = await writer.write(c.title, c.content, context=background)
+            if Writer.is_no_comment(post_content):
+                logger.info("run_cycle: %s — writer returned No comment, dropped from batch", c.url)
+                continue
+            # Link appended after generation, not counted against the writer's
+            # word cap — the AI's own output stays pure caption text.
+            c.post_content = f"{post_content}\n\n{c.url}"
+            generated.append(c)
+
+        if not generated:
+            logger.info("run_cycle: widen attempt %d — nothing survived extraction/content-gen", attempt)
+            continue
+
+        # Re-check now that full text/post_content exist — the first pass
+        # only had title+description to work with, so this catches stale
+        # phrasing that only shows up in the article body or the generated
+        # caption.
+        generated = filter_former_trump(generated)
+        if not generated:
+            logger.info("run_cycle: widen attempt %d — all candidates dropped by post-extraction former-Trump filter", attempt)
+            continue
+
+        ranked = await ranker.rank(generated, trending_headlines)
+        ranked_len = len(ranked)
+        winner = await find_publishable(ranked, embedder, posted_store, event_verifier, config)
+        if winner is not None:
+            logger.info("run_cycle: widen attempt %d — found a publishable candidate", attempt)
+            break
+        logger.info("run_cycle: widen attempt %d — all candidates were duplicates/errored, widening", attempt)
+
+    log_publish_outcome(ranked_len, winner)
     if winner is None:
+        logger.info("run_cycle: no publishable candidate found after widening — nothing to publish this cycle")
         return
 
     og = await fetch_link_preview(winner.url)

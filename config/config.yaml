@@ -128,6 +128,7 @@ publish:
   priority_rank_prompt_file: "prompts/priority_rank_prompt.txt"
   posted_dedup_window_hours: 240  # was 24h — widened 2026-08-07, matches heat.window_hours (10 days)
   posted_dedup_threshold: 0.70  # stricter than ingestion's 0.8 — deliberate, fully-autonomous posting errs toward under-posting
+  max_widen_attempts: 3        # widen-on-empty: try up to this many batch_max-sized chunks of the eligible pool before giving up this cycle
 
 dynamic_publish:
   hot_score_floor: 8.0       # reuses scoring_prompt.txt's own "8 — Major real-time trigger" band
