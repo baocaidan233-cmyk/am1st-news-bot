@@ -102,6 +102,7 @@ class OpenAIConfig(BaseModel):
     embedding_model: str = "text-embedding-3-small"
     scoring_prompt_file: str = "prompts/scoring_prompt.txt"
     content_gen_prompt_file: str = "prompts/content_gen_prompt.txt"
+    staleness_check_prompt_file: str = "prompts/staleness_check_prompt.txt"  # agents/staleness_checker.py — deliberately a separate call from Writer, not folded into content_gen_prompt.txt (see StalenessChecker's docstring for why three attempts at doing this inside one Writer call all failed)
     score_threshold: float = 5.0
 
     @property

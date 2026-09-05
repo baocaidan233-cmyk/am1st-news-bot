@@ -90,6 +90,7 @@ from agents.og_metadata import fetch_link_preview
 from agents.posted_dedup_checker import content_for_embedding, find_publishable
 from agents.priority_ranker import PriorityRanker, log_publish_outcome
 from agents.trending import fetch_trending_headlines
+from agents.staleness_checker import StalenessChecker
 from agents.writer import Writer
 from core.alerts import AlertNotifier
 from core.config import load_config
@@ -137,6 +138,7 @@ async def run_cycle(
     publisher: GettrPublisher,
     extractor: Extractor,
     writer: Writer,
+    staleness_checker: StalenessChecker,
     dry_run: bool,
 ) -> bool:
     """Returns True iff this cycle actually published something — main()'s
@@ -207,6 +209,22 @@ async def run_cycle(
             # model noticing at all.
             if not is_english(c.content[:1000]):
                 logger.info("run_cycle: %s dropped — non-English article content", c.url)
+                continue
+
+            # Staleness check (2026-09-05) — a separate, single-purpose call
+            # BEFORE the writer runs; see agents/staleness_checker.py's
+            # docstring for why this isn't folded into content_gen_prompt.txt
+            # (three attempts to make Writer self-police this in one call
+            # all failed on real test articles). Real incident: op-eds
+            # analyzing a 9-day-old Venezuela deal and a 2-week-old Ethiopia
+            # deal both got written up as if breaking news.
+            try:
+                is_stale, stale_raw = await staleness_checker.is_stale(c.title, c.content)
+            except Exception:
+                logger.exception("run_cycle: staleness check failed for %s — failing open, treating as fresh", c.url)
+                is_stale = False
+            if is_stale:
+                logger.info("run_cycle: %s dropped — stale analysis of an old event (%s)", c.url, stale_raw.replace("\n", " "))
                 continue
 
             # Background for the writer (2026-08-31) — peek() against the same
@@ -350,6 +368,7 @@ async def main() -> None:
     alerts = AlertNotifier(config)
     extractor = Extractor(config, alerts)
     writer = Writer(config)
+    staleness_checker = StalenessChecker(config)
     await ensure_collection_with_retry(posted_store, "am1st_posting_news_embedding")
     await ensure_collection_with_retry(event_store, "am1st_events")
 
@@ -363,7 +382,7 @@ async def main() -> None:
             published_this_cycle = False
             try:
                 published_this_cycle = await asyncio.wait_for(
-                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, dry_run),
+                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, staleness_checker, dry_run),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from core.config import AppConfig
@@ -43,8 +44,20 @@ class Writer:
         USER message, separate from the static system prompt file (see
         prompts/content_gen_prompt.txt's "OPTIONAL BACKGROUND" section for
         the model-facing instructions on how to use it) — appended only
-        when non-empty, so omitting it reproduces today's exact behavior."""
-        user_message = f"Title:  {title}\n\nArticle: {article}"
+        when non-empty, so omitting it reproduces today's exact behavior.
+
+        Today's date (2026-09-05) — added because prompts/content_gen_prompt.txt's
+        STALE-ANALYSIS CHECK asks the model to judge whether the article's
+        most recent dated fact happened "in the last day or two," which is
+        impossible without knowing what day it actually is. A real
+        published post (2026-09-05) proved this: an op-ed analyzing a
+        9-day-old Venezuela oil deal, and a separate piece analyzing a
+        2-week-old Ethiopia defense deal, were both written as fresh
+        breaking news — the STALE-ANALYSIS CHECK's own worked example
+        (almost verbatim the Venezuela case) still didn't stop it until
+        this date anchor was added, confirmed by re-testing both articles."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        user_message = f"Today's date: {today}\n\nTitle:  {title}\n\nArticle: {article}"
         if context:
             user_message += f"\n\nBackground: {context}"
         resp = await self._client.chat.completions.create(
