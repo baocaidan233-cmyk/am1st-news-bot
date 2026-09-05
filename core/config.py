@@ -374,6 +374,36 @@ class PublishConfig(BaseModel):
     posted_dedup_threshold: float = 0.70  # stricter than the ingestion side's 0.8 — deliberate, per the user: fully autonomous posting should err toward under-posting
 
 
+class DynamicPublishConfig(BaseModel):
+    """Automatic publish-cadence scaling (2026-09-05) — distinct from
+    hot_topics.py's manual fast lane (a human flags one specific story as
+    breaking); this instead reacts to how much genuinely strong material
+    the ingestion side is producing right now, with no human involved.
+    Signal: count of candidates newly added to the Notion pool in the last
+    lookback_hours with llm_score >= hot_score_floor (reusing
+    prompts/scoring_prompt.txt's own "8 — Major real-time trigger" band as
+    the floor, not an arbitrary new cutoff) — a cheap, existence-count-only
+    Notion query, same cost shape as hot_topics.py's
+    has_unpublished_hot_candidate().
+
+    Thresholds below are calibrated from a real 33.5-hour sample
+    (2026-09-04 00:00 - 2026-09-05 09:29, 956 real ingested candidates,
+    resampled at every 30-min tick = 67 slices) of this exact count (>=8,
+    trailing 2h): min=0, p25=1, median=3, p75=8, p90=14, max=18 — busy_count
+    is the observed p75, quiet_count is the observed p25, so roughly the
+    quietest quarter of real history slows down and the busiest quarter
+    speeds up, leaving the middle half at the unscaled base interval."""
+
+    hot_score_floor: float = 8.0
+    lookback_hours: float = 2.0
+    quiet_count: int = 1  # <= this many -> slow down (real p25)
+    busy_count: int = 8  # >= this many -> speed up (real p75)
+    quiet_scale: float = 1.3  # 30min base -> ~39min
+    busy_scale: float = 0.6  # 30min base -> ~18min
+    min_interval_seconds: int = 900  # 15 min floor — never faster than this regardless of volume
+    max_interval_seconds: int = 2700  # 45 min ceiling — never slower than this regardless of quiet
+
+
 class AppConfig(BaseModel):
     notion: NotionConfig = Field(default_factory=NotionConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
@@ -386,6 +416,7 @@ class AppConfig(BaseModel):
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
     gettr: GettrConfig = Field(default_factory=GettrConfig)
     publish: PublishConfig = Field(default_factory=PublishConfig)
+    dynamic_publish: DynamicPublishConfig = Field(default_factory=DynamicPublishConfig)
     max_publish_age_hours: int = 3
     poll_interval_seconds: int = 600
     cycle_timeout_seconds: int = 540  # 9 min — per the user's real n8n experience, a healthy cycle runs ~5min and almost never past 7min; this hard-cuts a stuck cycle so the next one always starts on schedule (main.py and main_publish.py loops both apply this, independently — see 2026-08-12 waterfall/no-external-retrigger discussion)

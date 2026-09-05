@@ -129,6 +129,16 @@ publish:
   posted_dedup_window_hours: 240  # was 24h — widened 2026-08-07, matches heat.window_hours (10 days)
   posted_dedup_threshold: 0.70  # stricter than ingestion's 0.8 — deliberate, fully-autonomous posting errs toward under-posting
 
+dynamic_publish:
+  hot_score_floor: 8.0       # reuses scoring_prompt.txt's own "8 — Major real-time trigger" band
+  lookback_hours: 2.0
+  quiet_count: 1             # real p25 of a 2026-09-05 33.5h sample (>=8, trailing 2h)
+  busy_count: 8              # real p75 of the same sample
+  quiet_scale: 1.3
+  busy_scale: 0.6
+  min_interval_seconds: 900   # 15 min floor
+  max_interval_seconds: 2700  # 45 min ceiling
+
 max_publish_age_hours: 3
 poll_interval_seconds: 600  # 10 minutes, matches the original n8n cadence
 cycle_timeout_seconds: 540  # 9 min — real n8n cycles ran ~5min, almost never past 7min; hard-cuts a stuck cycle so the next one always starts on schedule
