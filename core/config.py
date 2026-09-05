@@ -412,7 +412,7 @@ class DynamicPublishConfig(BaseModel):
     quiet_scale: float = 1.3  # 30min base -> ~39min
     busy_scale: float = 0.6  # 30min base -> ~18min
     min_interval_seconds: int = 900  # 15 min floor — never faster than this regardless of volume
-    max_interval_seconds: int = 2700  # 45 min ceiling — never slower than this regardless of quiet
+    max_interval_seconds: int = 1800  # 30 min ceiling — never slower than this regardless of quiet (tightened from 45min 2026-09-05 per the user's explicit "频道在15~30分钟内发布一条" cadence requirement)
 
 
 class AppConfig(BaseModel):
