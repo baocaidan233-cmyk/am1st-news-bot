@@ -42,6 +42,7 @@ class NotionCandidateProps(BaseModel):
     heat_score: str = "heat_score"  # number — corroboration signal, see HeatConfig
     event_first_seen_at: str = "event_first_seen_at"  # date — earliest time any related source was seen, vs published_at's own single-article timestamp
     is_hot: str = "is_hot"  # checkbox — set from the manual hot-topic flag match, see HotTopicsConfig; added 2026-08-31
+    extraction_failed: str = "extraction_failed"  # checkbox — set once by main_publish.py the first time full-text extraction fails for this candidate; a permanent exclusion, not a retry-later flag (added 2026-09-05)
 
 
 class NotionHotTopicProps(BaseModel):

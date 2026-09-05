@@ -95,7 +95,7 @@ from core.alerts import AlertNotifier
 from core.config import load_config
 from core.event_identity import EventVerifier
 from core.language import is_english
-from core.notion_candidates import count_recent_high_score, has_unpublished_hot_candidate, mark_send_status, query_eligible_candidates
+from core.notion_candidates import count_recent_high_score, has_unpublished_hot_candidate, mark_extraction_failed, mark_send_status, query_eligible_candidates
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
 
@@ -138,16 +138,25 @@ async def run_cycle(
     extractor: Extractor,
     writer: Writer,
     dry_run: bool,
-) -> None:
+) -> bool:
+    """Returns True iff this cycle actually published something — main()'s
+    loop uses this to track how recently the channel last posted, so the
+    hot-topic fast lane (below) can be kept from firing more often than
+    dynamic_publish.min_interval_seconds even when a permanently-stuck
+    hot-flagged candidate keeps re-qualifying every fast_poll_seconds (see
+    2026-09-05 incident: a paywalled FT article that could never actually
+    extract kept is_hot=true and unsent, firing the fast lane every 3min
+    for 2+ hours straight, 31 real publishes instead of the ~4 the dynamic
+    interval alone would have produced)."""
     candidates = await query_eligible_candidates(config)
     if not candidates:
         logger.info("run_cycle: no eligible candidates this cycle")
-        return
+        return False
 
     candidates = filter_former_trump(candidates)
     if not candidates:
         logger.info("run_cycle: all candidates dropped by former-Trump filter")
-        return
+        return False
 
     sources = await load_rss_sources(config)
     trending_headlines = await fetch_trending_headlines()
@@ -178,6 +187,13 @@ async def run_cycle(
             text = await extractor.extract(c.url, sources)
             if not text:
                 logger.info("run_cycle: %s dropped — full-text extraction failed (paywall/blocked/empty), refusing to publish off title+description alone", c.url)
+                # 2026-09-05, per the user's explicit request: give up on this
+                # candidate permanently instead of re-trying it (and re-paying
+                # the same extraction cost) every future cycle until it ages
+                # out — a real source (a paywalled FT article) never once
+                # succeeded across dozens of retries. query_eligible_candidates()
+                # excludes extraction_failed=true so it's never re-selected.
+                await mark_extraction_failed(config, c.page_id)
                 continue
             c.content = text
 
@@ -241,7 +257,7 @@ async def run_cycle(
     log_publish_outcome(ranked_len, winner)
     if winner is None:
         logger.info("run_cycle: no publishable candidate found after widening — nothing to publish this cycle")
-        return
+        return False
 
     og = await fetch_link_preview(winner.url)
     post_id = await publisher.publish(
@@ -282,6 +298,8 @@ async def run_cycle(
                 await event_store.mark_published(matched["event_id"])
         except Exception:
             logger.exception("run_cycle: failed to mark event as published for %s", winner.url)
+
+    return published
 
 
 async def compute_dynamic_interval(config) -> float:
@@ -338,11 +356,13 @@ async def main() -> None:
     if dry_run:
         logger.info("Running in --dry-run mode: Notion/Qdrant writes will be logged, not sent")
 
+    last_publish_monotonic: float | None = None
     try:
         while True:
             started = time.monotonic()
+            published_this_cycle = False
             try:
-                await asyncio.wait_for(
+                published_this_cycle = await asyncio.wait_for(
                     run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, dry_run),
                     timeout=config.cycle_timeout_seconds,
                 )
@@ -354,6 +374,8 @@ async def main() -> None:
                 logger.error("run_cycle exceeded %ds — cutting it off, will retry next cycle", config.cycle_timeout_seconds)
             except Exception:
                 logger.exception("run_cycle failed")
+            if published_this_cycle:
+                last_publish_monotonic = time.monotonic()
             logger.info("run_cycle: cycle took %.1fs", time.monotonic() - started)
             base_interval = await compute_dynamic_interval(config)
             jitter = base_interval * random.uniform(-0.1, 0.1)
@@ -363,18 +385,38 @@ async def main() -> None:
             # sitting unsent; if so, cut the wait short and run the next
             # cycle now instead of waiting out the full interval. The check
             # itself is a cheap, existence-only Notion query (no LLM cost),
-            # so this is safe to run often. Bounded risk if something stays
-            # hot-flagged but never wins (e.g. repeatedly filtered/declined):
-            # worst case is one full cycle (real extraction+writer cost)
-            # every fast_poll_seconds instead of every interval_seconds —
-            # acceptable since it only happens while the user has
-            # deliberately flagged something as breaking, not automatically.
+            # so this is safe to run often.
+            #
+            # 2026-09-05 incident: a paywalled FT article that could never
+            # actually extract kept is_hot=true and unsent for hours, and
+            # this fast lane fired every fast_poll_seconds (180s) the whole
+            # time — 31 real publishes in 2 hours instead of the ~4 the
+            # dynamic interval alone would have produced, because nothing
+            # here checked how recently the channel had actually last
+            # published. Fixed two ways: (1) mark_extraction_failed() now
+            # permanently excludes a candidate like that one after its
+            # first failed extraction (see run_cycle()), so it stops
+            # re-qualifying at all; (2) as a hard backstop regardless of
+            # cause, the fast lane may never fire more often than
+            # dynamic_publish.min_interval_seconds (15min, the user's
+            # explicit "频道上限15分钟一条" ceiling) since the last actual
+            # publish — a second hot-flagged candidate that DOES extract
+            # fine could otherwise reproduce the same problem.
             remaining = base_interval + jitter
             while remaining > 0:
                 chunk = min(config.hot_topics.fast_poll_seconds, remaining)
                 await asyncio.sleep(chunk)
                 remaining -= chunk
-                if remaining > 0 and await has_unpublished_hot_candidate(config):
+                if remaining <= 0:
+                    break
+                since_last_publish = (
+                    time.monotonic() - last_publish_monotonic
+                    if last_publish_monotonic is not None
+                    else config.dynamic_publish.min_interval_seconds
+                )
+                if since_last_publish < config.dynamic_publish.min_interval_seconds:
+                    continue
+                if await has_unpublished_hot_candidate(config):
                     logger.info("run_cycle: unpublished hot-flagged candidate detected — triggering cycle early")
                     break
     finally:

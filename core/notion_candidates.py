@@ -123,6 +123,7 @@ async def query_eligible_candidates(config: AppConfig) -> list[PublishCandidate]
         "filter": {
             "and": [
                 {"property": props.send_status, "checkbox": {"does_not_equal": True}},
+                {"property": props.extraction_failed, "checkbox": {"does_not_equal": True}},
                 {"timestamp": "created_time", "created_time": {"after": cutoff}},
                 {"property": props.llm_score, "number": {"greater_than_or_equal_to": config.publish.candidate_min_score}},
             ]
@@ -209,6 +210,7 @@ async def has_unpublished_hot_candidate(config: AppConfig) -> bool:
         "filter": {
             "and": [
                 {"property": props.send_status, "checkbox": {"does_not_equal": True}},
+                {"property": props.extraction_failed, "checkbox": {"does_not_equal": True}},
                 {"property": props.is_hot, "checkbox": {"equals": True}},
                 {"timestamp": "created_time", "created_time": {"after": cutoff}},
             ]
@@ -299,4 +301,43 @@ async def mark_send_status(config: AppConfig, page_id: str) -> bool:
         return True
     except Exception:
         logger.exception("mark_send_status: Notion update failed for page %s", page_id)
+        return False
+
+
+async def mark_extraction_failed(config: AppConfig, page_id: str) -> bool:
+    """Flips extraction_failed to true — called by main_publish.py's
+    run_cycle() the moment full-text extraction fails for a candidate.
+    2026-09-05, per the user's explicit request ("把这类读不了全文的文章，
+    全部一次之后就放弃，不要一直循环"): a source that fails once (a hard
+    paywall, a site that blocks the extractor) essentially never succeeds
+    on a later retry, but without this flag the candidate stays eligible
+    and gets re-selected into the batch (and re-billed for the same
+    extraction attempt) every cycle until it ages out on its own — worse,
+    if it also happens to be is_hot=true, it can keep re-triggering
+    hot_topics.py's fast-poll early-cycle trigger indefinitely (a real
+    2026-09-05 incident: 31 publishes in 2 hours instead of the expected
+    ~4, because one permanently-unextractable hot-flagged candidate never
+    stopped re-qualifying). query_eligible_candidates() excludes
+    extraction_failed=true so this is a one-way, permanent exclusion, not
+    a retry-later flag."""
+    notion = config.notion
+    if not notion.candidate_key:
+        logger.warning("mark_extraction_failed: NOTION_CANDIDATE_API_KEY not set — skipping")
+        return False
+
+    props = notion.candidate_props
+    headers = {
+        "Authorization": f"Bearer {notion.candidate_key}",
+        "Notion-Version": NOTION_VERSION,
+        "Content-Type": "application/json",
+    }
+    body = {"properties": {props.extraction_failed: {"checkbox": True}}}
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.patch(f"https://api.notion.com/v1/pages/{page_id}", headers=headers, json=body)
+            resp.raise_for_status()
+        return True
+    except Exception:
+        logger.exception("mark_extraction_failed: Notion update failed for page %s", page_id)
         return False
