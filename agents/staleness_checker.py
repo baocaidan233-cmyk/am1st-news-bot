@@ -8,12 +8,23 @@ from core.openai_client import create_openai_client
 
 
 class StalenessChecker:
-    """Separate, single-purpose LLM call (2026-09-05) — decides whether an
-    article is fundamentally stale analysis/retrospective about an event
-    that already happened, vs. genuinely fresh news, BEFORE Writer ever
-    runs on it. Real incident: two op-eds analyzing deals that were 9 days
-    and 2 weeks old (a Venezuela oil deal, an Ethiopia defense agreement)
-    both got written up as if breaking news.
+    """Separate, single-purpose LLM call (2026-09-05) — classifies an
+    article as FRESH / OPINION / STALE, BEFORE Writer ever runs on it.
+    Real incident: two op-eds analyzing deals that were 9 days and 2 weeks
+    old (a Venezuela oil deal, an Ethiopia defense agreement) both got
+    written up as if breaking news.
+
+    Originally a binary stale/fresh check — broadened to three verdicts
+    2026-09-05, same day, per the user's explicit "两种处理方法，要么...发
+    观点，要么...不发" (two ways to handle this: either recognize it's
+    opinion and publish it as opinion, or recognize it's just old news and
+    don't publish): a genuine analysis piece with real argument/expert
+    input (like the real Ethiopia case — several named experts giving
+    distinct takes on a real question) has editorial value and shouldn't
+    be discarded outright just because the underlying event is old; it
+    should be published, but framed as opinion/analysis rather than as if
+    it just happened. Only a pure rehash with no real new angle (STALE)
+    gets dropped entirely.
 
     Deliberately NOT folded into content_gen_prompt.txt's own instructions
     — three separate attempts to make Writer self-police this in the same
@@ -40,7 +51,11 @@ class StalenessChecker:
         self._model = config.openai.chat_model
         self._prompt = Path(config.openai.staleness_check_prompt_file).read_text(encoding="utf-8")
 
-    async def is_stale(self, title: str, article: str) -> tuple[bool, str]:
+    async def classify(self, title: str, article: str) -> tuple[str, str]:
+        """Returns (verdict, raw) where verdict is one of "FRESH", "OPINION",
+        "STALE" — falls back to "FRESH" (fail open, never blocks a real
+        candidate on an unparseable response) if the model's output doesn't
+        contain a recognized verdict."""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         user_message = self._prompt.format(today=today, title=title, article=article[:6000])
         kwargs = dict(model=self._model, messages=[{"role": "user", "content": user_message}])
@@ -57,4 +72,7 @@ class StalenessChecker:
             if line.upper().startswith("VERDICT"):
                 verdict = line.split(":", 1)[1].strip().upper()
                 break
-        return verdict.startswith("STALE"), raw
+        for candidate in ("STALE", "OPINION", "FRESH"):
+            if verdict.startswith(candidate):
+                return candidate, raw
+        return "FRESH", raw

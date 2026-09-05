@@ -211,13 +211,16 @@ async def run_cycle(
                 logger.info("run_cycle: %s dropped — non-English article content", c.url)
                 continue
 
-            # Staleness check (2026-09-05) — a separate, single-purpose call
-            # BEFORE the writer runs; see agents/staleness_checker.py's
-            # docstring for why this isn't folded into content_gen_prompt.txt
-            # (three attempts to make Writer self-police this in one call
-            # all failed on real test articles). Real incident: op-eds
-            # analyzing a 9-day-old Venezuela deal and a 2-week-old Ethiopia
-            # deal both got written up as if breaking news.
+            # Staleness classification (2026-09-05) — a separate, single-
+            # purpose call BEFORE the writer runs; see agents/
+            # staleness_checker.py's docstring for why this isn't folded
+            # into content_gen_prompt.txt (three attempts to make Writer
+            # self-police this in one call all failed on real test
+            # articles). Three-way, not binary — per the user's explicit
+            # "两种处理方法，要么...发观点，要么...不发": a genuine analysis
+            # piece with real argument/expert input (OPINION) still gets
+            # written, just framed as opinion rather than dropped outright;
+            # only a pure rehash with no new angle (STALE) gets dropped.
             #
             # Gated behind a free pre-filter, not run unconditionally on
             # every candidate — per the user's explicit cost concern: this
@@ -230,18 +233,22 @@ async def run_cycle(
             # question. Only when that gap clears staleness_check_hours_floor
             # is there real ambiguity worth spending the LLM call on; a
             # freshly-first-seen event skips the check entirely (treated
-            # as fresh for free).
+            # as FRESH for free).
             first_seen = c.event_first_seen_at or c.published_at
             hours_since_first_seen = (datetime.now(timezone.utc) - first_seen).total_seconds() / 3600
+            is_opinion = False
             if hours_since_first_seen >= config.publish.staleness_check_hours_floor:
                 try:
-                    is_stale, stale_raw = await staleness_checker.is_stale(c.title, c.content)
+                    verdict, verdict_raw = await staleness_checker.classify(c.title, c.content)
                 except Exception:
                     logger.exception("run_cycle: staleness check failed for %s — failing open, treating as fresh", c.url)
-                    is_stale = False
-                if is_stale:
-                    logger.info("run_cycle: %s dropped — stale analysis of an old event (%s)", c.url, stale_raw.replace("\n", " "))
+                    verdict = "FRESH"
+                if verdict == "STALE":
+                    logger.info("run_cycle: %s dropped — stale rehash of an old event (%s)", c.url, verdict_raw.replace("\n", " "))
                     continue
+                is_opinion = verdict == "OPINION"
+                if is_opinion:
+                    logger.info("run_cycle: %s classified OPINION — will write framed as analysis, not breaking news (%s)", c.url, verdict_raw.replace("\n", " "))
 
             # Background for the writer (2026-08-31) — peek() against the same
             # title+description embedding space main.py already uses, so this
@@ -258,7 +265,7 @@ async def run_cycle(
             except Exception:
                 logger.exception("run_cycle: failed to build writer background for %s — continuing without it", c.url)
 
-            post_content = await writer.write(c.title, c.content, context=background)
+            post_content = await writer.write(c.title, c.content, context=background, is_opinion=is_opinion)
             if Writer.is_no_comment(post_content):
                 logger.info("run_cycle: %s — writer returned No comment, dropped from batch", c.url)
                 continue

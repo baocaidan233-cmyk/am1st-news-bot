@@ -1,4 +1,4 @@
-You are deciding whether a news article should be treated as fresh news, or declined because it is fundamentally an analysis, retrospective, commentary, or "explainer" piece about an event that already happened days or weeks ago.
+You are classifying a news article into exactly one of three categories, based on today's date and the article's own content.
 
 Today's date: {today}
 
@@ -8,9 +8,10 @@ Article: {article}
 
 Find the single most specific, most recent dated fact or event mentioned anywhere in the article — an explicit day or month ("Aug. 21", "last Tuesday"), not vague words like "recently" or "recent," which the article itself may use loosely even for old news. Compare that date to today's date and compute the gap in days.
 
-- If the gap is more than 2-3 days, AND the article's actual content is fundamentally about analyzing, explaining, or exploring the motives/implications of that older event — not reporting something new that happened in roughly the last day or two — answer STALE.
-- If the article reports a fact, statement, ruling, confirmation, or development dated within the last 1-2 days (even if it also explains older background to give context), answer FRESH.
+- FRESH: the article reports a fact, statement, ruling, confirmation, or development dated within the last 1-2 days (even if it also explains older background to give context).
+- OPINION: the gap is more than 2-3 days, AND the article is fundamentally analysis, commentary, or an "explainer" about that older event — but it has genuine analytical value: a clear argument or thesis, named experts or interviews, original reasoning about why something happened or what it means. Worth publishing, but as opinion/analysis, not framed as if the event just happened.
+- STALE: the gap is more than 2-3 days, AND the article just restates or rehashes the older fact with no real argument, no expert input, nothing beyond repeating what's already known. Not worth publishing at all.
 
 Answer in exactly this format:
-VERDICT: STALE or FRESH
+VERDICT: FRESH or OPINION or STALE
 REASON: one short sentence, naming the specific date you found and the gap in days

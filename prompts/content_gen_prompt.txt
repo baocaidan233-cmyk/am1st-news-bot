@@ -39,6 +39,24 @@ channel's own event-tracking history (not part of the article itself).
 
 ---
 
+## OPTIONAL OPINION FRAMING
+
+The user message sometimes includes a **Note** saying this article is
+analysis/commentary about an event that already happened, not a fresh news
+report — this has already been decided before you see it; don't second-guess
+it, just write accordingly.
+
+- Frame the post as opinion/analysis: "Analysts argue...", "The debate
+  centers on...", naming the actual expert/source the article quotes where
+  it does — not as if the underlying event just happened today.
+- Do not use "BREAKING."
+- Every other rule still applies as normal — SUBSTANCE REQUIREMENT (a real
+  specific detail, e.g. what the named expert actually argued), word cap,
+  tone, not-against-Trump.
+- If no such Note is present, ignore this section entirely.
+
+---
+
 ## RELEVANCY CHECK
 
 Before writing, confirm the article relates to **America First political themes**, including:
