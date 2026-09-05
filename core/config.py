@@ -412,33 +412,36 @@ class DynamicPublishConfig(BaseModel):
     30min base gives ~39min, which max_interval_seconds (1800s = 30min,
     tightened the same day for the busy/normal case) immediately clamped
     right back down to 30min, silently cancelling the one thing the
-    quiet-tier branch exists for. The user confirmed real "dynamic" should
-    mean a genuinely dead stretch (e.g. overnight, weekends) is allowed to
-    go much longer than 30min between posts rather than forcing one out on
-    a fixed cadence regardless of whether there's anything worth posting —
-    up to roughly the same 24h ballpark as weekend_max_age_hours (a
-    different knob — candidate eligibility age, not publish cadence — but
-    the same "don't force it when the pool is this thin" intent). Added a
-    DEAD tier (count == 0, the rarer, more extreme case the original p25
-    sample didn't need to distinguish from "just quiet") on top of the
-    existing quiet tier, and raised max_interval_seconds so neither tier's
-    scale-up is clamped away. dead_scale/quiet_scale are a reasoned
-    starting point, not independently calibrated against a real sustained-
-    zero-count sample the way busy/quiet_count were — the hot-topic fast
-    lane (core/hot_topics.py) still coexists underneath this and can always
-    cut a long wait short the moment something genuinely breaking shows
-    up, so a high ceiling only ever lengthens truly quiet stretches, never
-    delays real news."""
+    quiet-tier branch exists for. Raised quiet_scale to 2.5 and added a
+    DEAD tier (count == 0, scale 6.0) on top, with max_interval_seconds
+    raised to 4h so neither tier's scale-up was clamped away — the idea
+    being a genuinely dead stretch (overnight, weekends) should go much
+    longer between posts rather than forcing one out on a fixed cadence.
+
+    2026-09-06, reverted: the user tested this in production and rejected
+    it — they want every cycle checked, and if warranted, published,
+    within a strict 15-30min band (39min at the very most — the original
+    unclamped quiet_scale figure above), never stretched out to hours
+    regardless of how thin the pool is. The DEAD tier and the 4h ceiling
+    are gone; a genuinely empty cycle is instead handled by the mechanism
+    that already existed independently of this config — run_cycle()'s
+    widen-on-empty giving up and publishing nothing for that cycle (see
+    publish.max_widen_attempts) — rather than by making the wait-until-
+    next-check interval itself grow long. quiet_scale is back to 1.3 and
+    max_interval_seconds to 2340 (its natural, no-longer-clamped product)
+    so the quiet tier reaches exactly the ~39min ceiling the user named as
+    acceptable, with nothing beyond it. The hot-topic fast lane (core/
+    hot_topics.py) is unaffected either way — it still cuts a long wait
+    short for a human-flagged breaking story."""
 
     hot_score_floor: float = 8.0
     lookback_hours: float = 2.0
     quiet_count: int = 1  # <= this many (but not zero) -> slow down (real p25)
     busy_count: int = 8  # >= this many -> speed up (real p75)
-    quiet_scale: float = 2.5  # 30min base -> 75min
-    dead_scale: float = 6.0  # 30min base -> 3h — count == 0 in the lookback window specifically
+    quiet_scale: float = 1.3  # 30min base -> 39min
     busy_scale: float = 0.6  # 30min base -> ~18min
     min_interval_seconds: int = 900  # 15 min floor — never faster than this regardless of volume
-    max_interval_seconds: int = 14400  # 4h ceiling (was 1800s/30min — that value clamped away the quiet/dead slowdown entirely, see docstring's 2026-09-05 second-pass note) — still a hard ceiling, so a genuinely dead multi-hour stretch doesn't turn into total silence
+    max_interval_seconds: int = 2340  # 39 min ceiling — the user's explicit cap (2026-09-06); an empty cycle publishes nothing instead of the interval stretching further, see docstring
 
 
 class AppConfig(BaseModel):
