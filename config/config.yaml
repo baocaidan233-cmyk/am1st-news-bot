@@ -121,7 +121,9 @@ publish:
   candidate_min_score: 5.0     # Notion query floor (lower of weekday/weekend below)
   weekday_min_score: 6.0
   weekend_min_score: 5.0
-  candidate_max_age_hours: 12
+  candidate_max_age_hours: 24  # Notion query ceiling (wider of weekday/weekend below)
+  weekday_max_age_hours: 12    # weekdays: keep the "same-day news" freshness rule
+  weekend_max_age_hours: 24    # weekends: real volume is lower — widened 2026-09-05 per user request
   fresh_hours: 4
   batch_min: 3
   batch_max: 10  # reverted 2026-09-02, same day — lowered to 5 earlier, but the very first cycle under 5 hit "all candidates were duplicates, nothing to publish" on a day with heavy repeat coverage of a few ongoing stories (Iran, socialism vote); 5->10 wasn't saving much real token cost anyway (per-call cost is small), not worth the risk of skipped cycles. See core/config.py's PublishConfig.batch_max comment.

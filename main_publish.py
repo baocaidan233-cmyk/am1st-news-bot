@@ -11,7 +11,9 @@ compute_dynamic_interval() below, 2026-09-05: the actual wait each cycle
 scales 0.6x-1.3x that base on real-time news volume, clamped to
 [15min, 45min], on top of which core/hot_topics.py's manual fast lane can
 still cut things short for a human-flagged breaking story):
-  query eligible candidates (Notion: not sent, <=12h old, llm_score>=6)
+  query eligible candidates (Notion: not sent, <=24h old at the query level,
+     llm_score>=6 — select_batch() then applies the real day-aware freshness
+     ceiling: 12h on weekdays, 24h on weekends, see agents/candidate_selector.py)
   -> drop stale "former president Trump" phrasing (cheap pass, title+
      description only)
   -> tiered batch selection (fresh+high-score preferred, cascading fallback,

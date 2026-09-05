@@ -365,7 +365,9 @@ class PublishConfig(BaseModel):
     candidate_min_score: float = 5.0  # Notion query floor — the lower of weekday/weekend_min_score, so both are actually fetched; select_batch applies the day-aware floor on top
     weekday_min_score: float = 6.0  # weekdays: heavier real news volume, prefer this floor first
     weekend_min_score: float = 5.0  # weekends: lighter volume, use this floor directly (also the weekday fallback if 6+ doesn't fill the batch)
-    candidate_max_age_hours: int = 12  # candidate pool eligibility window
+    candidate_max_age_hours: int = 24  # Notion query ceiling — same pattern as candidate_min_score: the WIDER of weekday/weekend_max_age_hours below, so weekend-eligible candidates aren't excluded before select_batch() even sees them; select_batch() applies the actual day-aware ceiling on top
+    weekday_max_age_hours: int = 12  # weekdays: heavy real news volume — keep the original "same-day news" freshness rule
+    weekend_max_age_hours: int = 24  # weekends (US/Eastern Sat/Sun): real volume is much lower — widened 2026-09-05 per the user's explicit request, so a Friday-night story is still eligible through Saturday instead of the pool running thin/empty
     fresh_hours: int = 4  # freshness tier line used by the batch-selection cascade
     batch_min: int = 3
     batch_max: int = 10  # was 5, raised to 10 on 2026-08-05 (extraction/content-gen only run on the selected batch now, not every scored candidate — a bigger batch costs much less than it used to). Briefly lowered back to 5 on 2026-09-02 after real data showed the winner was always found within the top 3 of the ranked batch — reverted the SAME day: the very first cycle at 5 hit "all candidates were duplicates, nothing to publish" on a day with heavy repeat coverage of a few ongoing stories (Iran, a House socialism vote), and 5 vs 10 wasn't saving much real token cost anyway (per-call cost is small) to be worth the risk of skipped publish cycles.

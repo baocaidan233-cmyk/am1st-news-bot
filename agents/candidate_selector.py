@@ -90,26 +90,39 @@ def select_batch(candidates: list[PublishCandidate], config: AppConfig) -> list[
     explicit "iron rule": only same-day news, publish nothing rather than
     something stale). Confirmed live: a 3-day-old CNBC article that only
     entered the candidate pool THAT DAY (query_eligible_candidates()'s own
-    12h eligibility window is keyed on Notion's created_time — when this
-    bot first saw it — not the article's own published_at) sailed through
+    eligibility window is keyed on Notion's created_time — when this bot
+    first saw it — not the article's own published_at) sailed through
     tier 3 below, which only checks llm_score, not freshness at all, and
     got published as if it were breaking. Every tier below, including the
     hot-topic force-include and the batch_min last-resort fallback, now
     only ever draws from `candidates` after this filter — none of them can
-    bypass it. candidate_max_age_hours (12h) is reused here deliberately,
-    not a new number: on a genuinely slow news day this can leave the
-    batch under batch_min, even empty — that's the accepted trade-off,
-    not a bug to work around."""
+    bypass it.
+
+    2026-09-05 — this ceiling is now day-aware, same weekday/weekend split
+    as the score floor above: weekday_max_age_hours (12h) keeps the
+    original same-day rule; weekend_max_age_hours (24h, widened per the
+    user's explicit request) reflects real lower weekend news volume, so a
+    Friday-night story is still eligible through Saturday instead of the
+    batch running under batch_min or empty. query_eligible_candidates()'s
+    own Notion-query ceiling (config.publish.candidate_max_age_hours) is
+    deliberately the WIDER of the two (24h) so weekend-eligible candidates
+    are never excluded before reaching this actual day-aware filter — same
+    "fetch the superset, then apply the real floor here" pattern as
+    candidate_min_score/weekday_min_score/weekend_min_score above. On a
+    genuinely slow news day this can still leave the batch under
+    batch_min, even empty — that's the accepted trade-off, not a bug to
+    work around."""
     pub = config.publish
     now = datetime.now(timezone.utc)
     is_weekday = _is_weekday(now)
     preferred_floor = pub.weekday_min_score if is_weekday else pub.weekend_min_score
     fallback_floor = pub.weekend_min_score
+    max_age_hours = pub.weekday_max_age_hours if is_weekday else pub.weekend_max_age_hours
 
     def hours_old(c: PublishCandidate) -> float:
         return (now - c.published_at).total_seconds() / 3600
 
-    candidates = [c for c in candidates if hours_old(c) <= pub.candidate_max_age_hours]
+    candidates = [c for c in candidates if hours_old(c) <= max_age_hours]
 
     fresh = [c for c in candidates if hours_old(c) <= pub.fresh_hours]
 
