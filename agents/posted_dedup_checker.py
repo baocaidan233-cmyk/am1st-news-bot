@@ -36,10 +36,12 @@ async def find_publishable(
     """Walks `ranked_batch` in priority order (highest first) and returns the
     first candidate that is NOT a near-duplicate of something this channel
     already posted in the last publish.posted_dedup_window_hours. Duplicates
+    (and candidates whose dedup check itself failed — see Fallback below)
     are skipped (logged only, not written anywhere) — never causes the whole
-    cycle to abort. Returns None only if every candidate in the batch is a
-    duplicate (or the batch is empty) — the correct outcome is "publish
-    nothing this cycle", not a fallback.
+    cycle to abort. Returns None only if every candidate in the batch was a
+    duplicate or errored (or the batch is empty) — the correct outcome for
+    an actual all-duplicate batch is "publish nothing this cycle", not a
+    fallback that fakes freshness.
 
     2026-09-05: cosine similarity alone no longer decides a duplicate — it
     only decides whether to ASK. A real production audit (same day) found
@@ -68,20 +70,43 @@ async def find_publishable(
     events unless clearly the same stage) — reused here as-is, no new
     prompt, no keyword heuristics. Only called when cosine > threshold
     (typically 0-3 times per publish cycle per the 2026-09-05 audit), so
-    the added cost is negligible."""
+    the added cost is negligible.
+
+    Fallback (2026-09-05, same day): same_event() is a real OpenAI call
+    with no fail-open wrapper of its own (core/openai_client.py's
+    FallbackOpenAI only retries same-cause RateLimitError across keys —
+    any other error, e.g. a timeout or a malformed response, propagates).
+    Before this fallback, that exception would escape find_publishable()
+    entirely and abort the WHOLE cycle via main_publish.py's run_cycle()
+    exception handler — turning one transient API hiccup on candidate #1
+    into zero publishes this cycle, even if candidates #2-#10 never
+    needed an LLM call at all. Each candidate's whole dedup check
+    (embedding, posted-history lookup, same_event()) is now wrapped in its
+    own try/except: on any failure, that ONE candidate is skipped (logged
+    as check_type=posted_dedup_error, not conflated with a real "duplicate"
+    verdict) and the walk continues to the next-ranked candidate, so the
+    cycle still very likely finds something to publish."""
     threshold = config.publish.posted_dedup_threshold
 
     for candidate in ranked_batch:
-        candidate_content = content_for_embedding(candidate.post_content, candidate.url)
-        embedding = await embedder.embed(candidate_content)
-        similarity, matched_url, matched_content_raw = await posted_store.most_similar_recent(embedding)
+        try:
+            candidate_content = content_for_embedding(candidate.post_content, candidate.url)
+            embedding = await embedder.embed(candidate_content)
+            similarity, matched_url, matched_content_raw = await posted_store.most_similar_recent(embedding)
 
-        looks_similar = similarity > threshold
-        is_duplicate = False
-        same_event_raw = ""
-        if looks_similar:
-            matched_content = content_for_embedding(matched_content_raw, matched_url)
-            is_duplicate, same_event_raw = await event_verifier.same_event(candidate_content, matched_content)
+            looks_similar = similarity > threshold
+            is_duplicate = False
+            same_event_raw = ""
+            if looks_similar:
+                matched_content = content_for_embedding(matched_content_raw, matched_url)
+                is_duplicate, same_event_raw = await event_verifier.same_event(candidate_content, matched_content)
+        except Exception:
+            logger.exception(
+                "find_publishable: dedup check failed for %s — skipping this candidate (not a confirmed verdict), trying next",
+                candidate.url,
+            )
+            log_decision(config, {"check_type": "posted_dedup_error", "candidate_url": candidate.url})
+            continue
 
         if matched_url:
             log_record = {
