@@ -60,6 +60,7 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
+from agents.candidate_selector import _is_weekday
 from agents.embedder import Embedder
 from agents.og_metadata import fetch_link_preview
 from agents.rss_fetcher import fetch_all
@@ -433,12 +434,48 @@ async def run_cycle(
         # worth paying. A genuinely different angle on that same event
         # (0.6-0.8) is NOT blocked here — see EventStore.mark_published()'s
         # docstring; that's still a legitimate fresh update.
-        if matched is not None and matched.get("published") and matched.get("_score", 0.0) >= threshold:
+        #
+        # 2026-09-06: also drop on subtype alone (RESTATEMENT/CORROBORATION),
+        # not just raw cosine — a real production miss found the cosine-only
+        # check let an already-published court ruling get reposted by a
+        # second outlet at 0.685 cosine (below the 0.8 bar), even though
+        # classify_subtype() — computed just above, same loop iteration —
+        # had already correctly called it RESTATEMENT. Cosine alone was a
+        # cruder signal than the entity+LLM verdict this same code path
+        # already computes; this just puts that verdict to use here too.
+        if matched is not None and matched.get("published") and (
+            matched.get("_score", 0.0) >= threshold or subtype in ("RESTATEMENT", "CORROBORATION")
+        ):
             logger.info(
-                "run_cycle: cluster %d dropped — near-duplicate of an already-published event (%.3f)",
-                cluster_idx, matched.get("_score", 0.0),
+                "run_cycle: cluster %d dropped — near-duplicate of an already-published event (score=%.3f, subtype=%s)",
+                cluster_idx, matched.get("_score", 0.0), subtype,
             )
             continue
+
+        # Stale-event guard (2026-09-06, user's explicit rule: stale news
+        # should only ever be posted as a genuine event update) — distinct
+        # from the guard above: fires even on an event that's NEVER been
+        # posted before, if it's already older than the same day-aware
+        # freshness ceiling publish.py's own candidate query uses (see
+        # agents/candidate_selector.py's weekday/weekend max_age_hours) and
+        # this fragment adds nothing new (RESTATEMENT/CORROBORATION). A
+        # real production miss: a 2-day-old rare-earth story sat unpublished
+        # in the event store, then got its first-ever Gettr post from a
+        # same-day rehash article with nothing new to say, just because
+        # that particular article itself was freshly crawled. A genuine
+        # CORE_UPDATE on an old event still gets through — that's real news.
+        if matched is not None and subtype in ("RESTATEMENT", "CORROBORATION"):
+            event_age_hours = (int(time.time()) - matched.get("first_seen_at", int(time.time()))) / 3600
+            max_age_hours = (
+                config.publish.weekday_max_age_hours if _is_weekday(datetime.now(timezone.utc))
+                else config.publish.weekend_max_age_hours
+            )
+            if event_age_hours > max_age_hours:
+                logger.info(
+                    "run_cycle: cluster %d dropped — stale event (%.1fh old, ceiling %.0fh) with no new information (subtype=%s)",
+                    cluster_idx, event_age_hours, max_age_hours, subtype,
+                )
+                continue
 
         cluster = clusters[cluster_idx]
         preview_heat, preview_first_seen = event_store.preview_heat(
