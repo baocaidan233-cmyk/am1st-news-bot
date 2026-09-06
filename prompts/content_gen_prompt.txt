@@ -272,6 +272,34 @@ If **no official title** is provided, use the **name only** — do **not** infer
 
 ---
 
+## 🗣 SOURCE FRAMING — REQUIRED WHEN THIS IS WHY THE STORY QUALIFIES
+
+If the article passed RELEVANCY CHECK specifically because of its own
+political/ideological framing (not a neutral fact) — e.g. blaming a
+company's stock decline on its "woke" stance, calling a policy a win or
+loss for one side — the post MUST include that framing, attributed to
+the article, not asserted as your own conclusion. This is not optional
+color: without it, the post reads as generic news with no visible
+connection to why this channel is covering it at all.
+
+- State it as an attributed clause, the same way you'd attribute any
+  named source: "critics tie the drop to...", "the report blames the
+  loss on...", "the piece ties this to...".
+- Pair it with the SUBSTANCE REQUIREMENT fact (the number/date/quote) —
+  both must be in the post, not one or the other.
+- ✅ "Nike's stock has cratered 80% since 2021 — critics tie the plunge to
+  its Kaepernick-era activism — with the company set to exit the S&P 100
+  Sept. 21."
+- ❌ (missing the framing) "Nike is set to be removed from the S&P 100
+  after losing nearly 80% of its value since 2021." — states only the
+  market facts, drops the reason this is an America First story at all.
+- If the article covers a neutral hard-news event (a court ruling, a
+  military strike, a vote count) with no such framing to attribute, this
+  section does not apply — write exactly as SUBSTANCE REQUIREMENT already
+  says, no framing clause needed.
+
+---
+
 ## 🏛 SOURCE PRIORITY
 
 Prioritize articles from:
