@@ -733,6 +733,92 @@ async def verify_compatibility(
     return "AMBIGUOUS"
 
 
+def _actor_conflict(text_a: str, text_b: str) -> bool:
+    """True only if both texts yield a clear actor via extract_event_frame()
+    and those actors are unrelated strings — conservative like
+    has_date_conflict(): silent (False) unless BOTH sides have a non-empty
+    actor. Substring-inclusive ("Trump" in "President Trump") so the same
+    actor named at different lengths never counts as a conflict — only a
+    named mismatch (e.g. "Trump" vs "Vladimir Putin") does."""
+    actor_a = extract_event_frame(text_a).get("actor")
+    actor_b = extract_event_frame(text_b).get("actor")
+    if not actor_a or not actor_b:
+        return False
+    a, b = actor_a.lower(), actor_b.lower()
+    return a not in b and b not in a
+
+
+async def posted_dedup_rule_verdict(
+    config: AppConfig,
+    hub_index: HubIndex,
+    candidate_text: str,
+    matched_text: str,
+    cosine_score: float,
+) -> str:
+    """Rule tier for agents/posted_dedup_checker.py — same NO_OVERLAP/
+    COMPATIBLE/AMBIGUOUS shape as verify_compatibility() above, but adapted
+    for two flat texts (a candidate caption vs. an already-posted caption)
+    rather than a candidate vs. an accumulating EventStore event: there's no
+    persisted core_entities here, just entity_tokens() on both sides
+    directly. Also adds an actor-conflict check verify_compatibility()
+    doesn't need — that one only ever compares a NEW candidate against an
+    event already rule/LLM-confirmed at least once before; here BOTH sides
+    are independently-generated captions that can share a named entity
+    while describing entirely different specific actions.
+
+    2026-09-06, added after a live incident: a real duplicate (an Iranian
+    oil-tanker "sinking" follow-up article) was published because the ONE
+    posted_dedup LLM call on it returned DIFFERENT_EVENT — re-running the
+    exact same pair 5/5 times afterward gave SAME_EVENT every time,
+    confirming the original call was simply wrong, not a borderline judgment
+    call. A broader validation against all 394 historical cosine-flagged
+    posted_dedup pairs found this rule tier's entity-overlap logic alone
+    would flag 2 of 8 real disagreements with the original LLM verdict as
+    false positives (distinct actors doing distinct things sharing only an
+    incidental entity — e.g. Trump dispatching envoys to Moscow/Kyiv vs.
+    Putin announcing a ceasefire, both merely mentioning Kyiv); the other 6
+    of 8 disagreements were themselves confirmed LLM misses this rule tier
+    gets right (verified by reading the actual stored post content, not
+    just the logged one-line LLM reason — a single same_event() call is not
+    reliable ground truth to validate against on its own). The actor-
+    conflict check above was added specifically to catch the 2 genuine
+    false-positive cases; it does NOT catch every failure mode (e.g. two
+    unrelated primary-race articles where extract_event_frame() found no
+    clear actor on either side) — deliberately not perfect, same philosophy
+    as verify_compatibility()'s own docstring: a known residual miss rate is
+    acceptable, and still a real improvement over trusting a single
+    non-deterministic LLM call on every cosine-flagged pair.
+
+    Callers must run has_date_conflict() themselves before this (as
+    find_publishable() already did before this function existed) — that
+    check already short-circuits straight to "not a duplicate" on an
+    explicit date disagreement, a different (and separately validated,
+    2026-09-05) resolution than this function's own AMBIGUOUS-tier
+    handling of date conflicts inside verify_compatibility() above, so it's
+    deliberately not duplicated here."""
+    cand_tokens = entity_tokens(candidate_text)
+    matched_tokens = entity_tokens(matched_text)
+    overlap = cand_tokens & matched_tokens
+    if not overlap:
+        if cosine_score >= config.entity_verifier.no_overlap_llm_review_floor:
+            return "AMBIGUOUS"
+        return "NO_OVERLAP"
+    if _actor_conflict(candidate_text, matched_text):
+        return "AMBIGUOUS"
+    threshold = config.entity_verifier.hub_event_count_threshold
+    non_hub = set()
+    for tok in overlap:
+        if await hub_index.token_score(tok) < threshold:
+            non_hub.add(tok)
+    if non_hub:
+        return "COMPATIBLE"
+    pair_max = config.entity_verifier.pair_cooccur_max
+    for t1, t2 in combinations(sorted(overlap), 2):
+        if await hub_index.pair_score(t1, t2) <= pair_max:
+            return "COMPATIBLE"
+    return "AMBIGUOUS"
+
+
 class EventVerifier:
     """The LLM tier for whatever verify_compatibility() couldn't resolve.
     same_event() gates the actual merge decision. classify_subtype() is a

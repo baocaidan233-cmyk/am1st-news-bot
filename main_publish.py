@@ -96,7 +96,7 @@ from agents.staleness_checker import StalenessChecker
 from agents.writer import Writer
 from core.alerts import AlertNotifier
 from core.config import load_config
-from core.event_identity import EventVerifier
+from core.event_identity import EventVerifier, HubIndex
 from core.language import is_english
 from core.notion_candidates import count_recent_high_score, has_unpublished_hot_candidate, mark_extraction_failed, mark_send_status, query_eligible_candidates
 from core.notion_sources import load_rss_sources
@@ -143,6 +143,7 @@ async def run_cycle(
     writer: Writer,
     staleness_checker: StalenessChecker,
     caption_cache: CaptionCache,
+    hub_index: HubIndex,
     dry_run: bool,
 ) -> bool:
     """Returns True iff this cycle actually published something — main()'s
@@ -302,7 +303,7 @@ async def run_cycle(
 
         ranked = await ranker.rank(generated, trending_headlines)
         ranked_len = len(ranked)
-        winner = await find_publishable(ranked, embedder, posted_store, event_verifier, config)
+        winner = await find_publishable(ranked, embedder, posted_store, event_verifier, hub_index, config)
         if winner is not None:
             logger.info("run_cycle: widen attempt %d — found a publishable candidate", attempt)
             break
@@ -400,6 +401,7 @@ async def main() -> None:
     posted_store = PostedHistoryStore(config)
     event_store = EventStore(config)
     event_verifier = EventVerifier(config)
+    hub_index = HubIndex(config)
     publisher = GettrPublisher(config, dry_run=dry_run)
     alerts = AlertNotifier(config)
     extractor = Extractor(config, alerts)
@@ -419,7 +421,7 @@ async def main() -> None:
             published_this_cycle = False
             try:
                 published_this_cycle = await asyncio.wait_for(
-                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, staleness_checker, caption_cache, dry_run),
+                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, staleness_checker, caption_cache, hub_index, dry_run),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:
@@ -479,6 +481,7 @@ async def main() -> None:
         await posted_store.close()
         await event_store.close()
         await caption_cache.close()
+        await hub_index.close()
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import logging
 
 from agents.embedder import Embedder
 from core.config import AppConfig
-from core.event_identity import EventVerifier, entity_tokens, has_date_conflict, log_decision
+from core.event_identity import EventVerifier, HubIndex, entity_tokens, has_date_conflict, log_decision, posted_dedup_rule_verdict
 from core.models import PublishCandidate
 from core.qdrant_store import PostedHistoryStore
 
@@ -31,6 +31,7 @@ async def find_publishable(
     embedder: Embedder,
     posted_store: PostedHistoryStore,
     event_verifier: EventVerifier,
+    hub_index: HubIndex,
     config: AppConfig,
 ) -> PublishCandidate | None:
     """Walks `ranked_batch` in priority order (highest first) and returns the
@@ -106,7 +107,19 @@ async def find_publishable(
     own try/except: on any failure, that ONE candidate is skipped (logged
     as check_type=posted_dedup_error, not conflated with a real "duplicate"
     verdict) and the walk continues to the next-ranked candidate, so the
-    cycle still very likely finds something to publish."""
+    cycle still very likely finds something to publish.
+
+    Rule-tier bypass (2026-09-06, per the user's "cosine查重加入entity和
+    行动的比对" request, after a real duplicate published when the ONE
+    same_event() call on it came back wrong — see core/event_identity.py's
+    posted_dedup_rule_verdict() docstring for the full incident and the
+    394-pair validation behind this): once has_date_conflict() has cleared
+    a cosine-flagged pair, entity+actor overlap (posted_dedup_rule_verdict())
+    now gets first say. COMPATIBLE decides "duplicate" outright, no LLM
+    call at all — deliberately trusting the deterministic rule over a
+    single non-deterministic LLM call for the cases it's confident about.
+    Only the residual AMBIGUOUS/NO_OVERLAP cases still go to same_event()
+    as before — same LLM, same prompt, just asked less often."""
     threshold = config.publish.posted_dedup_threshold
 
     for candidate in ranked_batch:
@@ -126,8 +139,14 @@ async def find_publishable(
                     same_event_raw = "RULE: has_date_conflict() — explicit conflicting dates, skipped LLM call"
                     resolved_by = "date_conflict_rule"
                 else:
-                    is_duplicate, same_event_raw = await event_verifier.same_event(candidate_content, matched_content)
-                    resolved_by = "llm"
+                    rule_verdict = await posted_dedup_rule_verdict(config, hub_index, candidate_content, matched_content, similarity)
+                    if rule_verdict == "COMPATIBLE":
+                        is_duplicate = True
+                        same_event_raw = "RULE: posted_dedup_rule_verdict() — non-hub entity overlap, no actor conflict, skipped LLM call"
+                        resolved_by = "entity_rule"
+                    else:
+                        is_duplicate, same_event_raw = await event_verifier.same_event(candidate_content, matched_content)
+                        resolved_by = "llm"
         except Exception:
             logger.exception(
                 "find_publishable: dedup check failed for %s — skipping this candidate (not a confirmed verdict), trying next",
@@ -160,8 +179,9 @@ async def find_publishable(
 
         if is_duplicate:
             logger.info(
-                "find_publishable: %s dropped — same_event() confirmed duplicate of already-posted content (cosine=%.3f > %.2f, matched %s)",
+                "find_publishable: %s dropped — %s confirmed duplicate of already-posted content (cosine=%.3f > %.2f, matched %s)",
                 candidate.url,
+                "posted_dedup_rule_verdict()" if resolved_by == "entity_rule" else "same_event()",
                 similarity,
                 threshold,
                 matched_url,
