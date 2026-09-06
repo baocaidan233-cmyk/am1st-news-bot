@@ -34,6 +34,8 @@ notion:
 redis:
   key_prefix: "am1st:url_hash:"
   ttl_seconds: 864000  # 10 days
+  caption_prefix: "am1st:caption:"
+  caption_ttl_seconds: 172800  # 48h — see core/config.py RedisConfig comment
 
 openai:
   chat_model: "gpt-4o-mini"  # every OpenAI-backed call — Writer, Scorer, PriorityRanker, EventVerifier — see core/config.py comment

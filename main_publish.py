@@ -101,6 +101,7 @@ from core.language import is_english
 from core.notion_candidates import count_recent_high_score, has_unpublished_hot_candidate, mark_extraction_failed, mark_send_status, query_eligible_candidates
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
+from core.redis_store import CaptionCache
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("main_publish")
@@ -141,6 +142,7 @@ async def run_cycle(
     extractor: Extractor,
     writer: Writer,
     staleness_checker: StalenessChecker,
+    caption_cache: CaptionCache,
     dry_run: bool,
 ) -> bool:
     """Returns True iff this cycle actually published something — main()'s
@@ -267,7 +269,16 @@ async def run_cycle(
             except Exception:
                 logger.exception("run_cycle: failed to build writer background for %s — continuing without it", c.url)
 
-            post_content = await writer.write(c.title, c.content, context=background, is_opinion=is_opinion)
+            # Cache by url_hash (2026-09-06) — without this, the same still-
+            # unpublished candidate gets a freshly-reworded caption every time
+            # a later cycle reconsiders it, drifting its embedding and thus
+            # its cosine score against posted history; see CaptionCache's
+            # docstring for the real duplicate this caused in production.
+            post_content = await caption_cache.get(c.url_hash)
+            if post_content is None:
+                post_content = await writer.write(c.title, c.content, context=background, is_opinion=is_opinion)
+                if not Writer.is_no_comment(post_content):
+                    await caption_cache.set(c.url_hash, post_content)
             if Writer.is_no_comment(post_content):
                 logger.info("run_cycle: %s — writer returned No comment, dropped from batch", c.url)
                 continue
@@ -394,6 +405,7 @@ async def main() -> None:
     extractor = Extractor(config, alerts)
     writer = Writer(config)
     staleness_checker = StalenessChecker(config)
+    caption_cache = CaptionCache(config)
     await ensure_collection_with_retry(posted_store, "am1st_posting_news_embedding")
     await ensure_collection_with_retry(event_store, "am1st_events")
 
@@ -407,7 +419,7 @@ async def main() -> None:
             published_this_cycle = False
             try:
                 published_this_cycle = await asyncio.wait_for(
-                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, staleness_checker, dry_run),
+                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, staleness_checker, caption_cache, dry_run),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:
@@ -466,6 +478,7 @@ async def main() -> None:
     finally:
         await posted_store.close()
         await event_store.close()
+        await caption_cache.close()
 
 
 if __name__ == "__main__":

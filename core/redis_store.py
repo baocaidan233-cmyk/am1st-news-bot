@@ -50,3 +50,46 @@ class RedisStore:
     async def close(self) -> None:
         if self._client is not None:
             await self._client.aclose()
+
+
+class CaptionCache:
+    """Caches Writer.write()'s generated caption by url_hash so the same
+    still-unpublished candidate gets an identical post_content (and thus an
+    identical embedding) every time it's reconsidered across publish cycles.
+    See core/config.py's RedisConfig.caption_ttl_seconds comment for the real
+    production bug this closes: without this cache, a re-generated caption's
+    natural wording drift moved a real candidate's cosine score against
+    posted history from 0.822 to 0.794 three minutes apart, flipping
+    same_event()'s verdict and letting a duplicate through. Missing REDIS_URL
+    or a transient error both fail open (treated as a cache miss — Writer
+    just runs as before), never blocking content generation."""
+
+    def __init__(self, config: AppConfig) -> None:
+        self._prefix = config.redis.caption_prefix
+        self._ttl = config.redis.caption_ttl_seconds
+        self._client = (
+            redis.from_url(config.redis.url, decode_responses=True, socket_timeout=10, socket_connect_timeout=10)
+            if config.redis.url
+            else None
+        )
+
+    async def get(self, url_hash: str) -> str | None:
+        if self._client is None or not url_hash:
+            return None
+        try:
+            return await self._client.get(self._prefix + url_hash)
+        except Exception:
+            logger.exception("CaptionCache: get failed for %s — treating as cache miss (fail open)", url_hash)
+            return None
+
+    async def set(self, url_hash: str, caption: str) -> None:
+        if self._client is None or not url_hash:
+            return
+        try:
+            await self._client.set(self._prefix + url_hash, caption, ex=self._ttl)
+        except Exception:
+            logger.exception("CaptionCache: set failed for %s — continuing without caching this caption", url_hash)
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()

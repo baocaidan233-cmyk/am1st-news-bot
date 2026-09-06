@@ -82,6 +82,19 @@ class RedisConfig(BaseModel):
     url: str = ""  # env: REDIS_URL (Upstash rediss:// connection string)
     key_prefix: str = "am1st:url_hash:"
     ttl_seconds: int = 864000  # 10 days
+    caption_prefix: str = "am1st:caption:"
+    # 2026-09-06 — a real production duplicate slipped through posted_dedup
+    # because Writer.write() has no caching: the same still-unpublished
+    # candidate, reconsidered in a later publish cycle, got a freshly
+    # reworded caption each time, so its embedding (and thus its cosine
+    # score against posted history) drifted cycle to cycle — one real case
+    # saw the same URL's cosine swing 0.822->0.794 three minutes apart,
+    # flipping same_event()'s verdict from duplicate to not-duplicate.
+    # Caching the caption by url_hash makes it deterministic for as long as
+    # a candidate can possibly stay unpublished. TTL set well above
+    # weekend_max_age_hours (24h ceiling) so it always outlives the
+    # candidate's eligibility window and self-expires afterward.
+    caption_ttl_seconds: int = 172800  # 48h
 
 
 class OpenAIConfig(BaseModel):
