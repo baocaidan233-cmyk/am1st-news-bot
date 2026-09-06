@@ -490,8 +490,15 @@ def extract_event_frame(text: str) -> dict:
     span (cross-checked against the same NER this module already does),
     not just any noun.
 
-    Returns {"action": str|None, "actor": str|None, "target": str|None,
-    "event_type": str|None} — all None if no clear verb root was found.
+    Returns {"action": str|None, "actor": str|None, "actor_label": str|None,
+    "target": str|None, "event_type": str|None} — all None if no clear verb
+    root was found. actor_label (2026-09-06, added for
+    posted_dedup_rule_verdict()'s actor-conflict check) is the actor span's
+    own NER label (PERSON/ORG/GPE/...) — needed because two ORG-labeled
+    actors naming the same real institution in different words ("US
+    Central Command" vs "U.S. military") are common and NOT reliable
+    conflict evidence, unlike two different PERSON names (Trump vs Putin),
+    so callers should only trust a mismatch between two PERSON actors.
 
     2026-08-10, added after a real-data smoke test: en_core_web_sm run on
     non-English text (this collection has occasional Chinese/Portuguese
@@ -500,20 +507,20 @@ def extract_event_frame(text: str) -> dict:
     e.g. a Portuguese sentence's root verb lemma comes back as a real-
     looking but wrong token. is_english() already exists for exactly this
     class of problem; reused here rather than writing a second check."""
-    empty = {"action": None, "actor": None, "target": None, "event_type": None}
+    empty = {"action": None, "actor": None, "actor_label": None, "target": None, "event_type": None}
     if not text or not is_english(text):
         return empty
     doc = nlp(_strip_html(text))
     entity_spans = [
-        (ent.start, ent.end, _clean_entity_span(ent.text))
+        (ent.start, ent.end, _clean_entity_span(ent.text), ent.label_)
         for ent in doc.ents
         if ent.label_ in _ENTITY_LABELS and _clean_entity_span(ent.text).lower() not in KNOWN_BYLINE_NOISE
     ]
 
-    def entity_covering(token) -> str | None:
-        for start, end, cleaned in entity_spans:
+    def entity_covering(token) -> tuple[str, str] | None:
+        for start, end, cleaned, label in entity_spans:
             if start <= token.i < end:
-                return cleaned
+                return cleaned, label
         return None
 
     for sent in doc.sents:
@@ -521,17 +528,26 @@ def extract_event_frame(text: str) -> dict:
         if root.pos_ not in ("VERB", "AUX"):
             continue
         action = root.lemma_.lower()
-        actor = target = None
+        actor = target = actor_label = None
         for child in root.children:
             if child.dep_ in ("nsubj", "nsubjpass") and actor is None:
-                actor = entity_covering(child)
+                covering = entity_covering(child)
+                if covering is not None:
+                    actor, actor_label = covering
             elif child.dep_ == "dobj" and target is None:
-                target = entity_covering(child)
+                covering = entity_covering(child)
+                if covering is not None:
+                    target = covering[0]
             elif child.dep_ == "prep":
                 for grandchild in child.children:
                     if grandchild.dep_ == "pobj" and target is None:
-                        target = entity_covering(grandchild)
-        return {"action": action, "actor": actor, "target": target, "event_type": _ACTION_TYPE_MAP.get(action)}
+                        covering = entity_covering(grandchild)
+                        if covering is not None:
+                            target = covering[0]
+        return {
+            "action": action, "actor": actor, "actor_label": actor_label,
+            "target": target, "event_type": _ACTION_TYPE_MAP.get(action),
+        }
     return empty
 
 
@@ -734,14 +750,27 @@ async def verify_compatibility(
 
 
 def _actor_conflict(text_a: str, text_b: str) -> bool:
-    """True only if both texts yield a clear actor via extract_event_frame()
-    and those actors are unrelated strings — conservative like
-    has_date_conflict(): silent (False) unless BOTH sides have a non-empty
-    actor. Substring-inclusive ("Trump" in "President Trump") so the same
-    actor named at different lengths never counts as a conflict — only a
-    named mismatch (e.g. "Trump" vs "Vladimir Putin") does."""
-    actor_a = extract_event_frame(text_a).get("actor")
-    actor_b = extract_event_frame(text_b).get("actor")
+    """True only if both texts yield a clear PERSON actor via
+    extract_event_frame() and those two names are unrelated strings —
+    conservative like has_date_conflict(): silent (False) unless BOTH sides
+    have a non-empty PERSON actor. Substring-inclusive ("Trump" in
+    "President Trump") so the same person named at different lengths never
+    counts as a conflict — only a named mismatch (e.g. "Trump" vs "Vladimir
+    Putin") does.
+
+    2026-09-06: restricted to actor_label == "PERSON" after a real miss —
+    an earlier version compared any actor regardless of type and flagged
+    "US Central Command" vs "U.S. military" (the exact Kylo-tanker incident
+    that motivated this whole rule tier) as a conflict, pushing the one
+    real case this was built for back to AMBIGUOUS. Two ORG/GPE-labeled
+    actors are routinely the same real institution in different words;
+    two different PERSON names essentially never are — see
+    extract_event_frame()'s docstring."""
+    frame_a = extract_event_frame(text_a)
+    frame_b = extract_event_frame(text_b)
+    if frame_a.get("actor_label") != "PERSON" or frame_b.get("actor_label") != "PERSON":
+        return False
+    actor_a, actor_b = frame_a.get("actor"), frame_b.get("actor")
     if not actor_a or not actor_b:
         return False
     a, b = actor_a.lower(), actor_b.lower()
