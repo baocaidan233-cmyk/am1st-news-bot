@@ -67,7 +67,7 @@ from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
 from agents.trending import fetch_trending_headlines
 from core.config import load_config
-from core.event_identity import EventVerifier, HubIndex, entity_tokens, event_identity_text, extract_event_frame, log_decision, no_conflicting_specifics, verify_compatibility
+from core.event_identity import EventVerifier, HubIndex, core_entities_of, entity_tokens, event_identity_text, extract_event_frame, log_decision, no_conflicting_specifics, verify_compatibility
 from core.hashing import cosine_similarity, tokenize
 from core.hot_topics import fetch_active_hot_topics
 from core.language import is_english
@@ -357,6 +357,15 @@ async def run_cycle(
         related_links: list[dict] = []
         for candidate in event_candidates:
             rule_verdict = await verify_compatibility(config, candidate, new_tokens, hub_index, cluster_text, doc_freq, doc_count, candidate.get("_score", 0.0))
+            # Shared entity tokens + their HubIndex historical scores (2026-09-06)
+            # — observational only, never fed back into rule_verdict/final_verdict
+            # above. Added purely so future distillation-model training has a
+            # richer feature (verify_compatibility() already computes this same
+            # hub_index.token_score() internally to decide COMPATIBLE/AMBIGUOUS,
+            # but didn't expose it to the log) — can't be backfilled onto past
+            # log lines since HubIndex only reflects CURRENT state, so this only
+            # starts accumulating from today forward.
+            shared_tokens = sorted(core_entities_of(candidate) & new_tokens)
             log_record = {
                 "event_id": candidate.get("event_id"),
                 "cosine_score": candidate.get("_score"),
@@ -364,6 +373,8 @@ async def run_cycle(
                 "candidate_url": members[0][0].url,
                 "candidate_text": cluster_text,
                 "matched_representative_text": candidate.get("representative_text", ""),
+                "shared_entity_tokens": shared_tokens,
+                "shared_entity_hub_scores": {tok: await hub_index.token_score(tok) for tok in shared_tokens},
             }
             if rule_verdict == "NO_OVERLAP":
                 logger.info("run_cycle: cluster %d — candidate event %s is UNRELATED (rule tier), trying next candidate", cluster_idx, candidate.get("event_id"))
