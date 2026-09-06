@@ -16,11 +16,6 @@ logger = logging.getLogger(__name__)
 
 _LOG_PATH = Path("logs/priority_rank_decisions.jsonl")
 
-# heat_score bands — deliberately the SAME cutoffs as prompts/scoring_prompt.txt's
-# section 2 corroboration bullets (2.0/4.0/10.0), so a "hot" story is treated
-# consistently at both the ingestion and publish stage.
-_HEAT_BANDS = ((10.0, 3.0), (4.0, 2.0), (2.0, 1.0))
-
 # Trending-overlap cosine thresholds — carried over from
 # core/hot_topics.py's HotTopicsConfig.match_threshold (0.5), validated
 # 2026-08-31 on real embedding calls (same embedding model): a genuine
@@ -35,16 +30,9 @@ _TRENDING_SIM_LOW = 0.5
 # Freshness decay coefficient — see class docstring for the reasoning
 # (logarithmic, not linear: a candidate_max_age_hours=12h-old story loses
 # ~3.85 points, an hour-old story loses ~1, an 18-minutes-old story loses
-# ~0.14 — proportionate to the ~5-15 range llm_score+heat_bonus+
-# trending_bonus produces, without dominating it).
+# ~0.14 — proportionate to the ~5-11 range llm_score+trending_bonus
+# produces, without dominating it).
 _FRESHNESS_DECAY_K = 1.5
-
-
-def _heat_bonus(heat_score: float) -> float:
-    for floor, bonus in _HEAT_BANDS:
-        if heat_score >= floor:
-            return bonus
-    return 0.0
 
 
 def _log_decision(record: dict) -> None:
@@ -98,16 +86,33 @@ class PriorityRanker:
 
     Every input here is already a reliable, already-computed number:
     llm_score (ingestion-side editorial severity — this session's own
-    redesigned scoring_prompt.txt), heat_score (corroboration), and
-    hours_since_update (this candidate's own freshness, deliberately NOT
-    hours_old/event age — a fresh update in a long-running story should
-    be judged on its own freshness, not discounted for the event's total
-    age; heat_score already captures "how big/enduring has this event
-    been," a separate axis). The only thing that isn't already a number
-    is "does this topic overlap a trending headline" — that reduces
-    cleanly to an embedding cosine-similarity check, no LLM judgment
-    needed. Removing the LLM call removes the only place noise could
-    enter.
+    redesigned scoring_prompt.txt) and hours_since_update (this
+    candidate's own freshness, deliberately NOT hours_old/event age — a
+    fresh update in a long-running story should be judged on its own
+    freshness, not discounted for the event's total age). The only thing
+    that isn't already a number is "does this topic overlap a trending
+    headline" — that reduces cleanly to an embedding cosine-similarity
+    check, no LLM judgment needed. Removing the LLM call removes the
+    only place noise could enter.
+
+    2026-09-06 — dropped the separate heat_score bonus this formula used
+    to add on top of llm_score. A live audit (127 real publish cycles)
+    found the winner was overwhelmingly a small set of high-volume,
+    heavily-corroborated outlets (Gateway Pundit/Fox/Washington Examiner/
+    NY Post alone took ~31% of all wins), while outlets that broke a
+    genuinely engaging story FIRST (Twitchy, Western Journal, RedState —
+    real examples: the Mamdani 9/11-pen story, several Iran/Israel pieces)
+    rarely won even with a solid llm_score, because heat_score stays at
+    1.0 (no corroboration yet) for whoever reports something first. The
+    user's diagnosis: heat_score is already one of scoring_prompt.txt's
+    own section-2 corroboration bullets (a story can reach band 6/7/8
+    purely off heat_score thresholds) — adding a second heat_score bonus
+    here double-counts the exact same signal and compounds the bias
+    toward big, already-corroborated outlets at the one stage
+    (publish-time ranking) that's supposed to pick the single best
+    candidate, not just re-confirm what ingestion-time scoring already
+    rewarded. heat_score is still logged per candidate for visibility;
+    it just no longer feeds priority_score a second time.
 
     is_hot still sorts ahead of priority_score unconditionally, same as
     before — a manually-flagged breaking candidate always wins the slot.
@@ -130,7 +135,6 @@ class PriorityRanker:
         scored: list[tuple[PublishCandidate, float]] = []
         for c in batch:
             hours_since_update = max(0.0, (now - c.published_at).total_seconds() / 3600)
-            heat_bonus = _heat_bonus(c.heat_score)
 
             best_sim = 0.0
             trending_bonus = 0.0
@@ -143,7 +147,7 @@ class PriorityRanker:
                     trending_bonus = 1.0
 
             freshness_penalty = _FRESHNESS_DECAY_K * math.log(1 + hours_since_update)
-            priority_score = c.llm_score + heat_bonus + trending_bonus - freshness_penalty
+            priority_score = c.llm_score + trending_bonus - freshness_penalty
 
             _log_decision({
                 "page_id": c.page_id,
@@ -151,7 +155,6 @@ class PriorityRanker:
                 "title": c.title,
                 "llm_score": c.llm_score,
                 "heat_score": c.heat_score,
-                "heat_bonus": heat_bonus,
                 "trending_max_similarity": round(best_sim, 4),
                 "trending_bonus": trending_bonus,
                 "hours_since_update": round(hours_since_update, 2),
