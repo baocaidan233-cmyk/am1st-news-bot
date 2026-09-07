@@ -67,7 +67,7 @@ from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
 from agents.trending import fetch_trending_headlines
 from core.config import load_config
-from core.event_identity import EventVerifier, HubIndex, core_entities_of, entity_tokens, event_identity_text, extract_event_frame, log_decision, no_conflicting_specifics, verify_compatibility
+from core.event_identity import EventVerifier, HubIndex, core_entities_of, cross_cycle_dedup_verdict, entity_tokens, event_identity_text, extract_event_frame, log_decision, no_conflicting_specifics, verify_compatibility
 from core.hashing import cosine_similarity, tokenize
 from core.hot_topics import fetch_active_hot_topics
 from core.language import is_english
@@ -495,8 +495,25 @@ async def run_cycle(
         preview_first_seen_dt = datetime.fromtimestamp(preview_first_seen, tz=timezone.utc)
 
         for c, embedding in members:
-            best_score = await qdrant_store.most_similar_recent(embedding)
-            if best_score >= threshold:
+            best_score, matched_content = await qdrant_store.most_similar_recent(embedding)
+            # 2026-09-07: was a bare `best_score >= threshold` cutoff — see
+            # core/event_identity.py's cross_cycle_dedup_verdict() docstring
+            # for the real China_Breaks incident (and AM1ST's own confirmed
+            # real near-miss pairs) this replaces it to catch.
+            candidate_text = event_identity_text(c.title, c.description)
+            is_dup = await cross_cycle_dedup_verdict(event_verifier, candidate_text, matched_content, best_score, threshold, related_threshold)
+            if matched_content:
+                log_decision(config, {
+                    "check_type": "cross_cycle_dedup",
+                    "candidate_url": c.url,
+                    "cosine_score": best_score,
+                    "threshold": threshold,
+                    "related_threshold": related_threshold,
+                    "final_verdict": "duplicate" if is_dup else "kept",
+                    "candidate_text": candidate_text,
+                    "matched_text": matched_content,
+                })
+            if is_dup:
                 logger.info("run_cycle: %s dropped — cross-cycle semantic duplicate (%.3f)", c.url, best_score)
                 continue
             c.heat_score = preview_heat

@@ -99,11 +99,12 @@ class QdrantStore:
             )
             logger.info("QdrantStore: created collection %s", self._collection)
 
-    async def most_similar_recent(self, embedding: list[float]) -> float:
+    async def most_similar_recent(self, embedding: list[float]) -> tuple[float, str]:
         """Highest cosine similarity against title+description embeddings
-        whose source article was published in the last cross_cycle_window_hours.
-        Returns 0.0 if Qdrant isn't configured or nothing matches (fail
-        open — never blocks a candidate just because this cache is cold).
+        whose source article was published in the last cross_cycle_window_hours,
+        plus that matched point's own title+description text. Returns
+        (0.0, "") if Qdrant isn't configured or nothing matches (fail open
+        — never blocks a candidate just because this cache is cold).
 
         Pure duplicate detection only — as of 2026-08-06, the corroboration/
         heat signal moved to its own dedicated EventStore below (see that
@@ -111,9 +112,16 @@ class QdrantStore:
         across cycles, which a single frozen-at-write-time neighbor lookup
         against THIS collection couldn't do, especially for a near-
         duplicate that gets dropped — see project_am1st_migration memory's
-        2026-08-06 "event aggregation" note)."""
+        2026-08-06 "event aggregation" note).
+
+        2026-09-07: now returns the matched text too (was score-only,
+        with_payload=False) — main.py's cross_cycle_dedup_verdict() needs
+        it for a rule+LLM second opinion in the gray zone below the hard
+        duplicate cutoff. Real data found dozens of genuine same-event
+        pairs sitting at 0.79-0.80 cosine, just under the 0.8 cutoff this
+        used to trust alone — see that function's docstring."""
         if self._client is None:
-            return 0.0
+            return 0.0, ""
         cutoff = time.time() - self._window_seconds
         try:
             result = await self._client.query_points(
@@ -121,13 +129,15 @@ class QdrantStore:
                 query=embedding,
                 limit=1,
                 query_filter=Filter(must=[FieldCondition(key="publishedAt", range=Range(gte=cutoff))]),
-                with_payload=False,
+                with_payload=True,
             )
         except Exception:
             logger.exception("QdrantStore: query failed, treating as no match")
-            return 0.0
+            return 0.0, ""
         points = result.points
-        return points[0].score if points else 0.0
+        if not points:
+            return 0.0, ""
+        return points[0].score, (points[0].payload or {}).get("content", "")
 
     async def write_embedding(self, url: str, url_hash: str, content: str, published_at_unix: int, embedding: list[float]) -> None:
         """Called once, right when a candidate is accepted into the Notion

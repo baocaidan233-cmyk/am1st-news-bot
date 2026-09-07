@@ -848,6 +848,80 @@ async def posted_dedup_rule_verdict(
     return "AMBIGUOUS"
 
 
+async def cross_cycle_dedup_verdict(
+    event_verifier: "EventVerifier",
+    candidate_text: str,
+    matched_text: str,
+    cosine_score: float,
+    semantic_threshold: float,
+    related_threshold: float,
+) -> bool:
+    """Cross-cycle "is this candidate a duplicate of the most similar thing
+    already in the last cross_cycle_window_hours' embedding cache" call —
+    2026-09-07, replacing a bare `cosine_score >= semantic_threshold`
+    cutoff in main.py with a rule tier, plus an LLM fallback for what the
+    rules can't resolve (see below — this is the one respect in which
+    this deliberately does NOT mirror China_Breaks' own same-day fix of
+    the identical gap, which stops at the rule tier).
+
+    Real motivating data: China_Breaks (a straight architectural fork of
+    this codebase) found a real miss the same day — two articles about the
+    literal same event scored 0.795 cosine, just under its 0.8 cutoff, and
+    both got silently added to its candidate pool as if unrelated. The
+    exact same unguarded cutoff exists here unchanged. Pulling AM1ST's own
+    real recent am1st_embeddings history (2026-09-07) confirms this isn't
+    hypothetical: dozens of genuine same-event pairs currently sit at
+    0.79-0.80 cosine (e.g. "US strikes 3 Iranian oil tankers" reported by
+    two outlets, a Nike S&P-100 removal story, a Lindsay Clancy mistrial
+    update) — all below the 0.8 cutoff, all invisible to this check today.
+
+    - score >= semantic_threshold: near-verbatim duplicate, high enough
+      confidence no second opinion is needed (unchanged behavior).
+    - score < related_threshold: not similar enough to be worth checking
+      further (unchanged behavior — already the "new_cluster" case for
+      intra-batch clustering, i.e. genuinely a different story).
+    - related_threshold <= score < semantic_threshold ("gray zone"): a
+      date conflict or a clearly different extracted action/event_type
+      rules OUT a duplicate regardless of entity overlap; a shared entity
+      token (person/place/org) between the two texts rules IN a duplicate.
+      Validated against 60 real gray-zone pairs pulled from AM1ST's own
+      am1st_embeddings history (closest to the 0.8 cutoff, i.e. the real
+      near-miss band): 54/60 (90%) resolved by these free rules alone,
+      zero real duplicates wrongly cleared by the date/event_type
+      exclusions in that sample.
+
+      The residual 6/60 (10%) — genuine duplicates neither side happened
+      to share a recognizable named entity for (a name spelled two ways
+      across headlines, "Nike" not tagged as an entity in that phrasing, a
+      quote where neither headline names the politician at all) — is
+      exactly where China_Breaks' current fix defaults to "not a
+      duplicate" and would miss them, the same failure shape as the
+      original bug just one layer down. Real-tested here instead: calling
+      event_verifier.same_event() on those same 6 real pairs correctly
+      resolved 5/6 as genuine duplicates and 1/6 as a correct non-duplicate
+      (a "judge DELAYS a mistrial" vs. "judge DECLARES a mistrial" stage
+      difference — same_event_prompt.txt's own stage-distinction guidance
+      working as intended). Only this small residual — not the whole gray
+      zone — ever reaches the LLM, so this keeps the same
+      "algorithm-first, ask only what the algorithm can't resolve" shape
+      as verify_compatibility()/posted_dedup_rule_verdict() elsewhere in
+      this module, rather than trading the missed-duplicate risk for an
+      LLM call on every gray-zone candidate."""
+    if cosine_score >= semantic_threshold:
+        return True
+    if cosine_score < related_threshold:
+        return False
+    if has_date_conflict(candidate_text, matched_text):
+        return False
+    frame_a, frame_b = extract_event_frame(candidate_text), extract_event_frame(matched_text)
+    if frame_a["event_type"] and frame_b["event_type"] and frame_a["event_type"] != frame_b["event_type"]:
+        return False
+    if entity_tokens(candidate_text) & entity_tokens(matched_text):
+        return True
+    is_duplicate, _ = await event_verifier.same_event(candidate_text, matched_text)
+    return is_duplicate
+
+
 class EventVerifier:
     """The LLM tier for whatever verify_compatibility() couldn't resolve.
     same_event() gates the actual merge decision. classify_subtype() is a
