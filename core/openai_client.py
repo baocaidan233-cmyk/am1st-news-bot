@@ -52,8 +52,42 @@ class FallbackOpenAI:
             if i > 0:
                 logger.warning("FallbackOpenAI: key #%d succeeded, promoting it ahead of earlier key(s)", i + 1)
                 self._clients.insert(0, self._clients.pop(i))
+            self._log_usage(path, kwargs, result)
             return result
         raise last_exc
+
+    def _log_usage(self, path: str, kwargs: dict, result) -> None:
+        """2026-09-07, per the user's cost-audit request — pure observability,
+        no behavior change: logs each chat call's real prompt/cached/
+        completion token counts so a real cache-hit rate can be measured
+        instead of guessed. Only chat.completions.create has a `usage`
+        with `prompt_tokens_details.cached_tokens` — the embeddings
+        endpoint doesn't support prompt caching at all, so this is a
+        no-op for embeddings.create. Tagged by the first ~50 chars of the
+        system message (stable per call site — Scorer/Writer/EventVerifier/
+        StalenessChecker each have their own fixed, distinct system prompt
+        file) instead of threading a new "caller name" param through every
+        one of those classes just for this. Best-effort: any missing/
+        unexpected shape on the response is swallowed, never breaks the
+        real call whose result was already returned to the caller."""
+        if path != "chat.completions.create":
+            return
+        try:
+            usage = result.usage
+            if usage is None:
+                return
+            cached = 0
+            details = getattr(usage, "prompt_tokens_details", None)
+            if details is not None:
+                cached = getattr(details, "cached_tokens", 0) or 0
+            messages = kwargs.get("messages") or []
+            system_snippet = messages[0].get("content", "")[:50] if messages else ""
+            logger.info(
+                "FallbackOpenAI: usage prompt=%d cached=%d completion=%d system=%r",
+                usage.prompt_tokens, cached, usage.completion_tokens, system_snippet,
+            )
+        except Exception:
+            logger.exception("FallbackOpenAI: usage logging failed, ignoring")
 
 
 class _ChatProxy:
