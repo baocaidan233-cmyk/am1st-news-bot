@@ -97,6 +97,18 @@ def _gazetteer_patterns() -> list[dict]:
     # were misses even with the underlying person already in the list.
     for alias in data.get("aliases", []):
         patterns.append({"label": "PERSON", "pattern": alias})
+    # World nationalist/populist movement leaders + parties (2026-09-07,
+    # for the new Global Resistance to Tyranny and Injustice scoring
+    # theme) — same bare-surname convention as cabinet/notable above.
+    # Parties are tagged ORG, not PERSON (learned from China_Breaks'
+    # own real mistake tagging state media as PERSON — see
+    # reference_known_byline_noise_entities).
+    for full_name, last in data.get("world_leaders", []):
+        patterns.append({"label": "PERSON", "pattern": full_name})
+        if last:
+            patterns.append({"label": "PERSON", "pattern": last})
+    for party in data.get("world_parties", []):
+        patterns.append({"label": "ORG", "pattern": party})
     return patterns
 
 

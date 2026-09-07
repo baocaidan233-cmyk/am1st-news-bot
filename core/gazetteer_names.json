@@ -2837,5 +2837,49 @@
   "aliases": [
     "RFK Jr.",
     "AOC"
+  ],
+  "world_leaders": [
+    [
+      "Alice Weidel",
+      "Weidel"
+    ],
+    [
+      "Tino Chrupalla",
+      "Chrupalla"
+    ],
+    [
+      "Nigel Farage",
+      "Farage"
+    ],
+    [
+      "Geert Wilders",
+      "Wilders"
+    ],
+    [
+      "Marine Le Pen",
+      "Le Pen"
+    ],
+    [
+      "Jordan Bardella",
+      "Bardella"
+    ],
+    [
+      "Giorgia Meloni",
+      "Meloni"
+    ],
+    [
+      "Jimmie Akesson",
+      "Akesson"
+    ]
+  ],
+  "world_parties": [
+    "AfD",
+    "Alternative for Germany",
+    "Reform UK",
+    "National Rally",
+    "PVV",
+    "Party for Freedom",
+    "Brothers of Italy",
+    "Sweden Democrats"
   ]
 }
