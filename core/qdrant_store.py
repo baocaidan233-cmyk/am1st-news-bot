@@ -7,10 +7,12 @@ import uuid
 
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
+    Direction,
     Distance,
     FieldCondition,
     Filter,
     MatchValue,
+    OrderBy,
     PayloadSchemaType,
     PointStruct,
     Range,
@@ -712,6 +714,37 @@ class PostedHistoryStore:
                 vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
             )
             logger.info("PostedHistoryStore: created collection %s", self._collection)
+
+    async def most_recent_publish_ts(self) -> float | None:
+        """The real wall-clock `publishedAt` of the single most recent post
+        this channel actually sent — read from persistent storage, not this
+        process's memory. 2026-09-07: main_publish.py's main() previously
+        tracked "seconds since last publish" only via an in-process
+        `last_publish_monotonic` that starts at None on every process
+        start, so any restart (a deploy, a crash) forgot how recently the
+        channel had actually posted and ran its first cycle immediately —
+        confirmed via 3 real same-day deploy restarts each producing a
+        publish gap under dynamic_publish.min_interval_seconds (down to
+        4.5min against a supposed 15min floor). Called once at startup so
+        main() can seed last_publish_monotonic from real history instead of
+        None. Returns None if Qdrant isn't configured, the collection is
+        empty, or the query fails — fail open, same convention as
+        most_similar_recent()."""
+        if self._client is None:
+            return None
+        try:
+            points, _ = await self._client.scroll(
+                collection_name=self._collection,
+                order_by=OrderBy(key="publishedAt", direction=Direction.DESC),
+                limit=1,
+                with_payload=True,
+            )
+        except Exception:
+            logger.exception("PostedHistoryStore: most_recent_publish_ts query failed, treating as unknown")
+            return None
+        if not points:
+            return None
+        return (points[0].payload or {}).get("publishedAt")
 
     async def most_similar_recent(self, embedding: list[float]) -> tuple[float, str, str]:
         """Highest cosine similarity against post_content embeddings whose

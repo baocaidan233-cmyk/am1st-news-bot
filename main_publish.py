@@ -414,7 +414,30 @@ async def main() -> None:
     if dry_run:
         logger.info("Running in --dry-run mode: Notion/Qdrant writes will be logged, not sent")
 
+    # 2026-09-07: seed from the real last-published-post timestamp (Qdrant
+    # posted_history, survives restarts) instead of always starting at None
+    # — a bare `None` start meant every restart (a deploy, a crash) forgot
+    # how recently the channel had actually posted and ran its very first
+    # cycle immediately with no gating at all, regardless of
+    # dynamic_publish.min_interval_seconds. Confirmed via 3 real same-day
+    # deploy restarts each producing a publish gap under the 15min floor
+    # (down to 4.5min). If the real last publish was more recent than the
+    # floor, sleep out the remainder before the loop's first run_cycle()
+    # call; otherwise (never published, or already long enough ago) start
+    # immediately as before.
     last_publish_monotonic: float | None = None
+    most_recent_ts = await posted_store.most_recent_publish_ts()
+    if most_recent_ts is not None:
+        seconds_since = time.time() - most_recent_ts
+        last_publish_monotonic = time.monotonic() - seconds_since
+        floor = config.dynamic_publish.min_interval_seconds
+        if seconds_since < floor:
+            wait = floor - seconds_since
+            logger.info(
+                "main: last real publish was %.0fs ago (< %ds floor) — waiting %.0fs before the first cycle",
+                seconds_since, floor, wait,
+            )
+            await asyncio.sleep(wait)
     try:
         while True:
             started = time.monotonic()
