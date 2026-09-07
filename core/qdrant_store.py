@@ -714,28 +714,42 @@ class PostedHistoryStore:
                 vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
             )
             logger.info("PostedHistoryStore: created collection %s", self._collection)
+        # 2026-09-07: required for most_recent_publish_ts()'s filter+order_by
+        # on `sentAt` — Qdrant rejects both with "Index required but not
+        # found" otherwise. create_payload_index is a no-op if the index
+        # already exists (same convention as EventStore.ensure_collection),
+        # so safe to call every startup regardless of collection age.
+        await self._client.create_payload_index(
+            collection_name=self._collection, field_name="sentAt", field_schema=PayloadSchemaType.INTEGER,
+        )
 
     async def most_recent_publish_ts(self) -> float | None:
         """The real wall-clock `publishedAt` of the single most recent post
-        this channel actually sent — read from persistent storage, not this
-        process's memory. 2026-09-07: main_publish.py's main() previously
-        tracked "seconds since last publish" only via an in-process
-        `last_publish_monotonic` that starts at None on every process
-        start, so any restart (a deploy, a crash) forgot how recently the
-        channel had actually posted and ran its first cycle immediately —
-        confirmed via 3 real same-day deploy restarts each producing a
-        publish gap under dynamic_publish.min_interval_seconds (down to
-        4.5min against a supposed 15min floor). Called once at startup so
-        main() can seed last_publish_monotonic from real history instead of
-        None. Returns None if Qdrant isn't configured, the collection is
-        empty, or the query fails — fail open, same convention as
-        most_similar_recent()."""
+        this channel actually sent (payload key `sentAt`, added alongside
+        this method — NOT `publishedAt`, which is the source article's own
+        publish date and can be hours/days off from when we actually sent
+        it; most_similar_recent()'s window filter is deliberately keyed on
+        that field instead, unrelated to this method). Read from
+        persistent storage, not this process's memory. 2026-09-07:
+        main_publish.py's main() previously tracked "seconds since last
+        publish" only via an in-process `last_publish_monotonic` that
+        starts at None on every process start, so any restart (a deploy, a
+        crash) forgot how recently the channel had actually posted and ran
+        its first cycle immediately — confirmed via 3 real same-day deploy
+        restarts each producing a publish gap under dynamic_publish.
+        min_interval_seconds (down to 4.5min against a supposed 15min
+        floor). Called once at startup so main() can seed
+        last_publish_monotonic from real history instead of None. Returns
+        None if Qdrant isn't configured, the collection is empty (or only
+        has pre-2026-09-07 points with no `sentAt` yet), or the query
+        fails — fail open, same convention as most_similar_recent()."""
         if self._client is None:
             return None
         try:
             points, _ = await self._client.scroll(
                 collection_name=self._collection,
-                order_by=OrderBy(key="publishedAt", direction=Direction.DESC),
+                scroll_filter=Filter(must=[FieldCondition(key="sentAt", range=Range(gte=0))]),
+                order_by=OrderBy(key="sentAt", direction=Direction.DESC),
                 limit=1,
                 with_payload=True,
             )
@@ -744,7 +758,7 @@ class PostedHistoryStore:
             return None
         if not points:
             return None
-        return (points[0].payload or {}).get("publishedAt")
+        return (points[0].payload or {}).get("sentAt")
 
     async def most_similar_recent(self, embedding: list[float]) -> tuple[float, str, str]:
         """Highest cosine similarity against post_content embeddings whose
@@ -778,7 +792,12 @@ class PostedHistoryStore:
     async def write(self, url: str, url_hash: str, content: str, published_at_unix: int, embedding: list[float]) -> None:
         """Called once, right after the publish cycle's winner is chosen —
         never for a rejected/duplicate candidate. `content` should be the
-        post_content the embedding was computed from."""
+        post_content the embedding was computed from. `published_at_unix`
+        is the source article's own publish date (winner.published_at),
+        unrelated to `sentAt` below (2026-09-07) — the real wall-clock
+        moment THIS call runs, i.e. when we actually sent it to Gettr. See
+        most_recent_publish_ts()'s docstring for why the two must stay
+        separate."""
         if self._client is None:
             return
         await self._client.upsert(
@@ -787,7 +806,10 @@ class PostedHistoryStore:
                 PointStruct(
                     id=str(uuid.uuid4()),
                     vector=embedding,
-                    payload={"content": content, "url": url, "urlHash": url_hash, "publishedAt": published_at_unix},
+                    payload={
+                        "content": content, "url": url, "urlHash": url_hash,
+                        "publishedAt": published_at_unix, "sentAt": int(time.time()),
+                    },
                 )
             ],
         )
