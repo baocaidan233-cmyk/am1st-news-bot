@@ -89,6 +89,26 @@ class QdrantStore:
         )
 
     async def ensure_collection(self) -> None:
+        """2026-09-07: also creates a payload index on publishedAt (range-
+        filtered in most_similar_recent()) — a real China_Breaks incident
+        (a straight fork of this codebase) found this exact index missing
+        on its own copy of this collection: Qdrant rejects an unindexed
+        range filter outright ("Index required but not found"), caught by
+        most_similar_recent()'s own fail-open except-block and logged at
+        ERROR, silently turning cross-cycle dedup fully inert (every
+        candidate always scored 0.0) for as long as the collection existed
+        without it — the exact same failure mode EventStore.ensure_collection()
+        already hit and fixed once (2026-08-06, see that method's own
+        docstring). AM1ST's own live am1st_embeddings collection happens to
+        already carry this index (confirmed 2026-09-07 via a direct
+        get_collection() check — some earlier code path must have created
+        it, since this method never has), so this isn't fixing a live bug
+        here, only closing the same latent gap that bit China_Breaks: if
+        this collection were ever dropped/recreated, this method as
+        written would silently reproduce the exact same "always inert"
+        failure. create_payload_index is a no-op if the index already
+        exists, so safe to call every startup regardless of collection
+        age."""
         if self._client is None:
             return
         existing = await self._client.get_collections()
@@ -98,6 +118,9 @@ class QdrantStore:
                 vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
             )
             logger.info("QdrantStore: created collection %s", self._collection)
+        await self._client.create_payload_index(
+            collection_name=self._collection, field_name="publishedAt", field_schema=PayloadSchemaType.INTEGER,
+        )
 
     async def most_similar_recent(self, embedding: list[float]) -> tuple[float, str]:
         """Highest cosine similarity against title+description embeddings
@@ -724,11 +747,22 @@ class PostedHistoryStore:
                 vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
             )
             logger.info("PostedHistoryStore: created collection %s", self._collection)
-        # 2026-09-07: required for most_recent_publish_ts()'s filter+order_by
-        # on `sentAt` — Qdrant rejects both with "Index required but not
-        # found" otherwise. create_payload_index is a no-op if the index
-        # already exists (same convention as EventStore.ensure_collection),
+        # publishedAt: required for most_similar_recent()'s own range
+        # filter — confirmed 2026-09-07 that am1st_posting_news_embedding
+        # already carries this index live (some earlier code path must
+        # have created it, since this method never has), but a real
+        # China_Breaks incident the same day found the identical missing
+        # index on its own copy of this collection silently made the whole
+        # "already posted" check permanently inert (every score came back
+        # 0.0, fail-open, logged only at ERROR) — adding it explicitly here
+        # closes the same latent gap for good, not just relying on
+        # whatever created it historically. sentAt: required for
+        # most_recent_publish_ts()'s filter+order_by. Both are no-ops if
+        # already present (same convention as EventStore.ensure_collection),
         # so safe to call every startup regardless of collection age.
+        await self._client.create_payload_index(
+            collection_name=self._collection, field_name="publishedAt", field_schema=PayloadSchemaType.INTEGER,
+        )
         await self._client.create_payload_index(
             collection_name=self._collection, field_name="sentAt", field_schema=PayloadSchemaType.INTEGER,
         )
