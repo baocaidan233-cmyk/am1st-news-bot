@@ -341,3 +341,22 @@ async def mark_extraction_failed(config: AppConfig, page_id: str) -> bool:
     except Exception:
         logger.exception("mark_extraction_failed: Notion update failed for page %s", page_id)
         return False
+
+
+async def mark_writer_rejected(config: AppConfig, page_id: str) -> bool:
+    """Flips the same extraction_failed flag as mark_extraction_failed above
+    — called by main_publish.py's run_cycle() when Writer.write() returns
+    "No comment" for a candidate whose extraction actually succeeded (e.g.
+    a source that turns out to be a roundup/digest once the full text is
+    seen, or a rehash the RELEVANCY CHECK catches only with the full
+    article). 2026-09-08, per the user's request: content_gen_prompt.txt
+    is a static prompt, so the same extracted text gets the same "No
+    comment" verdict every single time it's re-selected into a batch — a
+    real 24h sample had one candidate (a thepiratescove.us roundup
+    correctly declined every time) re-scored and re-written 8+ times,
+    burning a fresh Writer call each cycle for a foregone conclusion.
+    Reuses extraction_failed rather than adding a second Notion property,
+    since both cases mean the same thing downstream to
+    query_eligible_candidates(): permanently stop reconsidering this
+    candidate."""
+    return await mark_extraction_failed(config, page_id)

@@ -98,7 +98,7 @@ from core.alerts import AlertNotifier
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex
 from core.language import is_english
-from core.notion_candidates import count_recent_high_score, has_unpublished_hot_candidate, mark_extraction_failed, mark_send_status, query_eligible_candidates
+from core.notion_candidates import count_recent_high_score, has_unpublished_hot_candidate, mark_extraction_failed, mark_send_status, mark_writer_rejected, query_eligible_candidates
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
 from core.redis_store import CaptionCache
@@ -282,6 +282,13 @@ async def run_cycle(
                     await caption_cache.set(c.url_hash, post_content)
             if Writer.is_no_comment(post_content):
                 logger.info("run_cycle: %s — writer returned No comment, dropped from batch", c.url)
+                # 2026-09-08, per the user's explicit request: a static
+                # prompt on the same extracted text gives the same verdict
+                # every time, so give up on this candidate permanently
+                # instead of re-writing (and re-billing) it every future
+                # cycle — see mark_writer_rejected()'s docstring for the
+                # real repeat-offender that prompted this.
+                await mark_writer_rejected(config, c.page_id)
                 continue
             # Link appended after generation, not counted against the writer's
             # word cap — the AI's own output stays pure caption text.
