@@ -354,7 +354,7 @@ class QdrantConfig(BaseModel):
     collection: str = "am1st_embeddings"  # ingestion-side cross-cycle dedup cache (title+description)
     posted_collection: str = "am1st_posting_news_embedding"  # publish-side "already posted" cache (post_content) — separate collection, separate purpose, see core/qdrant_store.py's PostedHistoryStore
     events_collection: str = "am1st_events"  # event aggregation collection, see HeatConfig/EventStore — a genuinely different kind of thing from the two collections above (a group of points per underlying event, not one point per article)
-    cross_cycle_window_hours: int = 72
+    cross_cycle_window_hours: int = 240  # widened 72h -> 240h (10 days) 2026-09-13, per the user, to match heat.window_hours and publish.posted_dedup_window_hours so all three cross-cycle checks agree on how long an event stays recent
     cleanup_retention_days: int = 10
     timeout_seconds: int = 15  # AsyncQdrantClient has no timeout by default — a stalled request (real hang observed 2026-08-11 during a live 3-cycle test, no error, no timeout, just stuck) can block run_cycle forever
 
@@ -401,61 +401,47 @@ class PublishConfig(BaseModel):
 
 
 class DynamicPublishConfig(BaseModel):
-    """Automatic publish-cadence scaling (2026-09-05) — distinct from
-    hot_topics.py's manual fast lane (a human flags one specific story as
-    breaking); this instead reacts to how much genuinely strong material
-    the ingestion side is producing right now, with no human involved.
-    Signal: count of candidates newly added to the Notion pool in the last
-    lookback_hours with llm_score >= hot_score_floor (reusing
-    prompts/scoring_prompt.txt's own "8 — Major real-time trigger" band as
-    the floor, not an arbitrary new cutoff) — a cheap, existence-count-only
-    Notion query, same cost shape as hot_topics.py's
-    has_unpublished_hot_candidate().
+    '''Automatic publish-cadence scaling -- how long to wait before the
+    next publish cycle, continuously re-derived every cycle from real
+    production signals instead of a fixed interval or a two/three-tier
+    step function. Replaces the 2026-09-05/06 count-of-llm_score-over-8
+    design (see git history) -- a 2026-09-13 review found that signal
+    almost never left its slow tier (trailing-2h count averaged 0.4-1.2
+    against a quiet_count=1 floor on every day from 09-06 onward, even on
+    a day -- 09-05 -- where 37 percent of that days candidates
+    independently scored 8 or above), so cadence had been silently stuck
+    near the 39min ceiling for a week regardless of how much real,
+    publishable material was actually available. Full design rationale
+    (the three signals, why backlog/heat use ln(1+x), why the reference
+    bands self-calibrate) lives in core/publish_cadence.py -- this class
+    is just the tunable knobs.
 
-    Thresholds below are calibrated from a real 33.5-hour sample
-    (2026-09-04 00:00 - 2026-09-05 09:29, 956 real ingested candidates,
-    resampled at every 30-min tick = 67 slices) of this exact count (>=8,
-    trailing 2h): min=0, p25=1, median=3, p75=8, p90=14, max=18 — busy_count
-    is the observed p75, quiet_count is the observed p25, so roughly the
-    quietest quarter of real history slows down and the busiest quarter
-    speeds up, leaving the middle half at the unscaled base interval.
+    Three independent signals -- backlog (eligible candidate count), heat
+    (max heat_score among them), trending (max cosine similarity vs
+    Google News current US headlines) -- each normalized to [0, 1] and
+    combined via noisy-OR (1 - (1-a)(1-b)(1-c)), mapped onto
+    [min_interval_seconds, max_interval_seconds]. Reference low/high bands
+    are not fixed: compute_dynamic_interval() keeps a rolling
+    calibration_window_days log and recomputes each band as that windows
+    real p10/p90 every call. The *_default fields are the bootstrap values
+    used until calibration_min_samples of real history accumulate
+    (derived from a real 2026-09-06..09-12 sample).'''
 
-    2026-09-05, second pass: the user pointed out this was never actually
-    slowing anything down in practice — quiet_scale (1.3) applied to the
-    30min base gives ~39min, which max_interval_seconds (1800s = 30min,
-    tightened the same day for the busy/normal case) immediately clamped
-    right back down to 30min, silently cancelling the one thing the
-    quiet-tier branch exists for. Raised quiet_scale to 2.5 and added a
-    DEAD tier (count == 0, scale 6.0) on top, with max_interval_seconds
-    raised to 4h so neither tier's scale-up was clamped away — the idea
-    being a genuinely dead stretch (overnight, weekends) should go much
-    longer between posts rather than forcing one out on a fixed cadence.
+    min_interval_seconds: int = 900   # 15 min floor -- never faster than this regardless of signals
+    max_interval_seconds: int = 2340  # 39 min ceiling -- never slower than this regardless of signals (users explicit cap, 2026-09-06)
 
-    2026-09-06, reverted: the user tested this in production and rejected
-    it — they want every cycle checked, and if warranted, published,
-    within a strict 15-30min band (39min at the very most — the original
-    unclamped quiet_scale figure above), never stretched out to hours
-    regardless of how thin the pool is. The DEAD tier and the 4h ceiling
-    are gone; a genuinely empty cycle is instead handled by the mechanism
-    that already existed independently of this config — run_cycle()'s
-    widen-on-empty giving up and publishing nothing for that cycle (see
-    publish.max_widen_attempts) — rather than by making the wait-until-
-    next-check interval itself grow long. quiet_scale is back to 1.3 and
-    max_interval_seconds to 2340 (its natural, no-longer-clamped product)
-    so the quiet tier reaches exactly the ~39min ceiling the user named as
-    acceptable, with nothing beyond it. The hot-topic fast lane (core/
-    hot_topics.py) is unaffected either way — it still cuts a long wait
-    short for a human-flagged breaking story."""
+    calibration_log_path: str = 'logs/dynamic_interval_calibration.jsonl'
+    calibration_window_days: float = 14.0
+    calibration_min_samples: int = 50  # below this many recent samples, use the *_default bands instead of computed percentiles
 
-    hot_score_floor: float = 8.0
-    lookback_hours: float = 2.0
-    quiet_count: int = 1  # <= this many (but not zero) -> slow down (real p25)
-    busy_count: int = 8  # >= this many -> speed up (real p75)
-    quiet_scale: float = 1.3  # 30min base -> 39min
-    busy_scale: float = 0.6  # 30min base -> ~18min
-    min_interval_seconds: int = 900  # 15 min floor — never faster than this regardless of volume
-    max_interval_seconds: int = 2340  # 39 min ceiling — the user's explicit cap (2026-09-06); an empty cycle publishes nothing instead of the interval stretching further, see docstring
+    trending_check_top_k: int = 25  # cap on how many eligible candidates (by llm_score) get embedded against trending headlines each cycle, to bound cost against a pool that has run into the hundreds
 
+    backlog_low_default: float = 145.0
+    backlog_high_default: float = 382.0
+    heat_low_default: float = 0.6      # raw heat_score, not log -- transformed internally
+    heat_high_default: float = 25.0
+    trending_low_default: float = 0.35
+    trending_high_default: float = 0.65
 
 class AppConfig(BaseModel):
     notion: NotionConfig = Field(default_factory=NotionConfig)

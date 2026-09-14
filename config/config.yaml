@@ -106,7 +106,7 @@ qdrant:
   collection: "am1st_embeddings"           # ingestion-side cross-cycle dedup cache (title+description)
   posted_collection: "am1st_posting_news_embedding"  # publish-side "already posted" cache (post_content)
   events_collection: "am1st_events"        # event aggregation — groups of points per underlying event, see HeatConfig/EventStore
-  cross_cycle_window_hours: 72
+  cross_cycle_window_hours: 240  # widened 2026-09-13, matches heat.window_hours and publish.posted_dedup_window_hours
   cleanup_retention_days: 10  # for the separate, not-yet-built daily cleanup job
   timeout_seconds: 15  # AsyncQdrantClient has no timeout by default — real hang observed 2026-08-11
 
@@ -135,14 +135,19 @@ publish:
   staleness_check_hours_floor: 72  # only run the staleness LLM call when event_first_seen_at is at least this old — reuses dedup.cross_cycle_window_hours' 72h convention
 
 dynamic_publish:
-  hot_score_floor: 8.0       # reuses scoring_prompt.txt's own "8 — Major real-time trigger" band
-  lookback_hours: 2.0
-  quiet_count: 1             # real p25 of a 2026-09-05 33.5h sample (>=8, trailing 2h)
-  busy_count: 8              # real p75 of the same sample
-  quiet_scale: 1.3           # 30min base -> 39min
-  busy_scale: 0.6
   min_interval_seconds: 900    # 15 min floor
-  max_interval_seconds: 2340  # 39 min ceiling — reverted 2026-09-06 per user's explicit request (was 14400/4h); a genuinely empty cycle publishes nothing instead of the check interval stretching out, see core/config.py DynamicPublishConfig docstring
+  max_interval_seconds: 2340   # 39 min ceiling -- user's explicit cap (2026-09-06)
+  calibration_log_path: 'logs/dynamic_interval_calibration.jsonl'
+  calibration_window_days: 14.0
+  calibration_min_samples: 50   # below this many recent samples, use the *_default bands below instead
+  trending_check_top_k: 25
+  backlog_low_default: 145.0    # real p10, eligible-candidate count, 2026-09-06..09-12
+  backlog_high_default: 382.0   # real p90, same sample
+  heat_low_default: 0.6         # raw heat_score (compared in ln(1+x) space internally)
+  heat_high_default: 25.0
+  trending_low_default: 0.35    # cosine similarity vs Google News trending headlines
+  trending_high_default: 0.65   # matches agents/priority_ranker.py's own _TRENDING_SIM_HIGH
+
 
 max_publish_age_hours: 3
 poll_interval_seconds: 600  # 10 minutes, matches the original n8n cadence
