@@ -47,6 +47,29 @@ _BLOCKED_DOMAINS = (
     "decider.com",
 )
 
+# 2026-09-14 — cross-source URL-path category filter, from the same 7-day
+# cost audit as _BLOCKED_DOMAINS above. Of 11,169 real scoring calls that
+# week, 1,289 (~11.5%) scored <=2.5 (well under the 5.0 gate) — and their
+# URL paths cluster hard into a handful of non-political verticals
+# (sports/betting, entertainment/celebrity, shopping/deals/personal-finance
+# content-marketing, "odd news" filler), regardless of which of the 179
+# sources fetched them. Matched as an exact path segment (not a substring),
+# case-insensitive, so this doesn't touch a source whose own domain merely
+# contains one of these words. Deliberately excludes ambiguous segments
+# that could plausibly hold real political content even though they also
+# scored low sometimes in the same sample — "opinion", "us-news", "world",
+# "world-news", "science", "health", "video" — narrowed to the unambiguous
+# ones per the user's explicit sign-off.
+_BLOCKED_PATH_SEGMENTS = frozenset({
+    "sports", "sport", "nfl", "betting",
+    "outkick-sports", "outkick-betting", "outkick-culture",
+    "entertainment", "entertainment_news", "celebrity-news",
+    "style", "lifestyle", "obsessed", "movies", "music",
+    "shopping", "deals", "ticket-sales", "credit-cards",
+    "pet-insurance", "insurance", "cars-trucks",
+    "odd_news", "gallery",
+})
+
 
 def _domain_matches(netloc: str, domain: str) -> bool:
     netloc = netloc[4:] if netloc.startswith("www.") else netloc
@@ -61,6 +84,11 @@ def _needs_playwright_fallback(url: str) -> bool:
 def _is_blocked_domain(url: str) -> bool:
     netloc = urlparse(url).netloc
     return any(_domain_matches(netloc, domain) for domain in _BLOCKED_DOMAINS)
+
+
+def _has_blocked_path_segment(url: str) -> bool:
+    segments = urlparse(url).path.lower().split("/")
+    return any(seg in _BLOCKED_PATH_SEGMENTS for seg in segments)
 
 # Several sources 403'd under httpx's default "python-httpx/x.x" User-Agent
 # (confirmed 2026-08-03 for e.g. Judicial Watch, The Federalist, State Dept,
@@ -123,7 +151,7 @@ async def fetch_source(client: httpx.AsyncClient, source: RssSource) -> list[Can
         url = entry.get("link", "")
         if not url:
             continue
-        if _is_blocked_domain(url):
+        if _is_blocked_domain(url) or _has_blocked_path_segment(url):
             continue
         candidates.append(
             Candidate(
