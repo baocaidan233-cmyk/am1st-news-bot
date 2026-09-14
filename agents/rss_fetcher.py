@@ -33,6 +33,20 @@ _PLAYWRIGHT_FALLBACK_DOMAINS = (
     "justthenews.com",
 )
 
+# 2026-09-14 — "nypost main" (nypost.com/feed/, the combined NY Post feed)
+# genuinely mixes real nypost.com news with its gossip/entertainment sister
+# sites' own articles (confirmed live: of a 25-item sample, 10 were
+# pagesix.com and 2 were decider.com, not nypost.com). Blocked by the
+# article's own URL domain rather than disabling the feed, so the real
+# nypost.com items it also carries keep flowing — a 7-day cost audit showed
+# these two domains alone cost ~330 scoring calls/week with a near-zero
+# pass rate and no relevance to this channel (celebrity gossip, streaming
+# picks).
+_BLOCKED_DOMAINS = (
+    "pagesix.com",
+    "decider.com",
+)
+
 
 def _domain_matches(netloc: str, domain: str) -> bool:
     netloc = netloc[4:] if netloc.startswith("www.") else netloc
@@ -42,6 +56,11 @@ def _domain_matches(netloc: str, domain: str) -> bool:
 def _needs_playwright_fallback(url: str) -> bool:
     netloc = urlparse(url).netloc
     return any(_domain_matches(netloc, domain) for domain in _PLAYWRIGHT_FALLBACK_DOMAINS)
+
+
+def _is_blocked_domain(url: str) -> bool:
+    netloc = urlparse(url).netloc
+    return any(_domain_matches(netloc, domain) for domain in _BLOCKED_DOMAINS)
 
 # Several sources 403'd under httpx's default "python-httpx/x.x" User-Agent
 # (confirmed 2026-08-03 for e.g. Judicial Watch, The Federalist, State Dept,
@@ -103,6 +122,8 @@ async def fetch_source(client: httpx.AsyncClient, source: RssSource) -> list[Can
     for entry in parsed.entries:
         url = entry.get("link", "")
         if not url:
+            continue
+        if _is_blocked_domain(url):
             continue
         candidates.append(
             Candidate(
