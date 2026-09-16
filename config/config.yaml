@@ -66,7 +66,7 @@ dedup:
   # either. Per the user's explicit call: don't act on data produced
   # during the nano_model window until it's been reproduced with the
   # reverted gpt-4o-mini judge.
-  semantic_threshold: 0.8  # cosine similarity, both intra-batch and cross-cycle layers
+  semantic_threshold: 0.85  # cosine similarity, both intra-batch and cross-cycle layers -- raised from 0.8 2026-09-16, a week of gpt-4o-mini event_identity_decisions.jsonl data showed the 0.8-0.9 band still had a 13.6% wrong-merge rate (127/931)
 
 entity_verifier:
   hub_event_count_threshold: 2   # shared token only counts as evidence if it's been the core of fewer than this many past events

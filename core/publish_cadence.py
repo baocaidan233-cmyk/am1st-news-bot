@@ -144,7 +144,16 @@ async def compute_dynamic_interval(config: AppConfig) -> float:
     u_heat = _urgency(heat, heat_low, heat_high, log_space=True)
     u_trending = _urgency(trending, trending_low, trending_high, log_space=False)
 
-    combined = 1 - (1 - u_backlog) * (1 - u_heat) * (1 - u_trending)
+    # 2026-09-16: was noisy-OR (1 - product of complements), which means any
+    # ONE saturated signal alone forces combined near 1.0 regardless of the
+    # other two. Real week-of data showed backlog sitting at/near its own
+    # calibrated p90 almost continuously (candidate supply structurally runs
+    # ~8x publish consumption, see project_am1st_news_bot memory's 09-13
+    # funnel audit), so backlog alone pinned interval at min_interval_seconds
+    # for two straight days even while heat/trending were unremarkable
+    # (u_heat=0.49, u_trending=0.00 logged at combined=0.99). A plain average
+    # requires the three signals to actually agree before urgency climbs.
+    combined = (u_backlog + u_heat + u_trending) / 3
     span = dp.max_interval_seconds - dp.min_interval_seconds
     interval = dp.max_interval_seconds - combined * span
     interval = max(dp.min_interval_seconds, min(dp.max_interval_seconds, interval))

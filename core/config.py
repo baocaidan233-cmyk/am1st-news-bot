@@ -129,7 +129,7 @@ class OpenAIConfig(BaseModel):
 
 
 class DedupConfig(BaseModel):
-    semantic_threshold: float = 0.8
+    semantic_threshold: float = 0.85
 
 
 class EntityVerifierConfig(BaseModel):
