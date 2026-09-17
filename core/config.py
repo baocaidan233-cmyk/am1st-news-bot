@@ -404,15 +404,30 @@ class PublishConfig(BaseModel):
     # >=7 (vs 29-47% in every daytime band), and 74% of overnight batches had
     # no fresh high-score candidate at all — the channel was filling the night
     # with 6.0-tier material that also realized ~36% less engagement than
-    # evening posts, measured after controlling for post age. 8.0 rather than
-    # 7.0 because overnight batches average 1.40 candidates at exactly 7.0, so
-    # a 7.0 floor still filled 94% of night cycles (15.5 posts/night vs 16.5
-    # today) — 8.0 qualifies 65% of them, ~10.7 posts/night before the cadence
-    # floor below cuts it further. Set night_start_hour == night_end_hour to
-    # disable the window entirely.
+    # evening posts, measured after controlling for post age.
+    #
+    # Shipped at 8.0 and corrected to 7.0 the same day, on live pool data:
+    # 8.0 was chosen off the 09-04..09-15 decision log (65% of overnight
+    # batches held a candidate at 8.0+), but candidates at 8.0 collapsed from
+    # ~11% of each day's scoring to 2% on 09-16 and 0% on 09-17. A live
+    # query_eligible_candidates() read at 09-17 06:22 ET returned 289 eligible
+    # candidates — 175 at 5.0, 105 at 6.0, 9 at 7.0, ZERO at 8.0 — so an 8.0
+    # floor is indistinguishable from suspending overnight publishing, which
+    # is explicitly not what was asked for. 7.0 still lifts every overnight
+    # post above the 6.0 tier (only 10% of overnight winners reached 7+ before
+    # this change) while staying satisfiable; the cadence floor below does the
+    # volume reduction. Revisit if the 8.0 supply recovers — the collapse
+    # coincides with 2026-09-16's dedup.semantic_threshold 0.8->0.85 (a higher
+    # threshold fragments events, which deflates heat_score, which is what
+    # triggers scoring_prompt.txt's band-8 corroboration bullet), but ~1.5 days
+    # of data is NOT enough to call that causal, and heat_score has been
+    # trending down since 09-04 independently. Tracked separately, not
+    # something this gate should try to compensate for.
+    #
+    # Set night_start_hour == night_end_hour to disable the window entirely.
     night_start_hour: int = 0
     night_end_hour: int = 7
-    night_min_score: float = 8.0
+    night_min_score: float = 7.0
 
     staleness_check_hours_floor: int = 72  # 2026-09-05 — agents/staleness_checker.py's LLM call only runs when event_first_seen_at is at least this old; reuses dedup.cross_cycle_window_hours' existing 72h convention rather than picking a new number, per the user's explicit cost concern (this would otherwise double the LLM calls made for every candidate, not just the minority whose underlying event is genuinely old)
 
