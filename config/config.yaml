@@ -132,6 +132,17 @@ publish:
   posted_dedup_window_hours: 240  # was 24h — widened 2026-08-07, matches heat.window_hours (10 days)
   posted_dedup_threshold: 0.70  # stricter than ingestion's 0.8 — deliberate, fully-autonomous posting errs toward under-posting
   max_widen_attempts: 3        # widen-on-empty: try up to this many batch_max-sized chunks of the eligible pool before giving up this cycle
+  # 深夜质量闸门 2026-09-17（美东时区，与 weekday_min_score 同一日历基准）。
+  # 实测依据：745 个发布批次（09-04..09-17），美东 0-6 点产出 28% 的发布周期，
+  # 但赢家 llm>=7 的只有 10%（白天各时段是 29-47%），74% 的深夜批次里连一条
+  # "新鲜且高分"的稿都没有。这些深夜帖在控制帖龄后，实际互动比晚间低约 36%。
+  # 取 8.0 而不是 7.0：深夜每批平均有 1.40 条正好 7.0 分的稿，7.0 的门槛仍能
+  # 填满 94% 的夜间周期（15.5 帖/夜 vs 现在 16.5），等于没降；8.0 只有 65%
+  # 的批次够格，约 10.7 帖/夜，再叠下面的节奏下限。
+  # night_start_hour == night_end_hour 即关闭该窗口。
+  night_start_hour: 0
+  night_end_hour: 7
+  night_min_score: 8.0
   staleness_check_hours_floor: 72  # only run the staleness LLM call when event_first_seen_at is at least this old — reuses dedup.cross_cycle_window_hours' 72h convention
 
 dynamic_publish:
@@ -147,6 +158,13 @@ dynamic_publish:
   heat_high_default: 25.0
   trending_low_default: 0.35    # cosine similarity vs Google News trending headlines
   trending_high_default: 0.65   # matches agents/priority_ranker.py's own _TRENDING_SIM_HIGH
+
+  # 深夜节奏下限 2026-09-17，与 publish.night_min_score 是同一个改动的两半。
+  # 在 compute_dynamic_interval() 的 [min, max] 夹取之后才施加，因此会故意
+  # 突破 max_interval_seconds——39 分钟那个上限是白天的响应速度约束，不代表
+  # 深夜也该那么快。45 分钟 × 7 小时窗口 ≈ 9 个周期，乘以 65% 的够格率，
+  # 落在 5-7 帖/夜（现状 16.5）。
+  night_min_interval_seconds: 2700
 
 
 max_publish_age_hours: 3

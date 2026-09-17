@@ -4,8 +4,10 @@ import json
 import logging
 import math
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
+from agents.candidate_selector import is_night
 from agents.embedder import Embedder
 from agents.trending import fetch_trending_headlines
 from core.config import AppConfig
@@ -157,6 +159,18 @@ async def compute_dynamic_interval(config: AppConfig) -> float:
     span = dp.max_interval_seconds - dp.min_interval_seconds
     interval = dp.max_interval_seconds - combined * span
     interval = max(dp.min_interval_seconds, min(dp.max_interval_seconds, interval))
+
+    # 2026-09-17 — overnight cadence floor, the pacing half of
+    # agents/candidate_selector.py's night_min_score gate (user request:
+    # "深夜选稿规则更严，然后发帖频率降低"). Deliberately applied AFTER the clamp
+    # above so it can push past max_interval_seconds -- see
+    # DynamicPublishConfig.night_min_interval_seconds.
+    if is_night(datetime.now(timezone.utc), config) and interval < dp.night_min_interval_seconds:
+        logger.info(
+            "compute_dynamic_interval: overnight floor applied, %.0fs -> %ds",
+            interval, dp.night_min_interval_seconds,
+        )
+        interval = float(dp.night_min_interval_seconds)
 
     logger.info(
         "compute_dynamic_interval: backlog=%d(u=%.2f) heat=%.1f(u=%.2f) trending=%.3f(u=%.2f) [%s, n=%d] -> combined=%.2f interval=%.0fs",

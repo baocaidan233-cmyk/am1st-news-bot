@@ -43,6 +43,25 @@ def _is_weekday(now: datetime) -> bool:
     return now.astimezone(_DAY_TZ).weekday() < 5  # Mon=0 ... Sun=6
 
 
+def is_night(now: datetime, config: AppConfig) -> bool:
+    """True inside the overnight window, judged in US/Eastern — same calendar
+    reference _is_weekday() uses, for the same reason (this is a US-audience
+    channel; "overnight" means overnight for the readers, not for whatever
+    timezone this process happens to run in).
+
+    Wraps midnight, so the default start=0/end=7 means 00:00-06:59 ET.
+    start == end disables the window entirely. Also imported by
+    core/publish_cadence.py, which applies the cadence half of the same gate."""
+    pub = config.publish
+    start, end = pub.night_start_hour, pub.night_end_hour
+    if start == end:
+        return False
+    hour = now.astimezone(_DAY_TZ).hour
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
 def filter_former_trump(candidates: list[PublishCandidate]) -> list[PublishCandidate]:
     """Drops anything calling Trump a former president — see module
     docstring for the exact phrase list and why this now runs twice
@@ -123,6 +142,19 @@ def select_batch(candidates: list[PublishCandidate], config: AppConfig) -> list[
         return (now - c.published_at).total_seconds() / 3600
 
     candidates = [c for c in candidates if hours_old(c) <= max_age_hours]
+
+    # 2026-09-17 — overnight quality gate; see PublishConfig.night_min_score
+    # for the decision-log evidence behind the window and the threshold.
+    # Applied as a hard filter on `candidates` here, exactly like the
+    # published_at ceiling above and for the same reason: every tier below —
+    # including the weekday->weekend floor relaxation and the batch_min
+    # "newest overall, regardless of score" last resort — draws only from this
+    # filtered list, so none of them can quietly relax the floor back down.
+    # is_hot is exempt on purpose: a manually-flagged breaking story must
+    # still be publishable overnight, the same guarantee the force-include
+    # below already makes against the score tiers.
+    if is_night(now, config):
+        candidates = [c for c in candidates if c.is_hot or c.llm_score >= pub.night_min_score]
 
     fresh = [c for c in candidates if hours_old(c) <= pub.fresh_hours]
 

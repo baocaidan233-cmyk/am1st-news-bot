@@ -397,6 +397,23 @@ class PublishConfig(BaseModel):
     posted_dedup_window_hours: int = 240  # was 24h — widened 2026-08-07 as a defensive backstop once the ingestion-side EventStore.mark_published() check exists (core/qdrant_store.py); matches heat.window_hours so both "have we already covered this" checks agree on how long an event stays "recent"
     posted_dedup_threshold: float = 0.70  # stricter than the ingestion side's 0.8 — deliberate, per the user: fully autonomous posting should err toward under-posting
     max_widen_attempts: int = 3  # 2026-09-05 — how many batch_max-sized chunks of the eligible pool to try before accepting "nothing to publish this cycle" as real, not just "the first batch_max happened to all be duplicates"; each attempt costs a real extraction+content-gen pass, so this isn't unbounded search over the whole pool (which real cycles have seen run into the hundreds)
+    # 2026-09-17 — overnight quality gate (user request). Window is in
+    # US/Eastern, the same calendar reference weekday_min_score already uses.
+    # Real decision-log data (745 batches, 09-04..09-17): the ET 0-6 band
+    # produced 28% of all publish cycles but only 10% of its winners scored
+    # >=7 (vs 29-47% in every daytime band), and 74% of overnight batches had
+    # no fresh high-score candidate at all — the channel was filling the night
+    # with 6.0-tier material that also realized ~36% less engagement than
+    # evening posts, measured after controlling for post age. 8.0 rather than
+    # 7.0 because overnight batches average 1.40 candidates at exactly 7.0, so
+    # a 7.0 floor still filled 94% of night cycles (15.5 posts/night vs 16.5
+    # today) — 8.0 qualifies 65% of them, ~10.7 posts/night before the cadence
+    # floor below cuts it further. Set night_start_hour == night_end_hour to
+    # disable the window entirely.
+    night_start_hour: int = 0
+    night_end_hour: int = 7
+    night_min_score: float = 8.0
+
     staleness_check_hours_floor: int = 72  # 2026-09-05 — agents/staleness_checker.py's LLM call only runs when event_first_seen_at is at least this old; reuses dedup.cross_cycle_window_hours' existing 72h convention rather than picking a new number, per the user's explicit cost concern (this would otherwise double the LLM calls made for every candidate, not just the minority whose underlying event is genuinely old)
 
 
@@ -442,6 +459,15 @@ class DynamicPublishConfig(BaseModel):
     heat_high_default: float = 25.0
     trending_low_default: float = 0.35
     trending_high_default: float = 0.65
+
+    # 2026-09-17 — the pacing half of PublishConfig's overnight gate. Applied
+    # as a floor AFTER the [min, max] clamp in compute_dynamic_interval(), so
+    # it deliberately overrides max_interval_seconds: that 39min ceiling is a
+    # daytime responsiveness cap, not a statement about overnight pacing.
+    # 45min over the 7h window is ~9 cycles; at the 65% of overnight batches
+    # that clear night_min_score, that lands near 5-7 posts/night against
+    # today's 16.5.
+    night_min_interval_seconds: int = 2700
 
 class AppConfig(BaseModel):
     notion: NotionConfig = Field(default_factory=NotionConfig)
