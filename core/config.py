@@ -131,6 +131,36 @@ class OpenAIConfig(BaseModel):
 class DedupConfig(BaseModel):
     semantic_threshold: float = 0.85
 
+    # 2026-09-18 — floor of cross_cycle_dedup_verdict()'s "gray zone", split out
+    # of heat.related_threshold (0.6) because the two uses have opposite risk
+    # profiles: heat only ever ADDS corroboration, so a generous floor is
+    # harmless there, while this one DESTROYS a candidate silently and has to
+    # be strict.
+    #
+    # Raised to 0.7 on measurement. An independent LLM re-review (deliberately
+    # NOT prompts/same_event_prompt.txt, which is the thing under audit) of 400
+    # real gray-zone pairs from logs/event_identity_decisions.jsonl found the
+    # cross-cycle layer was calling 73% of its "duplicate" verdicts wrongly,
+    # and the errors concentrate at the bottom of the band:
+    #     cosine 0.60-0.65  90% of duplicate verdicts wrong
+    #            0.65-0.70  82%
+    #            0.70-0.75  59%
+    #            0.75-0.80  39%
+    #            0.80-0.85  23%
+    # The 0.60-0.70 band is not a gray zone at all: of 283 sampled pairs in it,
+    # only 10% were genuinely the same event, and the LLM tier misjudged 71% of
+    # the pairs it was handed there (vs 89% for the entity rule) -- i.e. no
+    # judge, however expensive, can resolve that band, because a 0.6-0.7 cosine
+    # does not carry enough signal. Cutting the band at 0.7 rescues ~169 wrongly
+    # killed stories for every ~26 real duplicates let through (6.5:1), and
+    # matches the standing editorial rule that a different angle on shared facts
+    # is not a duplicate.
+    #
+    # Deliberately NOT applied to heat.related_threshold, main.py's intra-batch
+    # "joined_related" band (non-destructive; it only groups for heat), or
+    # EventStore.peek()/peek_top_k() -- those keep 0.6.
+    gray_zone_floor: float = 0.7
+
 
 class EntityVerifierConfig(BaseModel):
     """Second-opinion check on top of EventStore.peek()'s cosine match —

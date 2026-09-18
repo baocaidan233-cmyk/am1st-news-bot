@@ -501,14 +501,17 @@ async def run_cycle(
             # for the real China_Breaks incident (and AM1ST's own confirmed
             # real near-miss pairs) this replaces it to catch.
             candidate_text = event_identity_text(c.title, c.description)
-            is_dup = await cross_cycle_dedup_verdict(event_verifier, candidate_text, matched_content, best_score, threshold, related_threshold)
+            # gray-zone floor is dedup.gray_zone_floor (0.7), NOT
+            # heat.related_threshold (0.6) -- see DedupConfig.gray_zone_floor
+            # for the 400-pair audit that separated them.
+            is_dup = await cross_cycle_dedup_verdict(event_verifier, candidate_text, matched_content, best_score, threshold, config.dedup.gray_zone_floor)
             if matched_content:
                 log_decision(config, {
                     "check_type": "cross_cycle_dedup",
                     "candidate_url": c.url,
                     "cosine_score": best_score,
                     "threshold": threshold,
-                    "related_threshold": related_threshold,
+                    "related_threshold": config.dedup.gray_zone_floor,
                     "final_verdict": "duplicate" if is_dup else "kept",
                     "candidate_text": candidate_text,
                     "matched_text": matched_content,

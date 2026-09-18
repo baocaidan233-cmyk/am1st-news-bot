@@ -68,6 +68,18 @@ dedup:
   # reverted gpt-4o-mini judge.
   semantic_threshold: 0.85  # cosine similarity, both intra-batch and cross-cycle layers -- raised from 0.8 2026-09-16, a week of gpt-4o-mini event_identity_decisions.jsonl data showed the 0.8-0.9 band still had a 13.6% wrong-merge rate (127/931)
 
+  # 跨周期查重灰度区下限，2026-09-18 从 heat.related_threshold(0.6) 独立出来并提到 0.7。
+  # 依据：用独立 LLM（刻意不用项目自己的 same_event_prompt，那是被审计对象）复核
+  # logs/event_identity_decisions.jsonl 里 400 对真实灰度配对，发现跨周期层
+  # **73% 的"判重复"是误判**，且集中在低余弦端：
+  #     0.60-0.65 误判 90% | 0.65-0.70 82% | 0.70-0.75 59% | 0.75-0.80 39% | 0.80-0.85 23%
+  # 0.60-0.70 根本不是灰度区：283 对样本里真同一事件只有 10%，且该区间连 LLM
+  # 复核都误判 71%（实体规则 89%）——余弦 0.6-0.7 本身不携带足够信息，换任何
+  # 判官都救不回来。切在 0.7 的收益比是「救回约 169 条误杀 : 放过约 26 条真重复」= 6.5:1，
+  # 也符合既定编辑原则：同一批事实的不同角度不算重复。
+  # 不影响 heat.related_threshold、批内 joined_related 归簇、EventStore.peek*，那些保持 0.6。
+  gray_zone_floor: 0.7
+
 entity_verifier:
   hub_event_count_threshold: 2   # shared token only counts as evidence if it's been the core of fewer than this many past events
   pair_cooccur_max: 1            # two hub tokens together still count if this exact pair has co-occurred in at most this many past events
