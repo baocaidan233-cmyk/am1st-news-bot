@@ -861,6 +861,8 @@ async def posted_dedup_rule_verdict(
 
 
 async def cross_cycle_dedup_verdict(
+    config: AppConfig,
+    hub_index: "HubIndex",
     event_verifier: "EventVerifier",
     candidate_text: str,
     matched_text: str,
@@ -928,7 +930,31 @@ async def cross_cycle_dedup_verdict(
     frame_a, frame_b = extract_event_frame(candidate_text), extract_event_frame(matched_text)
     if frame_a["event_type"] and frame_b["event_type"] and frame_a["event_type"] != frame_b["event_type"]:
         return False
-    if entity_tokens(candidate_text) & entity_tokens(matched_text):
+    # 2026-09-18 — was a bare `entity_tokens(a) & entity_tokens(b) -> True`,
+    # with no hub filtering at all, even though this module already carries
+    # exactly that machinery for verify_compatibility() and
+    # posted_dedup_rule_verdict(). An independent re-review of 400 real
+    # gray-zone pairs from logs/event_identity_decisions.jsonl found this one
+    # line decided 614 of 802 gray-zone cases (77%) and got 89% of them wrong
+    # in the 0.60-0.70 band: the tokens driving the merges were topic labels,
+    # not entities -- trump 153 times, ai 49, house 40, michigan 30, senate 24,
+    # republican 23, white 20, us 11. Two opposing op-eds about Trump and AI
+    # merged with each other; "Senate Democrats block a data-center bill"
+    # merged with "House to take up a data-center bill".
+    #
+    # Reusing posted_dedup_rule_verdict() rather than reimplementing: it takes
+    # the same two flat texts, applies hub_event_count_threshold /
+    # pair_cooccur_max, and adds _actor_conflict() -- which this call site
+    # needs for the same reason that one does, since both sides here are
+    # independently-written headlines that can share a name while describing
+    # entirely different actions.
+    #
+    # Only the "shared entity -> automatic duplicate" path changes. NO_OVERLAP
+    # still falls through to the LLM exactly as before, so the no-shared-entity
+    # case keeps its pre-fix behaviour and this change can only ever make the
+    # layer MORE conservative about killing a candidate, never less.
+    rule_verdict = await posted_dedup_rule_verdict(config, hub_index, candidate_text, matched_text, cosine_score)
+    if rule_verdict == "COMPATIBLE":
         return True
     is_duplicate, _ = await event_verifier.same_event(candidate_text, matched_text)
     return is_duplicate

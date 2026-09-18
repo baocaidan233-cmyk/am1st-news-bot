@@ -504,7 +504,7 @@ async def run_cycle(
             # gray-zone floor is dedup.gray_zone_floor (0.7), NOT
             # heat.related_threshold (0.6) -- see DedupConfig.gray_zone_floor
             # for the 400-pair audit that separated them.
-            is_dup = await cross_cycle_dedup_verdict(event_verifier, candidate_text, matched_content, best_score, threshold, config.dedup.gray_zone_floor)
+            is_dup = await cross_cycle_dedup_verdict(config, hub_index, event_verifier, candidate_text, matched_content, best_score, threshold, config.dedup.gray_zone_floor)
             if matched_content:
                 log_decision(config, {
                     "check_type": "cross_cycle_dedup",
