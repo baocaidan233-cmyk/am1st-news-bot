@@ -406,7 +406,22 @@ class PublishConfig(BaseModel):
     # with 6.0-tier material that also realized ~36% less engagement than
     # evening posts, measured after controlling for post age.
     #
-    # Shipped at 8.0 and corrected to 7.0 the same day, on live pool data:
+    # NOTE 2026-09-18: night_min_score is now 6.0 — i.e. the score gate is
+    # effectively OFF and only night_min_interval_seconds still bites. Seven
+    # nights of Notion candidate data say a score-based overnight gate cannot
+    # work at all: of 277 candidates ingested during ET 0-6, the scores are
+    # 140x5.0, 126x6.0, 9x7.0, 2x8.0 — 1.6 per night at 7.0+, against ~9
+    # publish cycles. The 7.0 floor produced ZERO posts across the first full
+    # night (7 consecutive cycles, every one an empty select_batch), which is
+    # exactly the "stop publishing overnight" outcome the user rejected.
+    # Freshness is NOT the constraint: overnight-ingested articles reach the
+    # pool a median 0.1h after publication, so every age variant (4h/6h/12h/24h)
+    # returns the same 137 candidates at 6.0+. Scores are effectively integers,
+    # so there is no usable threshold between 6.0 and 7.0 either. The quality
+    # problem is real but upstream — overnight the sources simply do not carry
+    # 7.0-tier material — and cannot be fixed by a floor at this stage.
+    #
+    # Earlier history, kept because it explains the 8.0 -> 7.0 step:
     # 8.0 was chosen off the 09-04..09-15 decision log (65% of overnight
     # batches held a candidate at 8.0+), but candidates at 8.0 collapsed from
     # ~11% of each day's scoring to 2% on 09-16 and 0% on 09-17. A live
@@ -427,7 +442,7 @@ class PublishConfig(BaseModel):
     # Set night_start_hour == night_end_hour to disable the window entirely.
     night_start_hour: int = 0
     night_end_hour: int = 7
-    night_min_score: float = 7.0
+    night_min_score: float = 6.0
 
     staleness_check_hours_floor: int = 72  # 2026-09-05 — agents/staleness_checker.py's LLM call only runs when event_first_seen_at is at least this old; reuses dedup.cross_cycle_window_hours' existing 72h convention rather than picking a new number, per the user's explicit cost concern (this would otherwise double the LLM calls made for every candidate, not just the minority whose underlying event is genuinely old)
 
