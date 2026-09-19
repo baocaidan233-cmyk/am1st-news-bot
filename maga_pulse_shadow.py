@@ -309,7 +309,13 @@ async def main() -> int:
                     matches.append((sim, p))
             matches.sort(key=lambda m: -m[0])
             channels = sorted({p["ch"] for _, p in matches})
-            sig = [len(channels), len(matches)]
+            # send_status is part of the signature, not just payload: a
+            # candidate usually reaches its final consensus count hours
+            # before the publish cycle decides on it, so without this the
+            # false->true flip emits no row and every published candidate
+            # is frozen at sent=false in this file -- which is precisely
+            # the column the whole analysis joins on.
+            sig = [len(channels), len(matches), c["sent"]]
             if last.get(c["id"]) == sig:
                 continue
             last[c["id"]] = sig
