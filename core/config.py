@@ -402,6 +402,34 @@ class GettrConfig(BaseModel):
     user_id: str = ""  # env: GETTR_USER_ID
     user_token: str = ""  # env: GETTR_USER_TOKEN
     api_url: str = "https://gettr.com/api/u/post"
+    media_upload_host: str = "https://upload.gettr.com"  # separate host from api_url — see agents/media_uploader.py
+
+
+class PosterConfig(BaseModel):
+    """Renders and attaches our own headline card when Gettr has no usable
+    link preview to show (agents/headline_card.py + agents/media_uploader.py).
+
+    Scope, measured 2026-09-22 rather than assumed: of 200 live posts, 190
+    carried a preview image that actually fetches. The other 10 (5%) are the
+    trigger -- 2 with no previmg at all (both WaPo), 2 whose URL returns HTML
+    instead of an image, 2 too small to be a real photo, plus a 403, a
+    timeout, and one URL containing a control character. Those 10 posts'
+    like median was 40 against 42 for the rest, i.e. **no measurable
+    engagement penalty at this n**, so this is not justified as an
+    engagement fix; it is justified as not publishing a post with a visibly
+    broken card. Do not expect the 5% to move any channel-level number.
+
+    enabled=False by default deliberately: switching it on changes what a
+    real post looks like, which is the user's call, not a deploy's.
+    """
+
+    enabled: bool = False
+    tag_text: str = "America First News"  # the channel's own Gettr display name, not a "BREAKING"-style label
+    # A preview image smaller than this is a favicon, a tracking pixel or a
+    # placeholder rather than a news photo. 8KB is where the two real
+    # "too small" cases sat (2415B and 5055B).
+    min_image_bytes: int = 8000
+    validate_timeout_seconds: float = 10.0
 
 
 class PublishConfig(BaseModel):
@@ -540,6 +568,7 @@ class AppConfig(BaseModel):
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
     gettr: GettrConfig = Field(default_factory=GettrConfig)
+    poster: PosterConfig = Field(default_factory=PosterConfig)
     publish: PublishConfig = Field(default_factory=PublishConfig)
     dynamic_publish: DynamicPublishConfig = Field(default_factory=DynamicPublishConfig)
     max_publish_age_hours: int = 3

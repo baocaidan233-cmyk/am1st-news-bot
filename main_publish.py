@@ -89,6 +89,7 @@ from agents.embedder import Embedder
 from agents.extractor import Extractor
 from agents.gettr_publisher import GettrPublisher
 from agents.og_metadata import fetch_link_preview
+from agents.poster import card_for_broken_preview
 from agents.posted_dedup_checker import content_for_embedding, find_publishable
 from agents.priority_ranker import PriorityRanker, log_publish_outcome
 from agents.trending import fetch_trending_headlines
@@ -323,6 +324,18 @@ async def run_cycle(
         return False
 
     og = await fetch_link_preview(winner.url)
+    # 2026-09-22 — when the preview image Gettr would render is missing or
+    # broken, attach our own headline card instead (agents/poster.py). Returns
+    # None whenever the preview is fine, when the feature is off, or when
+    # anything in render/upload fails, and in all of those cases publish()
+    # behaves exactly as it did before.
+    card_media = await card_for_broken_preview(
+        config,
+        title=og.get("prev_ttl") or winner.title or "",
+        source_url=winner.url,
+        image_url=og.get("prev_img"),
+        dry_run=dry_run,
+    )
     post_id = await publisher.publish(
         winner.post_content,
         log_ref=winner.url,
@@ -330,6 +343,7 @@ async def run_cycle(
         prev_img=og.get("prev_img"),
         prev_src_link=og.get("prev_src_link") or winner.url,
         prev_ttl=og.get("prev_ttl") or winner.title,
+        media=card_media,
     )
     published = post_id is not None
     logger.info(

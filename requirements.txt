@@ -20,3 +20,4 @@ spacy>=3.7
 # render_client.py, a plain httpx POST), not a Playwright instance this
 # process launches itself. The actual Chromium dependency now lives only
 # in that separate, shared service's own venv.
+pillow>=10.0  # agents/headline_card.py — renders the fallback headline card; no OpenCV, see that module
