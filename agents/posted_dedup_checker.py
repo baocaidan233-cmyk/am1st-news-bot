@@ -174,6 +174,19 @@ async def find_publishable(
                     "candidate_entities": sorted(candidate_entities),
                     "matched_entities": sorted(matched_entities),
                     "entity_overlap": sorted(candidate_entities & matched_entities),
+                    # 2026-09-22 — the two texts EXACTLY as same_event()/the rule
+                    # tier saw them (URL-stripped via content_for_embedding), so a
+                    # verdict can be replayed offline against a changed prompt.
+                    # Without these, the only replayable pairs available were
+                    # synthetic ones at cosine 0.50-0.67, well below the 0.70-0.85
+                    # gray zone where this check actually decides anything. Logged
+                    # only inside the looks_similar branch: that is the subset a
+                    # rule/LLM verdict was actually computed for. Not truncated —
+                    # a truncated text cannot be replayed faithfully, and this
+                    # branch fires ~75 times/day, so the volume is negligible
+                    # against logrotate's existing 30-day window.
+                    "candidate_text": candidate_content,
+                    "matched_text": matched_content,
                 })
             log_decision(config, log_record)
 
