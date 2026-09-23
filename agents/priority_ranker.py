@@ -32,7 +32,30 @@ _TRENDING_SIM_LOW = 0.5
 # ~3.85 points, an hour-old story loses ~1, an 18-minutes-old story loses
 # ~0.14 — proportionate to the ~5-11 range llm_score+trending_bonus
 # produces, without dominating it).
-_FRESHNESS_DECAY_K = 1.5
+#
+# 2026-09-23: 1.5 -> 1.0. At 1.5 the decay erased a two-point score gap in
+# under five hours, and the pool guarantees there is always something fresher:
+# measured over four days it takes in ~242 six-score candidates a day against
+# ~17 eight-score ones. So a strong story that missed its first few cycles was
+# not merely deprioritised, it was permanently outranked by whatever had just
+# arrived. The crossover against a half-hour-old 6.0:
+#
+#     K=1.5   a 7.0 survives 1.9h,  an 8.0 survives 4.7h
+#     K=1.0   a 7.0 survives 3.1h,  an 8.0 survives 10.1h
+#
+# Consequence in production, same four days: only 35 of 67 eight-score and 65
+# of 122 seven-score candidates were ever published, while 182 six-score ones
+# were. Of the 54 unpublished high scorers, 51 had no similar published post,
+# so they were not suppressed as duplicates -- they simply aged out.
+#
+# This changes WHICH candidate takes a slot, never WHEN a slot comes up, so it
+# does not hold any story back or publish anything later than it would have
+# been; a six-hour-old story is still the same day's news. Not lowered further
+# (0.7 would give a 8.0 a 25h hold, i.e. age would stop mattering inside the
+# 24h eligibility window) because freshness still has to count for something.
+# Expected effect, replayed on real joined score+engagement data: like median
+# 44 -> 48. Verify against the hour-normalised baseline in ~1 week.
+_FRESHNESS_DECAY_K = 1.0
 
 
 def _log_decision(record: dict) -> None:

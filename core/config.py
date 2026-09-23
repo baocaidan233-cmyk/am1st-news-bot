@@ -499,7 +499,14 @@ class PublishConfig(BaseModel):
     #
     # Set night_start_hour == night_end_hour to disable the window entirely.
     night_start_hour: int = 0
-    night_end_hour: int = 7
+    # 2026-09-23: 7 -> 8. The window was an hour short of the dead zone it
+    # exists for. Measured over 401 matured posts, hour 7 ET behaves like the
+    # small hours, not like the morning: 07:00 engagement median 58 against
+    # 08:00's 90, and the overnight band as a whole sits at 0.78x the global
+    # median. Hour 7 had neither the score floor nor the cadence floor and so
+    # published at the full daytime rate into that. Costs roughly two posts a
+    # day, which is the intended trade rather than a side effect.
+    night_end_hour: int = 8
     night_min_score: float = 6.0
 
     staleness_check_hours_floor: int = 72  # 2026-09-05 — agents/staleness_checker.py's LLM call only runs when event_first_seen_at is at least this old; reuses dedup.cross_cycle_window_hours' existing 72h convention rather than picking a new number, per the user's explicit cost concern (this would otherwise double the LLM calls made for every candidate, not just the minority whose underlying event is genuinely old)

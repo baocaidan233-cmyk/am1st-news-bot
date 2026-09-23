@@ -169,7 +169,7 @@ publish:
   # 起本就在下滑。此事单独跟踪，不该由这个闸门来补偿。
   # night_start_hour == night_end_hour 即关闭该窗口。
   night_start_hour: 0
-  night_end_hour: 7
+  night_end_hour: 8   # 2026-09-23: 7 点那一小时互动中位 58（同凌晨），8 点才跳到 90
   night_min_score: 6.0
   staleness_check_hours_floor: 72  # only run the staleness LLM call when event_first_seen_at is at least this old — reuses dedup.cross_cycle_window_hours' 72h convention
 
