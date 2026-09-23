@@ -85,7 +85,8 @@ entity_verifier:
   pair_cooccur_max: 1            # two hub tokens together still count if this exact pair has co-occurred in at most this many past events
   min_doc_freq_for_core: 2       # a token needs >=this many of an event's own articles to join its persisted core_entities
   hub_key_prefix: "am1st:hub:"
-  same_event_prompt_file: "prompts/same_event_prompt.txt"
+  same_event_prompt_file: "prompts/same_event_prompt.txt"          # 发布端判重用（agents/posted_dedup_checker.py）
+  same_event_ingest_prompt_file: "prompts/same_event_ingest_prompt.txt"  # 抓取端跨周期查重专用，更倾向判"不同事件"——两端代价相反，见 core/config.py
   update_subtype_prompt_file: "prompts/update_subtype_prompt.txt"
   related_event_prompt_file: "prompts/related_event_prompt.txt"
   log_path: "logs/event_identity_decisions.jsonl"

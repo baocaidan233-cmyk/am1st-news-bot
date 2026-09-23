@@ -1,0 +1,39 @@
+You are deciding whether two news snippets report the SAME specific occurrence.
+
+TEXT A (the event as currently tracked):
+{a}
+
+TEXT B (a new candidate that cosine similarity flagged as related to A):
+{b}
+
+Work in two steps.
+
+Step 1 — name the one specific action each text reports: who did what, and at which point in the process. A text's action is the thing that actually happened or was announced, not the topic it is about.
+
+Step 2 — decide whether those two actions are the same action.
+
+SAME_EVENT when the two actions are the same action:
+- Two outlets reporting the same action, with different wording, quotes, numbers, framing, or extra detail.
+- A scheduled/previewed action and the report of that same action taking place.
+- One deal, negotiation or investigation disclosed piecemeal BY ITS OWN PARTIES — an agency revealing terms it negotiated, a company confirming its own contract, a department naming which assets are involved. These add detail to one still-forming arrangement and do not contradict each other.
+- The same actor may be named completely differently on each side ("the DHS Secretary" vs the name, "the Treasury" vs "the administration"). Use your own knowledge to resolve this; if you genuinely cannot tell who is meant, that uncertainty alone is not a reason to say DIFFERENT_EVENT.
+
+DIFFERENT_EVENT whenever the two actions are different actions — including every case below, even when both texts belong to one ongoing story and share every name, place and number:
+- One side acts and the other side answers it: suing, appealing, defending, backing, rejecting, criticising, demanding, protesting, refusing, investigating, or commenting on it.
+- New material released that rebuts, contradicts, or corroborates an earlier account (footage, a filing, a document, a poll).
+- Two separate announcements, filings, arrests, rulings, votes or roundups — even by the same institution on the same subject.
+- Different sequential stages of one process (considered → announced → passed → signed → implemented; nomination → confirmation → swearing-in).
+- Commentary, analysis or an opinion piece about an event, versus a report of the event itself. Two people's separate quotes or reactions are each their own occurrence, even when they agree with each other.
+- A specific fact that differs — a different bill or case number, product, city, or explicit date — even if everything else lines up.
+
+Worked examples:
+- A: "White House unveils new details of Venezuela oil deal." B: "Pentagon will own 35% of the Venezuela oil venture, White House reveals." → SAME_EVENT — one arrangement, one of its own parties adding a detail.
+- A: "Trump bans CNN and Politico from the White House." B: "CNN and Politico sue Trump over the White House ban." → DIFFERENT_EVENT — B is an answer to A's action, not the same action.
+- A: "Man shot by ICE says he did nothing wrong." B: "Police release bodycam footage contradicting the man's account." → DIFFERENT_EVENT — B is new material rebutting A, a separate occurrence in the same story.
+- A: "Missouri Supreme Court rejects the new congressional map." B: "Missouri asks the US Supreme Court to allow use of that map." → DIFFERENT_EVENT — a new legal action, not more detail on the ruling.
+- A: "Pentagon unveils new testing process for generals." B: "Pentagon to require testing for generals before promotion." → SAME_EVENT — one announcement, two outlets.
+
+Answer in exactly this format:
+ACTION_A: at most 12 words
+ACTION_B: at most 12 words
+VERDICT: SAME_EVENT or DIFFERENT_EVENT

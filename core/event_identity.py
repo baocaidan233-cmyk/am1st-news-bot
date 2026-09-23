@@ -896,8 +896,11 @@ async def cross_cycle_dedup_verdict(
       intra-batch clustering, i.e. genuinely a different story).
     - related_threshold <= score < semantic_threshold ("gray zone"): a
       date conflict or a clearly different extracted action/event_type
-      rules OUT a duplicate regardless of entity overlap; a shared entity
-      token (person/place/org) between the two texts rules IN a duplicate.
+      rules OUT a duplicate for free; everything else goes to
+      EventVerifier.same_event_ingest(). Until 2026-09-23 a shared non-hub
+      entity token also ruled a duplicate IN on its own, with no LLM call
+      at all — see the note at the bottom of this function for the 40
+      hand-labelled kills that ended that.
       Validated against 60 real gray-zone pairs pulled from AM1ST's own
       am1st_embeddings history (closest to the 0.8 cutoff, i.e. the real
       near-miss band): 54/60 (90%) resolved by these free rules alone,
@@ -930,6 +933,8 @@ async def cross_cycle_dedup_verdict(
     frame_a, frame_b = extract_event_frame(candidate_text), extract_event_frame(matched_text)
     if frame_a["event_type"] and frame_b["event_type"] and frame_a["event_type"] != frame_b["event_type"]:
         return False
+    # HISTORY, superseded by the 2026-09-23 note below — kept because it is
+    # the measurement that motivated it.
     # 2026-09-18 — was a bare `entity_tokens(a) & entity_tokens(b) -> True`,
     # with no hub filtering at all, even though this module already carries
     # exactly that machinery for verify_compatibility() and
@@ -953,10 +958,47 @@ async def cross_cycle_dedup_verdict(
     # still falls through to the LLM exactly as before, so the no-shared-entity
     # case keeps its pre-fix behaviour and this change can only ever make the
     # layer MORE conservative about killing a candidate, never less.
-    rule_verdict = await posted_dedup_rule_verdict(config, hub_index, candidate_text, matched_text, cosine_score)
-    if rule_verdict == "COMPATIBLE":
-        return True
-    is_duplicate, _ = await event_verifier.same_event(candidate_text, matched_text)
+    #
+    # 2026-09-23 -- the rule tier no longer decides this on its own, and the
+    # LLM tier no longer shares the publish side's prompt. Both halves of
+    # that come from one measurement: 40 real gray-zone kills sampled from
+    # 09-19..09-23 (i.e. already under gray_zone_floor 0.7 + hub filtering),
+    # read and labelled by hand, 9 of them wrong.
+    #
+    #   who killed it          kills   wrong
+    #   rule tier, no LLM         18       6  (33%)
+    #   LLM tier                  22       3  (14%)
+    #
+    # Every one of the 9 has the same shape: the same storyline's NEXT
+    # round, not the same occurrence -- CNN/Politico SUING over the press
+    # ban vs the ban being announced; Fox pulling out of the pool in protest
+    # vs the White House removing CNN from it; Trump criticising Salazar vs
+    # Salazar's own warning; a governor's AI quote vs a roundup of 2028
+    # Democrats on AI. The rule tier cannot see any of that by construction:
+    # those pairs genuinely do share specific, non-hub entities, which is
+    # all it ever looks at, so tightening it further (2026-09-18's hub
+    # filtering was already that move) cannot reach this class of error.
+    # Two knobs that could have been turned instead were measured and both
+    # came out net-negative on the same 40 pairs: raising gray_zone_floor to
+    # 0.75 releases 31 real duplicates to save 9 wrong kills, and AND-gating
+    # the rule tier with the EXISTING same_event() prompt releases 5, of
+    # which only 2 were wrong.
+    #
+    # So: ask a judge on every gray-zone pair, and ask it with a prompt
+    # written for this layer's error costs (prompts/same_event_ingest_
+    # prompt.txt -- 0/9 wrong merges vs the shared prompt's 56-67%, at the
+    # price of letting ~42% of real duplicates through into the candidate
+    # pool, where agents/posted_dedup_checker.py still blocks them from
+    # actually being published). The extra LLM calls are the gray zone's
+    # rule-COMPATIBLE share only -- roughly 70/day at 2026-09-23 volumes.
+    #
+    # posted_dedup_rule_verdict() stays exactly as it is and keeps its own
+    # decisive role at its original call site, agents/posted_dedup_checker.py,
+    # where the risk profile is reversed. hub_index is kept in this
+    # signature deliberately: nothing else about main.py's call changes, and
+    # the rule tier is the obvious thing to reinstate here if the leaked
+    # duplicates ever turn out to cost more than the wrong kills did.
+    is_duplicate, _ = await event_verifier.same_event_ingest(candidate_text, matched_text)
     return is_duplicate
 
 
@@ -986,6 +1028,7 @@ class EventVerifier:
         self._client = create_openai_client(config)
         self._model = config.openai.chat_model
         self._same_event_prompt = Path(config.entity_verifier.same_event_prompt_file).read_text(encoding="utf-8")
+        self._same_event_ingest_prompt = Path(config.entity_verifier.same_event_ingest_prompt_file).read_text(encoding="utf-8")
         self._subtype_prompt = Path(config.entity_verifier.update_subtype_prompt_file).read_text(encoding="utf-8")
         self._related_event_prompt = Path(config.entity_verifier.related_event_prompt_file).read_text(encoding="utf-8")
 
@@ -1009,6 +1052,16 @@ class EventVerifier:
 
     async def same_event(self, text_a: str, text_b: str) -> tuple[bool, str]:
         raw = await self._ask(self._same_event_prompt.format(a=text_a, b=text_b), max_tokens=80)
+        verdict = self._extract_field(raw, "VERDICT").upper()
+        return verdict.startswith("SAME"), raw
+
+    async def same_event_ingest(self, text_a: str, text_b: str) -> tuple[bool, str]:
+        """Same question as same_event(), asked with the ingestion side's own
+        prompt — see EntityVerifierConfig.same_event_ingest_prompt_file for
+        why the two layers deliberately do NOT share one judge, and for the
+        64-pair measurement. Asks for each side's action by name before the
+        verdict, so the answer needs more room than same_event()'s 80."""
+        raw = await self._ask(self._same_event_ingest_prompt.format(a=text_a, b=text_b), max_tokens=140)
         verdict = self._extract_field(raw, "VERDICT").upper()
         return verdict.startswith("SAME"), raw
 

@@ -196,6 +196,30 @@ class EntityVerifierConfig(BaseModel):
     min_doc_freq_for_core: int = 2  # a token must appear in at least this many of an event's OWN accumulated articles to join its persisted core_entities (not a ratio — a ratio lets a single one-off token qualify as "core" while an event still only has 1-2 articles, see the same design note)
     hub_key_prefix: str = "am1st:hub:"  # Redis key namespace for the token/pair historical-hub-count index — separate namespace from redis.key_prefix's URL-hash dedup, same REDIS_URL
     same_event_prompt_file: str = "prompts/same_event_prompt.txt"
+    # Separate, deliberately more split-happy judge used ONLY by the
+    # ingestion-side cross-cycle dedup kill (core/event_identity.py's
+    # cross_cycle_dedup_verdict()); agents/posted_dedup_checker.py stays on
+    # same_event_prompt_file above. The two layers want opposite error
+    # profiles and had been sharing one prompt: at ingestion a wrong merge
+    # silently destroys a candidate with no second chance, while a missed
+    # duplicate only lets an extra candidate into the Notion pool, where the
+    # publish-side check -- which compares against what was ACTUALLY posted,
+    # a far more reliable signal than "most similar recent embedding" --
+    # still catches it. At publish the costs are reversed, and the standing
+    # call there is to err toward under-posting.
+    #
+    # Measured 2026-09-23 on 64 hand-labelled real pairs (40 ingestion kills
+    # sampled from the 0.70-0.75 gray band + all 24 distinct publish-side
+    # kills of 09-22/23), two independent runs, same model (gpt-4o-mini):
+    #   ingestion band, this prompt        wrong-merge 0/9      missed-dup 42%
+    #   ingestion band, same_event_prompt  wrong-merge 56-67%   missed-dup 16%
+    # The wrong merges it removes are all one shape -- the same storyline's
+    # NEXT round: outlets suing over the press ban vs the ban being
+    # announced, DOJ backing the ban vs the suit, bodycam footage rebutting
+    # the shooting victim's own account, one governor's AI quote vs a roundup
+    # of 2028 Democrats on AI. Neither cosine nor entity overlap can see
+    # that; naming each side's action before judging can.
+    same_event_ingest_prompt_file: str = "prompts/same_event_ingest_prompt.txt"
     update_subtype_prompt_file: str = "prompts/update_subtype_prompt.txt"
     related_event_prompt_file: str = "prompts/related_event_prompt.txt"  # EventVerifier.related_event() — see core/event_identity.py
     log_path: str = "logs/event_identity_decisions.jsonl"
