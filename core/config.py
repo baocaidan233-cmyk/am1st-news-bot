@@ -95,6 +95,7 @@ class RedisConfig(BaseModel):
     # weekend_max_age_hours (24h ceiling) so it always outlives the
     # candidate's eligibility window and self-expires afterward.
     caption_ttl_seconds: int = 172800  # 48h
+    dup_strike_prefix: str = "am1st:pubdup:"  # PostedDupStrikes — how many publish cycles in a row have called this candidate a duplicate; same TTL reasoning as caption_ttl_seconds (must outlive the 24h eligibility window, then self-expire)
 
 
 class OpenAIConfig(BaseModel):
@@ -478,6 +479,31 @@ class PublishConfig(BaseModel):
     priority_rank_prompt_file: str = "prompts/priority_rank_prompt.txt"
     posted_dedup_window_hours: int = 240  # was 24h — widened 2026-08-07 as a defensive backstop once the ingestion-side EventStore.mark_published() check exists (core/qdrant_store.py); matches heat.window_hours so both "have we already covered this" checks agree on how long an event stays "recent"
     posted_dedup_threshold: float = 0.70  # stricter than the ingestion side's 0.8 — deliberate, per the user: fully autonomous posting should err toward under-posting
+    # 2026-09-23, user request ("僵尸标记一下，没必要每次都扫描"): retire a
+    # candidate from the pool once this many CONSECUTIVE publish cycles have
+    # confirmed it a duplicate of already-posted content. Until now a
+    # duplicate verdict left no trace at all, so the same candidate came back
+    # every 15-45min for its whole 24h eligibility window and paid a full
+    # extraction + Writer + dedup pass each time — the dedup check runs
+    # AFTER content generation, so a foregone conclusion was the most
+    # expensive kind of candidate in the batch. The same fix already exists
+    # either side of it: mark_extraction_failed() and mark_writer_rejected()
+    # (2026-09-08, same user request, same reasoning); posted_dedup was the
+    # one terminal rejection that never got it.
+    #
+    # Measured over all 2855 logged posted_dedup verdicts: 184 candidates
+    # were judged more than once, 172 of them identically every single time
+    # = 1539 wasted cycles. The other 12 did eventually flip to "kept", which
+    # is why this is 2 and not 1 — retiring on the FIRST verdict saves 1539
+    # cycles but permanently blocks all 12, while one free re-roll still
+    # saves 1367 (89%) and blocks 5. The flips are not a second opinion worth
+    # protecting beyond that: 5 of the 12 flipped only after 3, 4 and 9
+    # straight duplicate verdicts, which is the re-roll-until-it-slips-
+    # through pattern the user reported separately (one story published 9
+    # times in 9 days), not a genuine re-evaluation. Counted in Redis rather
+    # than a new Notion property: no schema change, and the key self-expires
+    # with the candidate's own eligibility window.
+    posted_dedup_strikes_before_retire: int = 2
     max_widen_attempts: int = 3  # 2026-09-05 — how many batch_max-sized chunks of the eligible pool to try before accepting "nothing to publish this cycle" as real, not just "the first batch_max happened to all be duplicates"; each attempt costs a real extraction+content-gen pass, so this isn't unbounded search over the whole pool (which real cycles have seen run into the hundreds)
     # 2026-09-17 — overnight quality gate (user request). Window is in
     # US/Eastern, the same calendar reference weekday_min_score already uses.

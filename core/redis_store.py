@@ -52,6 +52,58 @@ class RedisStore:
             await self._client.aclose()
 
 
+class PostedDupStrikes:
+    """Counts how many publish cycles in a row have confirmed one candidate a
+    duplicate of already-posted content, so main_publish.py can retire it from
+    the pool instead of paying a full extraction + Writer pass on it every
+    cycle for the rest of its 24h eligibility window — see
+    PublishConfig.posted_dedup_strikes_before_retire for the 2855-verdict
+    measurement behind both the change and the threshold.
+
+    Keyed by url_hash like CaptionCache above (not page_id: the same key
+    lifetime and the same self-expiry reasoning apply, and the caller already
+    has a url_hash in hand for the caption cache). Shares
+    caption_ttl_seconds — both need exactly the same property, "outlives the
+    candidate's eligibility window, then goes away on its own".
+
+    The count is cumulative within the TTL rather than literally consecutive,
+    which is the same thing in practice: the only way a candidate gets a
+    "kept" verdict is to be the cycle's winner, and a winner is published and
+    flagged sent, so it never comes back to be struck again.
+
+    Fails open by returning 0 on any error or without REDIS_URL: a Redis blip
+    must never retire a candidate, only ever fail to retire one."""
+
+    def __init__(self, config: AppConfig) -> None:
+        self._prefix = config.redis.dup_strike_prefix
+        self._ttl = config.redis.caption_ttl_seconds
+        self._client = (
+            redis.from_url(config.redis.url, decode_responses=True, socket_timeout=10, socket_connect_timeout=10)
+            if config.redis.url
+            else None
+        )
+
+    async def strike(self, url_hash: str) -> int:
+        """Records one duplicate verdict and returns this candidate's running
+        total. The EXPIRE is refreshed on every strike, which is correct here:
+        the window that matters is the candidate's, and it is re-entering the
+        pool each time it gets struck."""
+        if self._client is None or not url_hash:
+            return 0
+        try:
+            key = self._prefix + url_hash
+            count = await self._client.incr(key)
+            await self._client.expire(key, self._ttl)
+            return int(count)
+        except Exception:
+            logger.exception("PostedDupStrikes: strike failed for %s — returning 0, candidate stays in the pool (fail open)", url_hash)
+            return 0
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+
+
 class CaptionCache:
     """Caches Writer.write()'s generated caption by url_hash so the same
     still-unpublished candidate gets an identical post_content (and thus an

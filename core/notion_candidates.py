@@ -298,6 +298,24 @@ async def mark_extraction_failed(config: AppConfig, page_id: str) -> bool:
         return False
 
 
+async def mark_dedup_rejected(config: AppConfig, page_id: str) -> bool:
+    """Third user of the same extraction_failed flag — called by
+    main_publish.py once a candidate has been confirmed a duplicate of
+    already-posted content in posted_dedup_strikes_before_retire consecutive
+    cycles. Same problem shape as mark_writer_rejected() below and the same
+    resolution: a candidate whose verdict does not change is re-selected
+    every 15-45 minutes for its whole 24h window, and unlike the writer case
+    this one is the most expensive kind of candidate in the batch, because
+    the dedup check runs only AFTER extraction and content generation have
+    already been paid for. 172 of the 184 repeatedly-judged candidates in the
+    full posted_dedup log were judged identically every time, for 1539 wasted
+    cycles — see PublishConfig.posted_dedup_strikes_before_retire.
+
+    Deliberately NOT called on the first verdict; see that config field for
+    why one re-roll is kept."""
+    return await mark_extraction_failed(config, page_id)
+
+
 async def mark_writer_rejected(config: AppConfig, page_id: str) -> bool:
     """Flips the same extraction_failed flag as mark_extraction_failed above
     — called by main_publish.py's run_cycle() when Writer.write() returns

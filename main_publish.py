@@ -99,11 +99,11 @@ from core.alerts import AlertNotifier
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex
 from core.language import is_english
-from core.notion_candidates import has_unpublished_hot_candidate, mark_extraction_failed, mark_send_status, mark_writer_rejected, query_eligible_candidates
+from core.notion_candidates import has_unpublished_hot_candidate, mark_dedup_rejected, mark_extraction_failed, mark_send_status, mark_writer_rejected, query_eligible_candidates
 from core.publish_cadence import compute_dynamic_interval
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
-from core.redis_store import CaptionCache
+from core.redis_store import CaptionCache, PostedDupStrikes
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("main_publish")
@@ -145,6 +145,7 @@ async def run_cycle(
     writer: Writer,
     staleness_checker: StalenessChecker,
     caption_cache: CaptionCache,
+    dup_strikes: PostedDupStrikes,
     hub_index: HubIndex,
     dry_run: bool,
 ) -> bool:
@@ -312,7 +313,24 @@ async def run_cycle(
 
         ranked = await ranker.rank(generated, trending_headlines)
         ranked_len = len(ranked)
-        winner = await find_publishable(ranked, embedder, posted_store, event_verifier, hub_index, config)
+        # 2026-09-23 — retire a candidate the dedup check keeps rejecting,
+        # instead of re-extracting and re-writing it every cycle for the rest
+        # of its 24h window (172 of 184 repeatedly-judged candidates in the
+        # full posted_dedup log never changed verdict = 1539 wasted cycles).
+        # Notion is only written on the strike that reaches the threshold, so
+        # the common case (a candidate seen once and dropped) still writes
+        # nothing at all. See PublishConfig.posted_dedup_strikes_before_retire.
+        async def _retire_if_settled(c) -> None:
+            strikes = await dup_strikes.strike(c.url_hash)
+            if strikes < config.publish.posted_dedup_strikes_before_retire:
+                return
+            if dry_run:
+                logger.info("run_cycle: dry-run — would retire %s after %d duplicate verdicts", c.url, strikes)
+                return
+            if await mark_dedup_rejected(config, c.page_id):
+                logger.info("run_cycle: %s retired from the pool — %d consecutive duplicate verdicts", c.url, strikes)
+
+        winner = await find_publishable(ranked, embedder, posted_store, event_verifier, hub_index, config, on_duplicate=_retire_if_settled)
         if winner is not None:
             logger.info("run_cycle: widen attempt %d — found a publishable candidate", attempt)
             break
@@ -397,6 +415,7 @@ async def main() -> None:
     writer = Writer(config)
     staleness_checker = StalenessChecker(config)
     caption_cache = CaptionCache(config)
+    dup_strikes = PostedDupStrikes(config)
     await ensure_collection_with_retry(posted_store, "am1st_posting_news_embedding")
     await ensure_collection_with_retry(event_store, "am1st_events")
 
@@ -433,7 +452,7 @@ async def main() -> None:
             published_this_cycle = False
             try:
                 published_this_cycle = await asyncio.wait_for(
-                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, staleness_checker, caption_cache, hub_index, dry_run),
+                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, staleness_checker, caption_cache, dup_strikes, hub_index, dry_run),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:
@@ -493,6 +512,7 @@ async def main() -> None:
         await posted_store.close()
         await event_store.close()
         await caption_cache.close()
+        await dup_strikes.close()
         await hub_index.close()
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 
 from agents.embedder import Embedder
 from core.config import AppConfig
@@ -33,12 +34,13 @@ async def find_publishable(
     event_verifier: EventVerifier,
     hub_index: HubIndex,
     config: AppConfig,
+    on_duplicate: Callable[[PublishCandidate], Awaitable[None]] | None = None,
 ) -> PublishCandidate | None:
     """Walks `ranked_batch` in priority order (highest first) and returns the
     first candidate that is NOT a near-duplicate of something this channel
     already posted in the last publish.posted_dedup_window_hours. Duplicates
     (and candidates whose dedup check itself failed — see Fallback below)
-    are skipped (logged only, not written anywhere) — never causes the whole
+    are skipped (never causes the whole
     cycle to abort. Returns None only if every candidate in the batch was a
     duplicate or errored (or the batch is empty) — the correct outcome for
     an actual all-duplicate batch is "publish nothing this cycle", not a
@@ -119,7 +121,16 @@ async def find_publishable(
     call at all — deliberately trusting the deterministic rule over a
     single non-deterministic LLM call for the cases it's confident about.
     Only the residual AMBIGUOUS/NO_OVERLAP cases still go to same_event()
-    as before — same LLM, same prompt, just asked less often."""
+    as before — same LLM, same prompt, just asked less often.
+
+    on_duplicate (2026-09-23) is awaited once per CONFIRMED duplicate verdict,
+    in priority order, and is how main_publish.py retires a candidate that
+    keeps coming back with the same verdict — see
+    core/notion_candidates.py's mark_dedup_rejected(). It is a callback rather
+    than a return value so this module keeps knowing nothing about Notion;
+    it is not called for the Fallback path above, because a dedup check that
+    itself errored is explicitly not a verdict. A failing callback must never
+    cost this cycle its publish, so it is wrapped."""
     threshold = config.publish.posted_dedup_threshold
 
     for candidate in ranked_batch:
@@ -199,6 +210,11 @@ async def find_publishable(
                 threshold,
                 matched_url,
             )
+            if on_duplicate is not None:
+                try:
+                    await on_duplicate(candidate)
+                except Exception:
+                    logger.exception("find_publishable: on_duplicate callback failed for %s — continuing", candidate.url)
             continue
         if looks_similar:
             logger.info(
