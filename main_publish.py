@@ -99,7 +99,8 @@ from core.alerts import AlertNotifier
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex
 from core.language import is_english
-from core.notion_candidates import has_unpublished_hot_candidate, mark_dedup_rejected, mark_extraction_failed, mark_send_status, mark_writer_rejected, query_eligible_candidates
+from core.notion_candidates import has_unpublished_hot_candidate, mark_dedup_rejected, mark_extraction_failed, mark_send_status, mark_writer_rejected, query_eligible_candidates, recent_published_topic_counts
+from core.topic_mix import compute_adjustments
 from core.publish_cadence import compute_dynamic_interval
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
@@ -171,6 +172,12 @@ async def run_cycle(
     sources = await load_rss_sources(config)
     trending_headlines = await fetch_trending_headlines()
 
+    # Subject-mix adjustments for this cycle — computed once here and handed
+    # to both select_batch() and the ranker, so the two stages optimise the
+    # same thing rather than each re-deriving it. Fails open to {} (no
+    # adjustment anywhere), which is the pre-2026-09-25 behaviour.
+    topic_adjustments = compute_adjustments(config, await recent_published_topic_counts(config))
+
     # Widen-on-empty (2026-09-05, per the user's "扩大范围，如果找不到合适的"
     # request): select_batch() only ever looks at `remaining` — the pool
     # shrinks each attempt as tried page_ids are removed, so a widen never
@@ -184,7 +191,7 @@ async def run_cycle(
     winner = None
     ranked_len = 0
     for attempt in range(1, config.publish.max_widen_attempts + 1):
-        batch = select_batch(remaining, config)
+        batch = select_batch(remaining, config, topic_adjustments)
         if not batch:
             logger.info("run_cycle: widen attempt %d — no more candidates left to try", attempt)
             break
@@ -311,7 +318,7 @@ async def run_cycle(
             logger.info("run_cycle: widen attempt %d — all candidates dropped by post-extraction former-Trump filter", attempt)
             continue
 
-        ranked = await ranker.rank(generated, trending_headlines)
+        ranked = await ranker.rank(generated, trending_headlines, topic_adjustments)
         ranked_len = len(ranked)
         # 2026-09-23 — retire a candidate the dedup check keeps rejecting,
         # instead of re-extracting and re-writing it every cycle for the rest

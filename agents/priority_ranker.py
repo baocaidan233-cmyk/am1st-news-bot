@@ -148,10 +148,16 @@ class PriorityRanker:
     def __init__(self, config: AppConfig) -> None:
         self._embedder = Embedder(config)
 
-    async def rank(self, batch: list[PublishCandidate], trending_headlines: list[str] | None = None) -> list[PublishCandidate]:
+    async def rank(
+        self,
+        batch: list[PublishCandidate],
+        trending_headlines: list[str] | None = None,
+        topic_adjustments: dict[str, float] | None = None,
+    ) -> list[PublishCandidate]:
         if not batch:
             return []
         trending_headlines = trending_headlines or []
+        topic_adjustments = topic_adjustments or {}
         trending_embeddings = [await self._embedder.embed(h) for h in trending_headlines if h]
 
         now = datetime.now(timezone.utc)
@@ -170,7 +176,13 @@ class PriorityRanker:
                     trending_bonus = 1.0
 
             freshness_penalty = _FRESHNESS_DECAY_K * math.log(1 + hours_since_update)
-            priority_score = c.llm_score + trending_bonus - freshness_penalty
+            # Subject-mix term (2026-09-25) — the same adjustment
+            # agents/candidate_selector.py used to pick this batch, applied
+            # again here so the two stages agree on what they are optimising.
+            # Bounded by TopicMixConfig.max_adjustment and signed: a subject
+            # already over its share target contributes a negative value.
+            topic_adjustment = topic_adjustments.get(c.topic, 0.0) if c.topic else 0.0
+            priority_score = c.llm_score + topic_adjustment + trending_bonus - freshness_penalty
 
             _log_decision({
                 "page_id": c.page_id,
@@ -178,6 +190,8 @@ class PriorityRanker:
                 "title": c.title,
                 "llm_score": c.llm_score,
                 "heat_score": c.heat_score,
+                "topic": c.topic,
+                "topic_adjustment": round(topic_adjustment, 3),
                 "trending_max_similarity": round(best_sim, 4),
                 "trending_bonus": trending_bonus,
                 "hours_since_update": round(hours_since_update, 2),

@@ -46,6 +46,13 @@ class Candidate(BaseModel):
     # core/hot_topics.py / core/config.py's HotTopicsConfig.
     is_hot: bool = False
 
+    # Subject label (2026-09-25) — one of agents/topic_tagger.py's TOPICS,
+    # assigned by a separate cheap call after scoring. None means the tagger
+    # failed or returned something unrecognised, and every consumer treats
+    # that as "no mix adjustment", so an untagged candidate competes exactly
+    # as it did before this existed.
+    topic: Optional[str] = None
+
 
 class PublishCandidate(BaseModel):
     """One row read back from the shared candidate-pool Notion database, as
@@ -80,5 +87,10 @@ class PublishCandidate(BaseModel):
     # score tier; agents/priority_ranker.py always ranks them above
     # non-hot candidates.
     is_hot: bool = False
+
+    # Same subject label as Candidate, read back from Notion — drives the
+    # publish-side mix controller (core/topic_mix.py), which both
+    # agents/candidate_selector.py and agents/priority_ranker.py consult.
+    topic: Optional[str] = None
 
     gettr_post_id: Optional[str] = None

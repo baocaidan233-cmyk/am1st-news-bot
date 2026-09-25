@@ -43,6 +43,7 @@ class NotionCandidateProps(BaseModel):
     event_first_seen_at: str = "event_first_seen_at"  # date — earliest time any related source was seen, vs published_at's own single-article timestamp
     is_hot: str = "is_hot"  # checkbox — set from the manual hot-topic flag match, see HotTopicsConfig; added 2026-08-31
     extraction_failed: str = "extraction_failed"  # checkbox — a permanent exclusion, not a retry-later flag (added 2026-09-05). Set by main_publish.py either the first time full-text extraction fails for this candidate, OR (2026-09-08) the first time Writer.write() returns "No comment" for it after a successful extraction — same static prompt on the same text gives the same verdict every time, so reusing this one flag (rather than adding a second Notion column) covers both "permanently give up on this candidate" cases identically.
+    topic: str = "topic"  # select — one of agents/topic_tagger.py's TOPICS, written at ingestion; read back by the publish cycle to drive the mix controller (core/topic_mix.py). Empty/absent means untagged, which every consumer reads as "no adjustment", so this column can be added to an existing database without backfilling it.
 
 
 class NotionHotTopicProps(BaseModel):
@@ -614,6 +615,101 @@ class DynamicPublishConfig(BaseModel):
     # today's 16.5.
     night_min_interval_seconds: int = 2700
 
+
+class TopicMixConfig(BaseModel):
+    """Publish-side subject-mix controller — see core/topic_mix.py for the
+    arithmetic and agents/topic_tagger.py for where the labels come from.
+
+    Why this exists at all. As of 2026-09-25, nothing on the publish side
+    discriminated usefully: llm_score correlates +0.03 with hour-normalised
+    engagement and +0.03 with breaking out, the trending bonus is null
+    (p=0.80) and slightly negative on the median, publish-time article age is
+    already a near-constant (median 0.5h), and the manual is_hot flag had
+    fired 0 times in 460 posts. Meanwhile 63% of every ranked batch shares the
+    single llm_score value 6.0, so within that majority the "sort by score"
+    is a stable sort over ties — i.e. whatever order Notion happened to
+    return. Subject was the one dimension that did separate: measured on 534
+    of our own mature posts, 媒体与审查 broke out at 21.7% and 移民边境ICE at
+    8.0% against a 5.4% channel rate, while 中国CCP / 经济通胀关税 /
+    共和党内部与人物 / 枪权 produced 0 breakouts between them. The two
+    positives replicate across peer channels (media 6/8, immigration 10/10);
+    the negatives are our own small samples only, which is why the targets
+    below reduce them rather than zero them.
+
+    Why a controller and not a per-topic bonus. A fixed bonus has nothing
+    stopping it: the favoured subject wins every tie, its share climbs, and
+    the feed converges on one topic. That is both editorially wrong for a
+    news channel and self-defeating on the numbers — repetition inside a
+    rolling window measurably LOWERS breakout rate (0.71x, p=0.0082, pooled
+    over 13 channels), and 媒体与审查 only yields ~27 candidates a day, so
+    quadrupling it means publishing its worst stories rather than its best.
+    Here a topic that runs ahead of target has its own adjustment turn
+    negative and hands the next slot back, so no target value can produce a
+    monoculture.
+
+    targets is editorial policy, not a fitted parameter. It is the one place
+    to say what this channel should cover; raise a subject's target and the
+    controller carries it out regardless of what engagement says about it."""
+
+    enabled: bool = True
+
+    # Proportional gain. The typical correction is small on purpose: a topic
+    # 5.7 points of share below target (the 媒体与审查 case: 4.3% actual vs a
+    # 10% target) gets +0.23, which reorders the 6.0-score ties it sits among
+    # but never promotes a 6.0 over a genuine 7.0. Saturation is reached at
+    # 25 points of share error, i.e. only for a subject badly over- or
+    # under-published. That asymmetry is deliberate — gentle nudge near the
+    # target, real correction when the mix has actually drifted.
+    gain: float = 4.0
+    max_adjustment: float = 1.0
+
+    window_hours: float = 24.0
+
+    # Below this many published posts in the window, no adjustment at all.
+    # With an empty or very short window every topic reads as maximally
+    # under-target and the largest target would saturate and take the whole
+    # batch; see core/topic_mix.py. Also the correct cold-start behaviour.
+    min_window_posts: int = 20
+
+    # Hard ceiling applied in agents/candidate_selector.py, independent of the
+    # controller: at most this many candidates of one subject in a single
+    # batch of batch_max. The controller alone is a rolling-average
+    # constraint, so it still permits a short run of one subject inside one
+    # cycle; this bounds that directly.
+    per_batch_cap: int = 3
+
+    # Shares of published output, keyed on agents/topic_tagger.py's TOPICS.
+    # Derived from the 2026-09-25 audit as a MODERATE move off the measured
+    # actuals, not a reallocation: 移民边境ICE and 其他 hold their current
+    # share, 媒体与审查 roughly doubles (4.3% -> 10%, which is 5.6 posts a day
+    # against ~27 available, so still only a fifth of its supply), and the
+    # four zero-breakout subjects are roughly halved rather than dropped —
+    # their evidence is 0 breakouts out of 13-27 posts each, which is
+    # consistent with a true rate near 10%. A subject missing from this map
+    # gets no adjustment in either direction.
+    targets: dict[str, float] = Field(
+        default_factory=lambda: {
+            "其他": 0.31,
+            "移民边境ICE": 0.18,
+            "媒体与审查": 0.10,
+            "选举诚信": 0.08,
+            "外交与战争": 0.07,
+            "犯罪治安": 0.035,
+            "司法武器化": 0.03,
+            "中国CCP": 0.03,
+            "经济通胀关税": 0.03,
+            "共和党内部与人物": 0.03,
+            "枪权": 0.02,
+            "教育与学校": 0.02,
+            "跨性别与儿童": 0.02,
+            "Antifa左翼暴力": 0.015,
+            "以色列中东": 0.01,
+            "新冠追责": 0.01,
+            "堕胎": 0.01,
+        }
+    )
+
+
 class AppConfig(BaseModel):
     notion: NotionConfig = Field(default_factory=NotionConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
@@ -628,6 +724,7 @@ class AppConfig(BaseModel):
     poster: PosterConfig = Field(default_factory=PosterConfig)
     publish: PublishConfig = Field(default_factory=PublishConfig)
     dynamic_publish: DynamicPublishConfig = Field(default_factory=DynamicPublishConfig)
+    topic_mix: TopicMixConfig = Field(default_factory=TopicMixConfig)
     max_publish_age_hours: int = 3
     poll_interval_seconds: int = 600
     cycle_timeout_seconds: int = 540  # 9 min — per the user's real n8n experience, a healthy cycle runs ~5min and almost never past 7min; this hard-cuts a stuck cycle so the next one always starts on schedule (main.py and main_publish.py loops both apply this, independently — see 2026-08-12 waterfall/no-external-retrigger discussion)

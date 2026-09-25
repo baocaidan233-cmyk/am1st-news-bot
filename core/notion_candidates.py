@@ -57,6 +57,12 @@ async def write_candidate(config: AppConfig, item: Candidate) -> bool:
         },
         props.is_hot: {"checkbox": item.is_hot},
     }
+    # Only sent when the tagger actually produced a label — Notion rejects a
+    # select whose name isn't already an option on the column, and omitting
+    # the key entirely leaves the cell empty, which is exactly what "untagged"
+    # should look like downstream.
+    if item.topic:
+        properties[props.topic] = {"select": {"name": item.topic}}
     body = {"parent": {"database_id": notion.candidate_db_id}, "properties": properties}
 
     try:
@@ -92,6 +98,9 @@ def _plain_text(prop: dict) -> str:
         return d.get("start") if d else None
     if kind == "created_time":
         return prop.get("created_time")
+    if kind == "select":
+        sel = prop.get("select")
+        return sel.get("name") if sel else None
     return ""
 
 
@@ -170,6 +179,7 @@ async def query_eligible_candidates(config: AppConfig) -> list[PublishCandidate]
                             heat_score=_plain_text(p.get(props.heat_score, {})) or 1.0,
                             event_first_seen_at=_plain_text(p.get(props.event_first_seen_at, {})),
                             is_hot=bool(_plain_text(p.get(props.is_hot, {}))),
+                            topic=_plain_text(p.get(props.topic, {})) or None,
                         )
                     )
                 except Exception:
@@ -333,3 +343,70 @@ async def mark_writer_rejected(config: AppConfig, page_id: str) -> bool:
     query_eligible_candidates(): permanently stop reconsidering this
     candidate."""
     return await mark_extraction_failed(config, page_id)
+
+
+async def recent_published_topic_counts(config: AppConfig) -> dict[str, int]:
+    """Counts what subjects this channel has actually published in the last
+    topic_mix.window_hours — the "actual share" half of core/topic_mix.py's
+    controller.
+
+    Keyed on Notion's own last_edited_time rather than a publish timestamp,
+    because there isn't one: mark_send_status() flipping send_status to true
+    IS the publish event, and that write is the row's last edit. A row can in
+    principle be edited later for another reason (a manual fix), which would
+    keep it in the window slightly too long; the controller reads shares, not
+    absolute counts, so a handful of stragglers shifts nothing.
+
+    Fails open to {} on any error — core/topic_mix.py reads {} as "not enough
+    to act on" and applies no adjustment at all, which is the pre-2026-09-25
+    behaviour. Untagged rows are skipped rather than counted under a
+    placeholder: they belong to no target, and folding them into one would
+    distort every other subject's share."""
+    notion = config.notion
+    if not notion.candidate_key or not notion.candidate_db_id:
+        return {}
+
+    props = notion.candidate_props
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=config.topic_mix.window_hours)).isoformat()
+    headers = {
+        "Authorization": f"Bearer {notion.candidate_key}",
+        "Notion-Version": NOTION_VERSION,
+        "Content-Type": "application/json",
+    }
+    body = {
+        "filter": {
+            "and": [
+                {"property": props.send_status, "checkbox": {"equals": True}},
+                {"timestamp": "last_edited_time", "last_edited_time": {"after": cutoff}},
+            ]
+        },
+        "page_size": 100,
+    }
+
+    counts: dict[str, int] = {}
+    cursor: str | None = None
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            while True:
+                payload = dict(body)
+                if cursor:
+                    payload["start_cursor"] = cursor
+                resp = await client.post(
+                    f"https://api.notion.com/v1/databases/{notion.candidate_db_id}/query",
+                    headers=headers,
+                    json=payload,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                for row in data.get("results", []):
+                    topic = _plain_text(row.get("properties", {}).get(props.topic, {}))
+                    if topic:
+                        counts[topic] = counts.get(topic, 0) + 1
+                if not data.get("has_more"):
+                    break
+                cursor = data.get("next_cursor")
+    except Exception:
+        logger.exception("recent_published_topic_counts: Notion query failed — continuing with no mix adjustment")
+        return {}
+
+    return counts

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -75,7 +76,40 @@ def filter_former_trump(candidates: list[PublishCandidate]) -> list[PublishCandi
     return kept
 
 
-def select_batch(candidates: list[PublishCandidate], config: AppConfig) -> list[PublishCandidate]:
+def _rank_key(c: PublishCandidate, adjustments: dict[str, float]):
+    """The sort key every score tier below uses. Was plain llm_score until
+    2026-09-25; the subject adjustment is added here because llm_score on its
+    own is largely degenerate at this point — 63% of all ranked candidates
+    carry the identical value 6.0, so sorting them by it is a stable sort
+    over ties, i.e. whatever order Notion returned. The adjustment is small
+    by construction (see TopicMixConfig.gain): it decides those ties without
+    being able to lift a 6.0 past a genuine 7.0."""
+    return (c.llm_score + adjustments.get(c.topic, 0.0)) if c.topic else c.llm_score
+
+
+def _fill(batch: list[PublishCandidate], pool, limit: int, cap: int) -> None:
+    """Appends from `pool` (already sorted best-first) up to `limit`, skipping
+    anything whose subject already holds `cap` slots in this batch.
+
+    The mix controller is a rolling average, so on its own it still allows a
+    single cycle's batch to come out mostly one subject — this bounds that
+    directly. cap <= 0 disables it."""
+    counts = Counter(c.topic for c in batch if c.topic)
+    for c in pool:
+        if len(batch) >= limit:
+            return
+        if cap > 0 and c.topic and counts[c.topic] >= cap:
+            continue
+        batch.append(c)
+        if c.topic:
+            counts[c.topic] += 1
+
+
+def select_batch(
+    candidates: list[PublishCandidate],
+    config: AppConfig,
+    topic_adjustments: dict[str, float] | None = None,
+) -> list[PublishCandidate]:
     """Tiered batch selection — same cascade as the original n8n "batch of
     top 5" node: prefer fresh+high-scoring, progressively relax until at
     least batch_min survive (or give up and just take the newest ones),
@@ -158,40 +192,42 @@ def select_batch(candidates: list[PublishCandidate], config: AppConfig) -> list[
 
     fresh = [c for c in candidates if hours_old(c) <= pub.fresh_hours]
 
-    batch: list[PublishCandidate] = sorted(
-        (c for c in fresh if c.llm_score >= _TIER1_MIN_SCORE),
-        key=lambda c: c.llm_score,
-        reverse=True,
-    )
+    adj = topic_adjustments or {}
+    cap = config.topic_mix.per_batch_cap if config.topic_mix.enabled else 0
+    key = lambda c: _rank_key(c, adj)  # noqa: E731
+
+    batch: list[PublishCandidate] = []
+    _fill(batch, sorted((c for c in fresh if c.llm_score >= _TIER1_MIN_SCORE), key=key, reverse=True),
+          pub.batch_max, cap)
 
     if len(batch) < pub.batch_max:
         picked_ids = {c.page_id for c in batch}
-        fill = sorted(
+        _fill(batch, sorted(
             (c for c in fresh if preferred_floor <= c.llm_score < _TIER1_MIN_SCORE and c.page_id not in picked_ids),
-            key=lambda c: c.llm_score,
-            reverse=True,
-        )
-        batch.extend(fill[: pub.batch_max - len(batch)])
+            key=key, reverse=True), pub.batch_max, cap)
 
     if len(batch) < pub.batch_max:
         picked_ids = {c.page_id for c in batch}
-        fill = sorted(
+        _fill(batch, sorted(
             (c for c in candidates if c.llm_score >= preferred_floor and c.page_id not in picked_ids),
-            key=lambda c: c.llm_score,
-            reverse=True,
-        )
-        batch.extend(fill[: pub.batch_max - len(batch)])
+            key=key, reverse=True), pub.batch_max, cap)
 
     if is_weekday and len(batch) < pub.batch_max:
         # Weekday-only extra fallback: still room in the batch, so relax
         # down to the weekend's lower floor before giving up on score entirely.
         picked_ids = {c.page_id for c in batch}
-        fill = sorted(
+        _fill(batch, sorted(
             (c for c in candidates if fallback_floor <= c.llm_score < preferred_floor and c.page_id not in picked_ids),
-            key=lambda c: c.llm_score,
-            reverse=True,
-        )
-        batch.extend(fill[: pub.batch_max - len(batch)])
+            key=key, reverse=True), pub.batch_max, cap)
+
+    # Same cascade re-run with the subject cap off, so the cap can only ever
+    # change WHICH candidates fill a batch, never leave the batch short and
+    # cause a skipped cycle. Only reachable when the cap actually bound.
+    if cap > 0 and len(batch) < pub.batch_max:
+        picked_ids = {c.page_id for c in batch}
+        _fill(batch, sorted(
+            (c for c in candidates if c.llm_score >= fallback_floor and c.page_id not in picked_ids),
+            key=key, reverse=True), pub.batch_max, 0)
 
     if len(batch) < pub.batch_min:
         # Last resort: newest overall, regardless of score.
