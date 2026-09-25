@@ -141,7 +141,10 @@ def main():
         print("engagement_snapshots.jsonl 里没有成熟帖 — 采集器停了？")
         return
     after = [x for x in posts if x["t"] >= SHIP_TS]
-    days = (max(x["t"] for x in posts) - SHIP_TS) / 86400
+    # Wall-clock since shipping, not the newest mature post's timestamp — the
+    # newest mature post is by definition 12h old, which reads as negative on
+    # the first day and understates elapsed time on every other one.
+    days = (time.time() - SHIP_TS) / 86400
 
     section("1. 总体 — 上线后 vs 基线")
     n = len(after)
