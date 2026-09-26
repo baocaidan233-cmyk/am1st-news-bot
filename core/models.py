@@ -88,6 +88,11 @@ class PublishCandidate(BaseModel):
     # non-hot candidates.
     is_hot: bool = False
 
+    # Failed full-text extractions so far (2026-09-26). At
+    # publish.extraction_max_attempts the candidate is flagged
+    # extraction_failed and never reconsidered; below it, it competes again.
+    extraction_attempts: int = 0
+
     # Same subject label as Candidate, read back from Notion — drives the
     # publish-side mix controller (core/topic_mix.py), which both
     # agents/candidate_selector.py and agents/priority_ranker.py consult.

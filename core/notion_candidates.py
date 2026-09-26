@@ -180,6 +180,7 @@ async def query_eligible_candidates(config: AppConfig) -> list[PublishCandidate]
                             event_first_seen_at=_plain_text(p.get(props.event_first_seen_at, {})),
                             is_hot=bool(_plain_text(p.get(props.is_hot, {}))),
                             topic=_plain_text(p.get(props.topic, {})) or None,
+                            extraction_attempts=int(_plain_text(p.get(props.extraction_attempts, {})) or 0),
                         )
                     )
                 except Exception:
@@ -410,3 +411,60 @@ async def recent_published_topic_counts(config: AppConfig) -> dict[str, int]:
         return {}
 
     return counts
+
+
+async def record_extraction_failure(config: AppConfig, page_id: str, attempts_so_far: int) -> bool:
+    """Counts one failed full-text extraction, and only gives up on the
+    candidate once publish.extraction_max_attempts is reached.
+
+    Replaces calling mark_extraction_failed() on the first failure. That rule
+    came from the user on 2026-09-05 and its reasoning was sound for what
+    prompted it -- a hard paywall never succeeds later, and one candidate that
+    could never be extracted kept re-triggering the is_hot fast lane. But
+    measured on 2026-09-26 it was excluding the wrong population: all 303
+    flagged candidates were extraction failures rather than writer rejections,
+    and re-running extraction on 14 of the flagged 7+ scorers recovered 8,
+    including a score-8 story a peer channel took 217 likes on. Over five days
+    the flag had permanently dropped 91 of 295 high scorers.
+
+    Both original guarantees survive: the retry is bounded, so a real paywall
+    still drops out after a fixed number of cycles, and a failing is_hot
+    candidate still stops re-qualifying. Only the flag's timing changes.
+
+    Fails open (returns False) like every other Notion write here; a failed
+    write just means this attempt was not counted, and the candidate is
+    reconsidered next cycle as it would have been anyway."""
+    notion = config.notion
+    if not notion.candidate_key:
+        logger.warning("record_extraction_failure: NOTION_CANDIDATE_API_KEY not set — skipping")
+        return False
+
+    attempts = attempts_so_far + 1
+    give_up = attempts >= config.publish.extraction_max_attempts
+    props = notion.candidate_props
+    properties = {props.extraction_attempts: {"number": attempts}}
+    if give_up:
+        properties[props.extraction_failed] = {"checkbox": True}
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.patch(
+                f"https://api.notion.com/v1/pages/{page_id}",
+                headers={
+                    "Authorization": f"Bearer {notion.candidate_key}",
+                    "Notion-Version": NOTION_VERSION,
+                    "Content-Type": "application/json",
+                },
+                json={"properties": properties},
+            )
+            resp.raise_for_status()
+    except Exception:
+        logger.exception("record_extraction_failure: Notion write failed for %s", page_id)
+        return False
+
+    if give_up:
+        logger.info("record_extraction_failure: %s failed extraction %d times — excluding permanently", page_id, attempts)
+    else:
+        logger.info("record_extraction_failure: %s failed extraction %d/%d — will be reconsidered",
+                    page_id, attempts, config.publish.extraction_max_attempts)
+    return True

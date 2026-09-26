@@ -99,7 +99,7 @@ from core.alerts import AlertNotifier
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex
 from core.language import is_english
-from core.notion_candidates import has_unpublished_hot_candidate, mark_dedup_rejected, mark_extraction_failed, mark_send_status, mark_writer_rejected, query_eligible_candidates, recent_published_topic_counts
+from core.notion_candidates import has_unpublished_hot_candidate, mark_dedup_rejected, mark_extraction_failed, mark_send_status, mark_writer_rejected, query_eligible_candidates, recent_published_topic_counts, record_extraction_failure
 from core.topic_mix import compute_adjustments
 from core.publish_cadence import compute_dynamic_interval
 from core.notion_sources import load_rss_sources
@@ -204,13 +204,16 @@ async def run_cycle(
             text = await extractor.extract(c.url, sources)
             if not text:
                 logger.info("run_cycle: %s dropped — full-text extraction failed (paywall/blocked/empty), refusing to publish off title+description alone", c.url)
-                # 2026-09-05, per the user's explicit request: give up on this
-                # candidate permanently instead of re-trying it (and re-paying
-                # the same extraction cost) every future cycle until it ages
-                # out — a real source (a paywalled FT article) never once
-                # succeeded across dozens of retries. query_eligible_candidates()
-                # excludes extraction_failed=true so it's never re-selected.
-                await mark_extraction_failed(config, c.page_id)
+                # Counted, not flagged on the first failure (2026-09-26). The
+                # 2026-09-05 rule gave up immediately, which was right for the
+                # paywall that prompted it but wrong for everything else: all
+                # 303 candidates then carrying the flag were extraction
+                # failures rather than writer rejections, and 8 of 14 flagged
+                # 7+ scorers extracted fine on a retry. See
+                # core/notion_candidates.py's record_extraction_failure() and
+                # PublishConfig.extraction_max_attempts. A real paywall still
+                # drops out, just after a bounded number of tries instead of one.
+                await record_extraction_failure(config, c.page_id, c.extraction_attempts)
                 continue
             c.content = text
 

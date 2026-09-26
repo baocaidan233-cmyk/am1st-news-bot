@@ -43,6 +43,7 @@ class NotionCandidateProps(BaseModel):
     event_first_seen_at: str = "event_first_seen_at"  # date — earliest time any related source was seen, vs published_at's own single-article timestamp
     is_hot: str = "is_hot"  # checkbox — set from the manual hot-topic flag match, see HotTopicsConfig; added 2026-08-31
     extraction_failed: str = "extraction_failed"  # checkbox — a permanent exclusion, not a retry-later flag (added 2026-09-05). Set by main_publish.py either the first time full-text extraction fails for this candidate, OR (2026-09-08) the first time Writer.write() returns "No comment" for it after a successful extraction — same static prompt on the same text gives the same verdict every time, so reusing this one flag (rather than adding a second Notion column) covers both "permanently give up on this candidate" cases identically.
+    extraction_attempts: str = "extraction_attempts"  # number — how many times full-text extraction has failed for this candidate. Counted rather than flagged on the first failure because 57% of failures measured 2026-09-26 succeeded on a retry; see PublishConfig.extraction_max_attempts.
     topic: str = "topic"  # select — one of agents/topic_tagger.py's TOPICS, written at ingestion; read back by the publish cycle to drive the mix controller (core/topic_mix.py). Empty/absent means untagged, which every consumer reads as "no adjustment", so this column can be added to an existing database without backfilling it.
 
 
@@ -559,6 +560,28 @@ class PublishConfig(BaseModel):
     # day, which is the intended trade rather than a side effect.
     night_end_hour: int = 8
     night_min_score: float = 6.0
+
+    # How many failed full-text extractions before a candidate is excluded for
+    # good. The 2026-09-05 rule was to give up after one, on the user's
+    # explicit instruction, and its reasoning held for what prompted it: a hard
+    # paywall never succeeds on a retry, and one permanently-unextractable
+    # is_hot candidate kept re-triggering the fast-poll lane (31 publishes in
+    # two hours against an expected four).
+    #
+    # Measured 2026-09-26, that rule was being applied to the wrong population.
+    # Of 303 candidates carrying the flag, every single one was an extraction
+    # failure and none was a writer rejection -- and re-running extraction on
+    # 14 of the flagged 7+ scorers succeeded for 8 of them, including a
+    # score-8 election-integrity story a peer channel took 217 likes on. Over
+    # five days the flag had permanently discarded 91 of our 295 high scorers,
+    # roughly 30%, most of them recoverable.
+    #
+    # Counting instead of flagging keeps both of the original guarantees: the
+    # retry is bounded, so a genuine paywall still drops out, and a failing
+    # is_hot candidate still stops re-triggering after a fixed number of
+    # cycles. Extraction is an HTTP fetch and a parse -- the writer, which is
+    # the expensive part, never runs on a failure.
+    extraction_max_attempts: int = 3
 
     staleness_check_hours_floor: int = 72  # 2026-09-05 — agents/staleness_checker.py's LLM call only runs when event_first_seen_at is at least this old; reuses dedup.cross_cycle_window_hours' existing 72h convention rather than picking a new number, per the user's explicit cost concern (this would otherwise double the LLM calls made for every candidate, not just the minority whose underlying event is genuinely old)
 
