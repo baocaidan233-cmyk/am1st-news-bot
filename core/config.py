@@ -699,16 +699,31 @@ class TopicMixConfig(BaseModel):
     # adjustment in either direction -- it is 22% of this channel's real
     # output and performs near the channel median, so it must neither be
     # boosted nor suppressed.
+    #
+    # 2026-09-26, second pass: 共和党内部与人物 goes back up, 0.035 -> 0.045.
+    # Cutting it was the one move here with no evidence at all behind it --
+    # one-sided p=0.530 on its breakout rate and a median lift of 1.03, i.e.
+    # sitting exactly on the channel average, and the cut rested on a single
+    # breakout in 28 posts. The point comes out of 移民边境ICE (0.18 -> 0.17),
+    # which is this channel's highest-volume subject at a 23% pool-selection
+    # rate but only a 1.09 median lift and a 1.02 P90 lift -- high-volume core
+    # coverage rather than a tail driver, so it is the right place to free a
+    # slot for something else to be tested in.
+    #
+    # The 中国CCP and 经济通胀关税 cuts stay, but as a bet rather than a
+    # finding: neither reaches significance (p=0.211 / p=0.199), yet both run
+    # consistently low on all three magnitude measures -- median lift
+    # 0.79/0.81, P75 0.77/0.85, P90 0.64/0.69.
     targets: dict[str, float] = Field(
         default_factory=lambda: {
             "其他": 0.22,
-            "移民边境ICE": 0.18,
+            "移民边境ICE": 0.17,
             "选举诚信": 0.1,
             "媒体与审查": 0.09,
             "外交与战争": 0.09,
             "犯罪治安": 0.04,
             "经济通胀关税": 0.035,
-            "共和党内部与人物": 0.035,
+            "共和党内部与人物": 0.045,
             "中国CCP": 0.035,
             "政府腐败与浪费": 0.035,
             "司法武器化": 0.03,
