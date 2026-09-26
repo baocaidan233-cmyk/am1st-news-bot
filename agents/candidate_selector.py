@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 from collections import Counter
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -76,33 +78,57 @@ def filter_former_trump(candidates: list[PublishCandidate]) -> list[PublishCandi
     return kept
 
 
-def _rank_key(c: PublishCandidate, adjustments: dict[str, float]):
-    """The sort key every score tier below uses. Was plain llm_score until
-    2026-09-25; the subject adjustment is added here because llm_score on its
-    own is largely degenerate at this point — 63% of all ranked candidates
-    carry the identical value 6.0, so sorting them by it is a stable sort
-    over ties, i.e. whatever order Notion returned. The adjustment is small
-    by construction (see TopicMixConfig.gain): it decides those ties without
-    being able to lift a 6.0 past a genuine 7.0."""
-    return (c.llm_score + adjustments.get(c.topic, 0.0)) if c.topic else c.llm_score
+def _stable_key(c: PublishCandidate) -> str:
+    """A deterministic pseudo-random ordering key, from the candidate's own url.
+
+    Replaces ordering by llm_score inside a tier (2026-09-26). The score still
+    decides which tier a candidate lands in, because that is a real editorial
+    relevance judgement, but it cannot usefully order candidates within one:
+    across 571 published posts the hour-normalised engagement of the 6, 7 and 8
+    bands is 1.00, 1.01 and 1.03, and 63% of all ranked candidates carry the
+    single value 6.0. Sorting a set that is mostly ties is a stable sort over
+    ties -- whatever order Notion returned, which is not an editorial variable
+    and was silently deciding a large share of what this channel published.
+
+    Note what the band measurement does NOT say. It compares posts that were
+    published, which were already selected; it is not evidence that a random
+    6.0 equals a random 8.0. That is why the tiers keep the score and only the
+    ordering inside them changes.
+
+    Deterministic rather than random so a candidate keeps its position across
+    the cycles it survives, instead of being reshuffled every 15 minutes."""
+    return hashlib.sha1((c.url or c.page_id).encode("utf-8")).hexdigest()
 
 
-def _fill(batch: list[PublishCandidate], pool, limit: int, cap: int) -> None:
-    """Appends from `pool` (already sorted best-first) up to `limit`, skipping
-    anything whose subject already holds `cap` slots in this batch.
+def _source_of(c: PublishCandidate) -> str:
+    try:
+        return urlparse(c.url).netloc.replace("www.", "").lower()
+    except Exception:
+        return ""
 
-    The mix controller is a rolling average, so on its own it still allows a
-    single cycle's batch to come out mostly one subject — this bounds that
-    directly. cap <= 0 disables it."""
-    counts = Counter(c.topic for c in batch if c.topic)
+
+def _fill(batch: list[PublishCandidate], pool, limit: int, topic_cap: int, source_cap: int) -> None:
+    """Appends from `pool` up to `limit`, skipping anything whose subject or
+    whose source already holds its cap of slots in this batch.
+
+    The source cap is new (2026-09-26) and is the same idea as the subject cap:
+    a batch of ten drawn largely from one outlet is a batch of ten versions of
+    that outlet's news judgement. Either cap <= 0 disables it."""
+    topics = Counter(c.topic for c in batch if c.topic)
+    sources = Counter(_source_of(c) for c in batch if _source_of(c))
     for c in pool:
         if len(batch) >= limit:
             return
-        if cap > 0 and c.topic and counts[c.topic] >= cap:
+        if topic_cap > 0 and c.topic and topics[c.topic] >= topic_cap:
+            continue
+        src = _source_of(c)
+        if source_cap > 0 and src and sources[src] >= source_cap:
             continue
         batch.append(c)
         if c.topic:
-            counts[c.topic] += 1
+            topics[c.topic] += 1
+        if src:
+            sources[src] += 1
 
 
 def select_batch(
@@ -192,25 +218,32 @@ def select_batch(
 
     fresh = [c for c in candidates if hours_old(c) <= pub.fresh_hours]
 
-    adj = topic_adjustments or {}
-    cap = config.topic_mix.per_batch_cap if config.topic_mix.enabled else 0
-    key = lambda c: _rank_key(c, adj)  # noqa: E731
+    adj = topic_adjustments or {}   # consumed by agents/priority_ranker.py, not here
+    tcap = config.topic_mix.per_batch_cap if config.topic_mix.enabled else 0
+    scap = pub.per_batch_source_cap
+
+    # Ordering inside every tier below. Deliberately not llm_score and not the
+    # subject adjustment: this function's job is to hand the ranker a set of
+    # eligible, varied candidates, not to guess which one will do best. The
+    # ranker, which sees trending context and the subject-mix state, makes that
+    # call. See _stable_key() for why score cannot order within a tier.
+    key = _stable_key
 
     batch: list[PublishCandidate] = []
-    _fill(batch, sorted((c for c in fresh if c.llm_score >= _TIER1_MIN_SCORE), key=key, reverse=True),
-          pub.batch_max, cap)
+    _fill(batch, sorted((c for c in fresh if c.llm_score >= _TIER1_MIN_SCORE), key=key),
+          pub.batch_max, tcap, scap)
 
     if len(batch) < pub.batch_max:
         picked_ids = {c.page_id for c in batch}
         _fill(batch, sorted(
             (c for c in fresh if preferred_floor <= c.llm_score < _TIER1_MIN_SCORE and c.page_id not in picked_ids),
-            key=key, reverse=True), pub.batch_max, cap)
+            key=key), pub.batch_max, tcap, scap)
 
     if len(batch) < pub.batch_max:
         picked_ids = {c.page_id for c in batch}
         _fill(batch, sorted(
             (c for c in candidates if c.llm_score >= preferred_floor and c.page_id not in picked_ids),
-            key=key, reverse=True), pub.batch_max, cap)
+            key=key), pub.batch_max, tcap, scap)
 
     if is_weekday and len(batch) < pub.batch_max:
         # Weekday-only extra fallback: still room in the batch, so relax
@@ -218,16 +251,16 @@ def select_batch(
         picked_ids = {c.page_id for c in batch}
         _fill(batch, sorted(
             (c for c in candidates if fallback_floor <= c.llm_score < preferred_floor and c.page_id not in picked_ids),
-            key=key, reverse=True), pub.batch_max, cap)
+            key=key), pub.batch_max, tcap, scap)
 
     # Same cascade re-run with the subject cap off, so the cap can only ever
     # change WHICH candidates fill a batch, never leave the batch short and
     # cause a skipped cycle. Only reachable when the cap actually bound.
-    if cap > 0 and len(batch) < pub.batch_max:
+    if (tcap > 0 or scap > 0) and len(batch) < pub.batch_max:
         picked_ids = {c.page_id for c in batch}
         _fill(batch, sorted(
             (c for c in candidates if c.llm_score >= fallback_floor and c.page_id not in picked_ids),
-            key=key, reverse=True), pub.batch_max, 0)
+            key=key), pub.batch_max, 0, 0)
 
     if len(batch) < pub.batch_min:
         # Last resort: newest overall, regardless of score.

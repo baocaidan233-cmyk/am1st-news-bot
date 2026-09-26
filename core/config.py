@@ -584,6 +584,14 @@ class PublishConfig(BaseModel):
     # the expensive part, never runs on a failure.
     extraction_max_attempts: int = 3
 
+    # At most this many candidates from one outlet in a single batch. Added
+    # 2026-09-26 alongside dropping llm_score as the within-tier sort: once the
+    # order inside a tier is deterministic-random rather than score-led,
+    # nothing else stops a batch of ten coming mostly from whichever outlet
+    # happens to publish most, and a batch of ten from one outlet is ten copies
+    # of that outlet's news judgement. 0 disables it.
+    per_batch_source_cap: int = 3
+
     staleness_check_hours_floor: int = 72  # 2026-09-05 — agents/staleness_checker.py's LLM call only runs when event_first_seen_at is at least this old; reuses dedup.cross_cycle_window_hours' existing 72h convention rather than picking a new number, per the user's explicit cost concern (this would otherwise double the LLM calls made for every candidate, not just the minority whose underlying event is genuinely old)
 
 
