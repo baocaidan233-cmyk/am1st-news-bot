@@ -53,6 +53,12 @@ class Candidate(BaseModel):
     # as it did before this existed.
     topic: Optional[str] = None
 
+    # Reader want (2026-09-25/26) — one of agents/want_tagger.py's WANTS. What
+    # the reader gets out of the story rather than what it is about; the two
+    # are measurably different and the want is the stronger signal. None means
+    # the tagger failed, which every consumer reads as no adjustment.
+    want: Optional[str] = None
+
 
 class PublishCandidate(BaseModel):
     """One row read back from the shared candidate-pool Notion database, as
@@ -97,5 +103,8 @@ class PublishCandidate(BaseModel):
     # publish-side mix controller (core/topic_mix.py), which both
     # agents/candidate_selector.py and agents/priority_ranker.py consult.
     topic: Optional[str] = None
+
+    # Same reader want as Candidate, read back from Notion.
+    want: Optional[str] = None
 
     gettr_post_id: Optional[str] = None

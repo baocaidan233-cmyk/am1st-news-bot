@@ -63,6 +63,8 @@ async def write_candidate(config: AppConfig, item: Candidate) -> bool:
     # should look like downstream.
     if item.topic:
         properties[props.topic] = {"select": {"name": item.topic}}
+    if item.want:
+        properties[props.want] = {"select": {"name": item.want}}
     body = {"parent": {"database_id": notion.candidate_db_id}, "properties": properties}
 
     try:
@@ -180,6 +182,7 @@ async def query_eligible_candidates(config: AppConfig) -> list[PublishCandidate]
                             event_first_seen_at=_plain_text(p.get(props.event_first_seen_at, {})),
                             is_hot=bool(_plain_text(p.get(props.is_hot, {}))),
                             topic=_plain_text(p.get(props.topic, {})) or None,
+                            want=_plain_text(p.get(props.want, {})) or None,
                             extraction_attempts=int(_plain_text(p.get(props.extraction_attempts, {})) or 0),
                         )
                     )

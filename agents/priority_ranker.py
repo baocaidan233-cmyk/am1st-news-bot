@@ -192,6 +192,9 @@ class PriorityRanker:
                 "heat_score": c.heat_score,
                 "topic": c.topic,
                 "topic_adjustment": round(topic_adjustment, 3),
+                # Recorded only (2026-09-26). No term for it in priority_score yet
+                # — this week is for judging the label prospectively, not acting on it.
+                "want": c.want,
                 "trending_max_similarity": round(best_sim, 4),
                 "trending_bonus": trending_bonus,
                 "hours_since_update": round(hours_since_update, 2),
