@@ -35,6 +35,17 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# The Notion credentials live in .env, and load_config() reads them from the
+# environment — without this the candidate key comes back empty and
+# recent_published_topic_counts() returns {} at its first guard, which reads
+# here as "the controller is dormant" no matter what it is actually doing.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
+except Exception:
+    pass
+
 SHIP_TS = dt.datetime(2026, 9, 25, 16, 13, tzinfo=dt.timezone.utc).timestamp()
 
 # Recorded 2026-09-25 from n=534 covering 09-16..09-25, before the controller
