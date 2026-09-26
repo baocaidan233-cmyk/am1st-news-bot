@@ -48,16 +48,21 @@ except Exception:
 
 SHIP_TS = dt.datetime(2026, 9, 25, 16, 13, tzinfo=dt.timezone.utc).timestamp()
 
-# Recorded 2026-09-25 from n=534 covering 09-16..09-25, before the controller
-# could have had any effect. See memory project_am1st_topic_mix.
-BASE_N = 534
-BASE_BREAKOUT = 0.054
+# Re-measured 2026-09-26 on n=573 mature posts (09-16..09-26), re-classified
+# under the live 18-bucket scheme so these are directly comparable to what the
+# controller sees. Replaces the 09-25 figures, which were taken from a
+# 17-bucket audit classifier whose residual rate differed from the production
+# tagger's -- the source of the wrong 其他 target. Still pre-controller: the
+# controller could not have moved any of this.
+BASE_N = 573
+BASE_BREAKOUT = 0.056
 BASE_NORM_MEDIAN = 1.00
 BASE_TOPIC_BREAKOUT = {
-    "媒体与审查": (23, 0.217), "移民边境ICE": (100, 0.080), "选举诚信": (39, 0.077),
-    "司法武器化": (16, 0.062), "其他": (154, 0.058), "外交与战争": (56, 0.036),
-    "中国CCP": (27, 0.0), "经济通胀关税": (23, 0.0), "共和党内部与人物": (26, 0.0),
-    "枪权": (13, 0.0), "犯罪治安": (19, 0.0),
+    "媒体与审查": (34, 0.176), "选举诚信": (43, 0.116), "跨性别与儿童": (12, 0.083),
+    "枪权": (14, 0.071), "教育与学校": (14, 0.071), "司法武器化": (14, 0.071),
+    "移民边境ICE": (110, 0.064), "政府腐败与浪费": (18, 0.056), "其他": (126, 0.048),
+    "共和党内部与人物": (28, 0.036), "外交与战争": (65, 0.031),
+    "中国CCP": (27, 0.0), "经济通胀关税": (28, 0.0), "犯罪治安": (23, 0.0),
 }
 
 LOG = "logs/engagement_snapshots.jsonl"

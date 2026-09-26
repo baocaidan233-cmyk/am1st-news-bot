@@ -679,33 +679,46 @@ class TopicMixConfig(BaseModel):
     per_batch_cap: int = 3
 
     # Shares of published output, keyed on agents/topic_tagger.py's TOPICS.
-    # Derived from the 2026-09-25 audit as a MODERATE move off the measured
-    # actuals, not a reallocation: 移民边境ICE and 其他 hold their current
-    # share, 媒体与审查 roughly doubles (4.3% -> 10%, which is 5.6 posts a day
-    # against ~27 available, so still only a fifth of its supply), and the
-    # four zero-breakout subjects are roughly halved rather than dropped —
-    # their evidence is 0 breakouts out of 13-27 posts each, which is
-    # consistent with a true rate near 10%. A subject missing from this map
-    # gets no adjustment in either direction.
+    # Re-derived 2026-09-26 from n=573 mature posts re-classified under this
+    # exact 18-bucket scheme, replacing the 2026-09-25 set. Two things were
+    # wrong in that first set. "其他" was given 0.31, taken from the audit
+    # classifier's own residual rate, while the production tagger's residual
+    # under this scheme is 22.1% -- so the controller spent its single largest
+    # positive adjustment (+0.38 average, against 媒体与审查's +0.16) pushing a
+    # catch-all that was already at its natural share and could never reach
+    # the target. And several targets came from breakout rates measured on a
+    # different bucketing, which does not transfer: 政府腐败与浪费 reads 12.5%
+    # under a 25-bucket split and 5.6% under this one, on 16 vs 18 posts --
+    # noise either way.
+    #
+    # What does hold across both bucketings is the ordering that matters here:
+    # 媒体与审查 17.2%/17.6% and 选举诚信 11.1%/11.6% against a 5.6% channel
+    # rate, with 外交与战争 3.1%, 共和党内部与人物 3.6%, and 中国CCP /
+    # 经济通胀关税 at a flat zero across 27-28 posts each. So those move, and
+    # 其他 is simply set to its measured natural share, where it draws no
+    # adjustment in either direction -- it is 22% of this channel's real
+    # output and performs near the channel median, so it must neither be
+    # boosted nor suppressed.
     targets: dict[str, float] = Field(
         default_factory=lambda: {
-            "其他": 0.31,
+            "其他": 0.22,
             "移民边境ICE": 0.18,
-            "媒体与审查": 0.10,
-            "选举诚信": 0.08,
-            "外交与战争": 0.07,
-            "犯罪治安": 0.035,
+            "选举诚信": 0.1,
+            "媒体与审查": 0.09,
+            "外交与战争": 0.09,
+            "犯罪治安": 0.04,
+            "经济通胀关税": 0.035,
+            "共和党内部与人物": 0.035,
+            "中国CCP": 0.035,
+            "政府腐败与浪费": 0.035,
             "司法武器化": 0.03,
-            "中国CCP": 0.03,
-            "经济通胀关税": 0.03,
-            "共和党内部与人物": 0.03,
-            "枪权": 0.02,
-            "教育与学校": 0.02,
-            "跨性别与儿童": 0.02,
-            "Antifa左翼暴力": 0.015,
+            "枪权": 0.025,
+            "教育与学校": 0.025,
+            "跨性别与儿童": 0.025,
+            "Antifa左翼暴力": 0.01,
             "以色列中东": 0.01,
             "新冠追责": 0.01,
-            "堕胎": 0.01,
+            "堕胎": 0.005,
         }
     )
 

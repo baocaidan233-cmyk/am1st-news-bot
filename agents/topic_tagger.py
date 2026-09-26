@@ -38,6 +38,7 @@ TOPICS = (
     "枪权",
     "堕胎",
     "共和党内部与人物",
+    "政府腐败与浪费",
     "其他",
 )
 
@@ -47,17 +48,18 @@ _PROMPT = """Assign this news headline to exactly ONE subject bucket. Pick the s
 跨性别与儿童 transgender, gender care for minors, girls' sports, drag, child sexual content
 新冠追责 COVID, lockdowns, masks, vaccines, mandates, Fauci, virus origin
 Antifa左翼暴力 Antifa, riots, left political violence, attacks on conservatives
-媒体与审查 press, CNN/MSNBC, censorship, deplatforming, Big Tech, press access
+媒体与审查 the press itself: CNN/MSNBC, journalists, press access, deplatforming, censorship, media bias or hoaxes
 司法武器化 DOJ/FBI targeting conservatives, J6, lawfare, special counsel, Biden family probes
 犯罪治安 ordinary crime, police, soft-on-crime prosecutors, drugs, cartels, trafficking
-经济通胀关税 economy, inflation, prices, tariffs, jobs, markets, energy
-外交与战争 foreign policy, wars, NATO, Ukraine, Iran, the UN, treaties, troop deployments
+经济通胀关税 economy, inflation, prices, tariffs, jobs, markets, the Fed, energy costs
+外交与战争 foreign policy, wars, NATO, Ukraine, Iran, the UN, treaties, troop deployments, the military
 中国CCP China, the CCP, Xi, Chinese influence or espionage
 以色列中东 Israel, Gaza, Hamas, antisemitism, the Middle East
 教育与学校 schools, curricula, universities, teachers, school boards, DEI in education
 枪权 guns
 堕胎 abortion
 共和党内部与人物 GOP internal politics, personalities, endorsements, campaigns, ceremonies, appointments
+政府腐败与浪费 corruption, fraud against the government, influence peddling, NGO funding, wasted taxpayer money, an official resigning in scandal, Epstein-style cover-ups
 其他 none of the above
 
 Reply with EXACTLY this JSON and no other keys, and the value must be one of the
