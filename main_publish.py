@@ -98,6 +98,7 @@ from agents.writer import Writer
 from core.alerts import AlertNotifier
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex
+from core.caption_guard import former_president_violation
 from core.language import is_english
 from core.notion_candidates import has_unpublished_hot_candidate, mark_dedup_rejected, mark_extraction_failed, mark_send_status, mark_writer_rejected, query_eligible_candidates, recent_published_topic_counts, record_extraction_failure
 from core.topic_mix import compute_adjustments
@@ -289,10 +290,28 @@ async def run_cycle(
             # its cosine score against posted history; see CaptionCache's
             # docstring for the real duplicate this caused in production.
             post_content = await caption_cache.get(c.url_hash)
+            cached = post_content is not None
             if post_content is None:
                 post_content = await writer.write(c.title, c.content, context=background, is_opinion=is_opinion)
-                if not Writer.is_no_comment(post_content):
-                    await caption_cache.set(c.url_hash, post_content)
+
+            # Last gate on the text we are about to publish under our own name.
+            # Donald Trump is the sitting president, so a caption calling him a
+            # former one cannot go out, whatever else is right about it. Checked
+            # here rather than trusted to the prompt, which already says "always
+            # President Trump" and is still only an instruction to a model; and
+            # checked on every caption including ones served from the cache,
+            # since a caption written before this gate existed would otherwise
+            # be replayed straight past it. See core/caption_guard.py.
+            violation = former_president_violation(post_content)
+            if violation:
+                logger.warning(
+                    "run_cycle: %s — caption blocked by caption_guard rule %s, dropped from batch",
+                    c.url, violation,
+                )
+                continue
+
+            if not cached and not Writer.is_no_comment(post_content):
+                await caption_cache.set(c.url_hash, post_content)
             if Writer.is_no_comment(post_content):
                 logger.info("run_cycle: %s — writer returned No comment, dropped from batch", c.url)
                 # 2026-09-08, per the user's explicit request: a static
