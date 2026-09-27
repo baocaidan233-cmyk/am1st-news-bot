@@ -64,6 +64,22 @@ _UNNAMED: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("unnamed-45th-president",
      re.compile(rf"\b(?:the\s+)?45th\s+{_TITLE}\b{_NOT_ATTRIBUTIVE}", re.I)),
 )
+# Chinese-language captions. Several sibling bots publish translated copy, and
+# an English-only pattern would pass their version of the same error straight
+# through. 特朗普 and 川普 are both in use for the surname.
+_ZH_NAME = r"(?:特朗普|川普)"
+_ZH_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # 前总统特朗普 / 前美国总统川普 / 美国前总统特朗普 / 卸任总统特朗普
+    ("zh-former-president-trump",
+     re.compile(rf"(?:前|卸任)(?:美国)?总统{_ZH_NAME}|美国前总统{_ZH_NAME}")),
+    # 特朗普前总统 — the inverted order
+    ("zh-trump-former-president", re.compile(rf"{_ZH_NAME}前总统")),
+)
+# Must stay allowed: 特朗普总统 (correct), 时任总统特朗普 (his first term,
+# correctly marked), 前总统拜登 (a real former president), 特朗普的前顾问
+# (former attaches to someone else).
+_ZH_ALLOW = re.compile(rf"时任(?:美国)?总统{_ZH_NAME}")
+
 _TRUMP = re.compile(r"\btrump\b", re.I)
 _OTHER_EX = re.compile(r"\b(biden|obama|bush|clinton|carter|reagan|nixon)\b", re.I)
 
@@ -94,4 +110,9 @@ def former_president_violation(caption: str) -> str | None:
             m = pattern.search(caption)
             if m:
                 return _report(name, m)
+
+    for name, pattern in _ZH_PATTERNS:
+        m = pattern.search(caption)
+        if m and not _ZH_ALLOW.search(caption[max(0, m.start() - 6):m.end() + 6]):
+            return _report(name, m)
     return None

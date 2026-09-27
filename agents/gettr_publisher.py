@@ -7,6 +7,7 @@ import time
 import httpx
 
 from core.config import AppConfig
+from core.caption_guard import former_president_violation
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,19 @@ class GettrPublisher:
             return "dry-run-post-id"
 
         payload = self._build_payload(text, prev_desc, prev_img, prev_src_link, prev_ttl, media)
+
+        # Second gate, after main_publish.py's own check on the caption. Both
+        # are cheap and they cover different failure paths: that one stops a
+        # bad caption from being cached and re-served, this one stops anything
+        # reaching Gettr around it. Same reasoning as the sibling bots, which
+        # only have this one. See core/caption_guard.py.
+        violation = former_president_violation(payload.get("txt", "") or "")
+        if violation:
+            logger.error(
+                "GettrPublisher: caption blocked by caption_guard rule %s — not publishing",
+                violation,
+            )
+            return None
         headers = {"x-app-auth": json.dumps({"user": gettr.user_id, "token": gettr.user_token})}
         files = {"content": (None, json.dumps(payload))}
 
