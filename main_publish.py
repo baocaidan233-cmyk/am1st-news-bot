@@ -106,6 +106,7 @@ from core.publish_cadence import compute_dynamic_interval
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
 from core.redis_store import CaptionCache, PostedDupStrikes
+from core.title_guard import title_violation
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("main_publish")
@@ -307,6 +308,26 @@ async def run_cycle(
                 logger.warning(
                     "run_cycle: %s — caption blocked by caption_guard rule %s, dropped from batch",
                     c.url, violation,
+                )
+                continue
+
+
+            # Second gate on the same caption, and a different question from
+            # caption_guard's: not "is this one fixed error present" but "does
+            # every title this caption hands out match the article it came
+            # from". Replaces the candidate board's `titel_check` Notion
+            # formula, which listed eight names and has been dead since the
+            # 2026-08-05 restructure stopped anything writing post_content
+            # (0 of 500 published rows carry one, measured 2026-09-27).
+            # Measured on 116 real caption/source pairs: 0 false positives,
+            # and on the same pairs with the two errors injected, 34/37 and
+            # 56/58 caught. Fails open whenever the source text is missing or
+            # too short, so a cache hit that skipped extraction is unaffected.
+            title_rule = title_violation(post_content, getattr(c, "content", "") or "")
+            if title_rule:
+                logger.warning(
+                    "run_cycle: %s — caption blocked by title_guard rule %s, dropped from batch",
+                    c.url, title_rule,
                 )
                 continue
 
