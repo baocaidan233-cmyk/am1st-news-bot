@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 
 from core.config import AppConfig
 from core.openai_client import create_openai_client
+from core.date_context import date_block
 
 NO_COMMENT = "No comment"
 
@@ -36,7 +36,7 @@ class Writer:
         self._model = config.openai.chat_model
         self._system_prompt = Path(config.openai.content_gen_prompt_file).read_text(encoding="utf-8")
 
-    async def write(self, title: str, article: str, context: str = "", is_opinion: bool = False) -> str:
+    async def write(self, title: str, article: str, context: str = "", is_opinion: bool = False, published_at=None) -> str:
         """`context` (2026-08-31) — optional prior-developments/related-
         events summary for this story, built by main_publish.py from
         core/qdrant_store.py's EventStore (timeline + related_event_ids on
@@ -62,9 +62,14 @@ class Writer:
         Today's date — kept in the user message even though the primary
         staleness gate now happens before write() is ever called (see
         StalenessChecker); may still help the existing "BREAKING: only for
-        fresh events" judgment in OUTPUT FORMAT."""
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        user_message = f"Today's date: {today}\n\nTitle:  {title}\n\nArticle: {article}"
+        fresh events" judgment in OUTPUT FORMAT.
+        `published_at` (2026-09-28) — the article's own publication date, used
+        by core/date_context.py to resolve the source's relative dates before
+        the model sees them. Optional and fails open: without it the message
+        carries today's date alone, which is what it carried before.
+        """
+        user_message = (f"{date_block(article, published_at)}\n\n"
+                        f"Title:  {title}\n\nArticle: {article}")
         if context:
             user_message += f"\n\nBackground: {context}"
         if is_opinion:

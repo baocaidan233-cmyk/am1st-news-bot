@@ -293,7 +293,7 @@ async def run_cycle(
             post_content = await caption_cache.get(c.url_hash)
             cached = post_content is not None
             if post_content is None:
-                post_content = await writer.write(c.title, c.content, context=background, is_opinion=is_opinion)
+                post_content = await writer.write(c.title, c.content, context=background, is_opinion=is_opinion, published_at=c.published_at)
 
             # Last gate on the text we are about to publish under our own name.
             # Donald Trump is the sitting president, so a caption calling him a
