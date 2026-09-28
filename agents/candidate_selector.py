@@ -218,16 +218,35 @@ def select_batch(
 
     fresh = [c for c in candidates if hours_old(c) <= pub.fresh_hours]
 
-    adj = topic_adjustments or {}   # consumed by agents/priority_ranker.py, not here
+    adj = topic_adjustments or {}
     tcap = config.topic_mix.per_batch_cap if config.topic_mix.enabled else 0
     scap = pub.per_batch_source_cap
 
-    # Ordering inside every tier below. Deliberately not llm_score and not the
-    # subject adjustment: this function's job is to hand the ranker a set of
-    # eligible, varied candidates, not to guess which one will do best. The
-    # ranker, which sees trending context and the subject-mix state, makes that
-    # call. See _stable_key() for why score cannot order within a tier.
-    key = _stable_key
+    # Ordering inside every tier. This is where the subject mix has to act,
+    # and until 2026-09-28 it did not: the adjustment was passed in, used only
+    # for the per-batch cap, and left to agents/priority_ranker.py.
+    #
+    # That was wrong about which step decides the output. 96.5% of publishes
+    # finish on the first widen attempt (1278 of 1324 measured 2026-09-28,
+    # against 43 on the second and 3 on the third), so the ~9 candidates this
+    # function returns ARE the candidate set for that post -- widening is a
+    # failure fallback, not a wider search, and the rest of the pool is never
+    # looked at. Ordering those nine by a hash made the published subject mix
+    # a random sample of the pool's, which is what the 7-day audit measured:
+    # total variation between pool and published of 13.6%, 外交与战争 running
+    # at 17.4% against a 9% target while 选举诚信 and 媒体与审查, the only two
+    # subjects with a measured engagement edge, sat under theirs. The ranker
+    # cannot fix that downstream -- it only ever sees these nine.
+    #
+    # The key is the controller's own signed adjustment, so a subject already
+    # over its target sorts last by construction and cannot take a batch; an
+    # empty adj (controller dormant below min_window_posts) makes every key 0.0
+    # and this is exactly the previous behaviour. The score tiers still decide
+    # who is eligible, the per-batch cap of 3 and the uncapped refill below are
+    # untouched, and _stable_key breaks ties -- which is most pairs, and see
+    # its docstring for why llm_score cannot be what breaks them.
+    def key(c: PublishCandidate) -> tuple[float, str]:
+        return (-(adj.get(c.topic, 0.0) if c.topic else 0.0), _stable_key(c))
 
     batch: list[PublishCandidate] = []
     _fill(batch, sorted((c for c in fresh if c.llm_score >= _TIER1_MIN_SCORE), key=key),
