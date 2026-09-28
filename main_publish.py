@@ -222,7 +222,8 @@ async def run_cycle(
                 await batch_seen.mark([c.url_hash for c in short])
                 recent = await posted_store.recent_captions(
                     config.editor.recent_titles_hours, config.editor.recent_titles_max)
-                picks = await editor.pick(short, recent, topic_adjustments, datetime.now(timezone.utc))
+                picks = await editor.pick(short, recent, topic_adjustments,
+                                          datetime.now(timezone.utc), trending_headlines)
                 if picks:
                     batch = [p.candidate for p in picks]
                     editor_order = {p.candidate.page_id: i for i, p in enumerate(picks)}

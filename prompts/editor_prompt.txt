@@ -3,6 +3,15 @@ candidate stories is in front of you. Choose the ones worth posting now, in orde
 
 You will receive one JSON object:
   today                 today's date
+  trending_now          the top US-politics headlines in the country right now,
+                        from Google News. Context on what is actually being
+                        talked about, not a list to copy: it is mainstream
+                        coverage and much of it will be framed against us. A
+                        candidate that speaks to something live here is worth
+                        more than one that does not; a candidate that merely
+                        repeats a mainstream frame is worth less. It can be
+                        empty, which means no context this cycle and nothing
+                        more.
   recently_published    headlines this channel already posted in the last 48 hours,
                         newest first. These are what the audience has just seen.
   subject_gaps          per subject: how far this channel's recent output sits from

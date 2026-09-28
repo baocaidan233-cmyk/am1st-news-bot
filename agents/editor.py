@@ -77,7 +77,7 @@ class EditorPicker:
         self._prompt = Path(config.editor.prompt_file).read_text(encoding="utf-8")
 
     def _payload(self, candidates: list[PublishCandidate], recent_titles: list[str],
-                 subject_gaps: dict[str, float], now) -> dict:
+                 subject_gaps: dict[str, float], trending: list[str], now) -> dict:
         ed = self._config.editor
         stories = []
         for i, c in enumerate(candidates, 1):
@@ -91,6 +91,7 @@ class EditorPicker:
             })
         return {
             "today": now.strftime("%Y-%m-%d"),
+            "trending_now": trending[:15],
             "recently_published": recent_titles[:ed.recent_titles_max],
             "subject_gaps": {k: round(v, 2) for k, v in subject_gaps.items() if abs(v) >= 0.05},
             "stories": stories,
@@ -163,7 +164,8 @@ class EditorPicker:
         return kept
 
     async def pick(self, candidates: list[PublishCandidate], recent_titles: list[str],
-                   subject_gaps: dict[str, float], now) -> list[EditorPick] | None:
+                   subject_gaps: dict[str, float], now,
+                   trending: list[str] | None = None) -> list[EditorPick] | None:
         ed = self._config.editor
         if not ed.enabled or not candidates:
             return None
@@ -183,7 +185,8 @@ class EditorPicker:
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": json.dumps(
-                        self._payload(candidates, recent_titles, subject_gaps, now), ensure_ascii=False)},
+                        self._payload(candidates, recent_titles, subject_gaps, trending or [], now),
+                        ensure_ascii=False)},
                 ],
             )
             raw = json.loads(resp.choices[0].message.content or "{}").get("picks") or []
