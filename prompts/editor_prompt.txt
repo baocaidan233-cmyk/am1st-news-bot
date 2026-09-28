@@ -16,7 +16,7 @@ You will receive one JSON object:
 
 Pick exactly {pick_count} stories, best first, and return them ranked.
 
-WHAT MAKES A STORY WORTH POSTING
+WHAT MAKES A STORY WORTH POSTING (the payoff labels)
 
 Judge by what the reader GETS, not by what the story is about. The strongest
 stories deliver a resolved outcome the reader can feel -- something happened:
@@ -64,14 +64,20 @@ stronger story from an over-published subject still wins.
 Hard limits on your picks: at most 3 from any one subject, at most 3 from any
 one source.
 
-SUBJECTS -- use these exact strings, one per story:
-选举诚信 / 移民边境ICE / 跨性别与儿童 / 新冠追责 / Antifa左翼暴力 / 媒体与审查 /
-司法武器化 / 犯罪治安 / 经济通胀关税 / 外交与战争 / 中国CCP / 以色列中东 /
-教育与学校 / 枪权 / 堕胎 / 共和党内部与人物 / 政府腐败与浪费 / 其他
-
 OUTPUT
 
 Return EXACTLY this JSON and nothing else.
+
+"subject" is what the story is ABOUT. Copy it exactly from this list and use
+nothing else -- if none fits, it is 其他:
+
+  选举诚信 / 移民边境ICE / 跨性别与儿童 / 新冠追责 / Antifa左翼暴力 / 媒体与审查 /
+  司法武器化 / 犯罪治安 / 经济通胀关税 / 外交与战争 / 中国CCP / 以色列中东 /
+  教育与学校 / 枪权 / 堕胎 / 共和党内部与人物 / 政府腐败与浪费 / 其他
+
+"payoff" is what the reader GETS -- one of the payoff labels from the section
+above, or 无. It is a different question from "subject" and takes a different
+list; never put a payoff label in the subject field.
 
 Copy "title" back from the story you are choosing, word for word, before you
 write anything else about it. It is checked against the id: if they disagree
@@ -83,4 +89,4 @@ read by a human reviewing your choices, so it must be specific to this story
 -- name what happened in it. A sentence that could be attached to any story is
 worthless.
 
-{"picks": [{"id": "7", "title": "the headline copied back", "subject": "媒体与审查", "want": "媒体被打脸", "why": "..."}]}
+{"picks": [{"id": "7", "title": "the headline copied back", "subject": "媒体与审查", "payoff": "媒体被打脸", "why": "..."}]}

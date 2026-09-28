@@ -17,6 +17,21 @@ from core.openai_client import create_openai_client
 logger = logging.getLogger(__name__)
 
 
+_SAME_EVENT_PROMPT = """These headlines were all chosen for the same feed. Which of them report the
+SAME underlying news event?
+
+One event, not two: an incident and a statement, reaction or response about
+that same incident; the same ruling covered by two outlets; a story and its own
+follow-up. Different events: two separate incidents, even similar ones, and two
+different people acting on the same broad topic.
+
+Return the numbers of every group of two or more that share an event. A
+headline in no group is left out entirely.
+
+Reply with JSON in exactly this form:
+{"groups": [[2, 6]]}   — or {"groups": []} when they are all distinct."""
+
+
 class EditorPick(BaseModel):
     candidate: PublishCandidate
     subject: str | None = None
@@ -81,6 +96,51 @@ class EditorPicker:
             "stories": stories,
         }
 
+    async def _one_per_event(self, picks: list[EditorPick]) -> list[EditorPick]:
+        """Keeps the highest-ranked pick of each underlying news event, using
+        a second, deliberately narrow call.
+
+        Two attempts to get this out of the main call both failed on the same
+        pair. Told plainly that its picks must each be a different event, the
+        model returned an incident report and a statement about that same
+        incident at ranks 2 and 6. Asked to label each pick's underlying event
+        so code could group them, it labelled the same pair "Terror suspects
+        arrested in UK" and "Possible terror attack foiled" — two labels, one
+        event. A rule buried in a long prompt is not where this gets decided.
+
+        Asked on its own, over nothing but the chosen headlines, it is a
+        comparison — which is the shape this model does well and the shape the
+        whole of this layer is built on. One short call per cycle.
+
+        Fails open: any error keeps every pick, which is the behaviour before
+        this existed."""
+        if len(picks) < 2:
+            return picks
+        listing = "\n".join(f"{i}. {p.candidate.title[:150]}" for i, p in enumerate(picks, 1))
+        try:
+            resp = await self._client.chat.completions.create(
+                model=self._config.editor.model or self._config.openai.chat_model,
+                temperature=0,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": _SAME_EVENT_PROMPT},
+                    {"role": "user", "content": listing},
+                ],
+            )
+            groups = json.loads(resp.choices[0].message.content or "{}").get("groups") or []
+        except Exception:
+            logger.exception("EditorPicker: same-event grouping failed — keeping every pick")
+            return picks
+
+        drop: set[int] = set()
+        for g in groups:
+            nums = sorted({int(n) for n in g if str(n).isdigit() and 1 <= int(n) <= len(picks)})
+            for n in nums[1:]:
+                drop.add(n)
+                logger.info("EditorPicker: dropped #%d %s — same event as #%d",
+                            n, picks[n - 1].candidate.url, nums[0])
+        return [p for i, p in enumerate(picks, 1) if i not in drop]
+
     def _enforce_caps(self, picks: list[EditorPick]) -> list[EditorPick]:
         """The caps are checkable, so they are checked here rather than
         trusted to the prompt. A pick that breaks one is dropped, not the
@@ -144,7 +204,9 @@ class EditorPicker:
             # the id and the judgement have come apart, so neither can be
             # trusted for this story. Compared on the first words only, since
             # the model may shorten a long headline.
-            echoed = str(row.get("title") or "").strip().lower()
+            # Whitespace-normalised on both sides: a double space inside a
+            # headline is not a mismatch, and one dropped a valid pick.
+            echoed = " ".join(str(row.get("title") or "").lower().split())
             if echoed:
                 head = " ".join(c.title.lower().split()[:5])
                 if head and not (echoed.startswith(head[:28]) or head.startswith(echoed[:28])):
@@ -153,14 +215,29 @@ class EditorPicker:
                         row.get("id"), echoed[:60], c.title[:60])
                     continue
             seen.add(c.page_id)
-            subject = row.get("subject") if row.get("subject") in TOPICS else None
-            want = row.get("want") if row.get("want") in WANTS else None
+            raw_subject = row.get("subject")
+            subject = raw_subject if raw_subject in TOPICS else None
+            if subject is None and raw_subject:
+                # Falls back to the catch-all rather than being left unset. The
+                # prompt already says an unfitting story is 其他 and the model
+                # still reached for a word of its own (it answered a payoff
+                # label for a sports story), so code applies the rule the
+                # prompt could not. Left unset the story would be invisible to
+                # the mix controller; 其他 is what "none of these" means here.
+                logger.warning("EditorPicker: subject %r is not in TOPICS — using 其他 for %s",
+                               raw_subject, c.url)
+                subject = "其他"
+            raw_payoff = row.get("payoff")
+            want = raw_payoff if raw_payoff in WANTS else None
+            if want is None and raw_payoff:
+                logger.warning("EditorPicker: payoff %r is not in WANTS — left unset for %s",
+                               raw_payoff, c.url)
             picks.append(EditorPick(candidate=c, subject=subject, want=want,
                                     why=str(row.get("why") or "")[:300]))
         if not picks:
             logger.warning("EditorPicker: response held no usable picks — falling back")
             return None
-        picks = self._enforce_caps(picks)[:ed.pick_count]
+        picks = self._enforce_caps(await self._one_per_event(picks))[:ed.pick_count]
         for i, p in enumerate(picks, 1):
             logger.info("EditorPicker: #%d %s [%s / %s] %s — %s",
                         i, p.candidate.url, p.subject, p.want, p.candidate.title[:70], p.why)
