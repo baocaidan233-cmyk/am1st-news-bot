@@ -161,17 +161,20 @@ class PriorityRanker:
             return []
         trending_headlines = trending_headlines or []
         topic_adjustments = topic_adjustments or {}
-        trending_embeddings = [await self._embedder.embed(h) for h in trending_headlines if h]
+        # One request each for the headlines and the batch, not one per item.
+        trending_embeddings = await self._embedder.embed_many([h for h in trending_headlines if h])
+        cand_embeddings = (await self._embedder.embed_many(
+            [(c.post_content or c.title)[:2000] for c in batch]) if trending_embeddings else [])
 
         now = datetime.now(timezone.utc)
         scored: list[tuple[PublishCandidate, float]] = []
-        for c in batch:
+        for idx, c in enumerate(batch):
             hours_since_update = max(0.0, (now - c.published_at).total_seconds() / 3600)
 
             best_sim = 0.0
             trending_bonus = 0.0
             if trending_embeddings:
-                cand_embedding = await self._embedder.embed((c.post_content or c.title)[:2000])
+                cand_embedding = cand_embeddings[idx]
                 best_sim = max(cosine_similarity(cand_embedding, e) for e in trending_embeddings)
                 if best_sim >= _TRENDING_SIM_HIGH:
                     trending_bonus = 2.0

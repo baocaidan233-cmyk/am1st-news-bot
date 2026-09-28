@@ -253,10 +253,18 @@ async def run_cycle(
         # and why the bar is so much higher than the publish-side one.
         if config.publish.batch_event_dedup_cosine > 0:
             kept = []
-            for c in batch:
+            try:
+                batch_vectors = await embedder.embed_many(
+                    [f"{c.title}\n{c.description}"[:6000] for c in batch])
+            except Exception:
+                logger.exception("run_cycle: pre-batch embedding failed — skipping this check")
+                batch_vectors = []
+            for i, c in enumerate(batch):
+                if not batch_vectors:
+                    kept.append(c)
+                    continue
                 try:
-                    matched = await event_store.peek(
-                        await embedder.embed(f"{c.title}\n{c.description}"[:6000]))
+                    matched = await event_store.peek(batch_vectors[i])
                 except Exception:
                     logger.exception(
                         "run_cycle: pre-batch event dedup failed for %s — keeping it", c.url)
