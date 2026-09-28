@@ -184,10 +184,26 @@ def shortlist(
     return cut
 
 
+def debt_level(debt_hours: float, config: AppConfig) -> int:
+    """2 = badly overdue, 1 = overdue, 0 = served recently.
+
+    Coarse on purpose. A subject 13.2 hours unserved is not meaningfully more
+    urgent than one at 12.8, and turning that gap into a decimal would rebuild
+    the false precision the old priority_score had."""
+    pub = config.publish
+    if debt_hours >= pub.topic_debt_high_hours:
+        return 2
+    if debt_hours >= pub.topic_debt_mid_hours:
+        return 1
+    return 0
+
+
 def select_batch(
     candidates: list[PublishCandidate],
     config: AppConfig,
     topic_adjustments: dict[str, float] | None = None,
+    topic_debt: dict[str, float] | None = None,
+    cycle_token: str = "",
 ) -> list[PublishCandidate]:
     """Tiered batch selection — same cascade as the original n8n "batch of
     top 5" node: prefer fresh+high-scoring, progressively relax until at
@@ -298,8 +314,27 @@ def select_batch(
     # who is eligible, the per-batch cap of 3 and the uncapped refill below are
     # untouched, and _stable_key breaks ties -- which is most pairs, and see
     # its docstring for why llm_score cannot be what breaks them.
-    def key(c: PublishCandidate) -> tuple[float, str]:
-        return (-(adj.get(c.topic, 0.0) if c.topic else 0.0), _stable_key(c))
+    # Ordering inside a tier. Subject coverage debt comes first: measured
+    # 2026-09-28, 犯罪治安 had 42 eligible candidates waiting against 28.4
+    # hours unpublished and 政府腐败与浪费 24 against 21.3, while the previous
+    # key — the mix adjustment, identical for every candidate of one subject,
+    # then sha1(url), which never changes — could not see either. A starved
+    # subject stayed starved however much of it was in the pool.
+    #
+    # Within-batch diversity is the existing per-subject cap of 3, not a decay
+    # on this key: sorted() evaluates the key once per candidate before _fill
+    # takes anything, so a decay applied during the fill would never be seen.
+    # Keeping them separate is also correct on its own terms — publication
+    # debt is what the channel has actually published, and selecting into a
+    # batch is not publishing.
+    debt = topic_debt or {}
+
+    def key(c: PublishCandidate) -> tuple[int, float, str]:
+        level = debt_level(debt.get(c.topic, 0.0), config) if c.topic else 0
+        return (-level,
+                -(adj.get(c.topic, 0.0) if c.topic else 0.0),
+                _stable_key(c) if not cycle_token else hashlib.sha1(
+                    (cycle_token + (c.url or c.page_id)).encode("utf-8")).hexdigest())
 
     batch: list[PublishCandidate] = []
     _fill(batch, sorted((c for c in fresh if c.llm_score >= _TIER1_MIN_SCORE), key=key),

@@ -507,6 +507,20 @@ class PublishConfig(BaseModel):
     # to the caption-level check that has the full text to judge on. 0 disables.
     batch_event_dedup_cosine: float = 0.9
 
+    # How far back topic_publication_debt() looks, and the value a subject
+    # gets when it has not been published at all in that window. 24h matches
+    # the candidate eligibility window: a subject unserved for longer than any
+    # candidate can survive is as overdue as the system can act on.
+    topic_debt_lookback_hours: float = 24.0
+
+    # Subjects overdue by at least this many hours are treated as owed
+    # coverage and sort ahead of everything else, whatever their score. Two
+    # levels rather than a continuous term on purpose: 13.2 hours overdue is
+    # not meaningfully more urgent than 12.8, and turning the gap into a
+    # decimal would be the same false precision the old priority_score had.
+    topic_debt_high_hours: float = 18.0
+    topic_debt_mid_hours: float = 9.0
+
     posted_dedup_threshold: float = 0.70  # stricter than the ingestion side's 0.8 — deliberate, per the user: fully autonomous posting should err toward under-posting
     # 2026-09-23, user request ("僵尸标记一下，没必要每次都扫描"): retire a
     # candidate from the pool once this many CONSECUTIVE publish cycles have

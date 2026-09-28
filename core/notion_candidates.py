@@ -346,6 +346,90 @@ async def mark_writer_rejected(config: AppConfig, page_id: str) -> bool:
     return await mark_extraction_failed(config, page_id)
 
 
+async def topic_publication_debt(config: AppConfig) -> dict[str, float]:
+    """Hours since this channel last published each subject.
+
+    The measurement that made this necessary, 2026-09-28: 犯罪治安 had 42
+    eligible candidates waiting and had not been published for 28.4 hours;
+    政府腐败与浪费 had 24 waiting and 21.3 hours; meanwhile 经济通胀关税 (80
+    waiting) had been published minutes earlier. Nothing in the pipeline could
+    see that, because ordering inside a score tier was the subject-mix
+    adjustment — identical for every candidate of one subject — and then
+    sha1(url), which never changes. A starved subject stayed starved no matter
+    how much of it was sitting in the pool.
+
+    Deliberately "hours since", not "share of the last 24h". A share says a
+    subject is under its target, which depends on a target somebody guessed;
+    sixteen of the eighteen targets rest on differences that were not
+    significant. Hours since last published is an observed fact and needs no
+    target at all.
+
+    Keyed on last_edited_time for the same reason as
+    recent_published_topic_counts() above — flipping send_status IS the
+    publish event and is the row's last edit. Verified 2026-09-28 against the
+    channel's real Gettr timestamps over 200 posts: median difference 0.5
+    minutes, worst case 1.0.
+
+    A subject with no published row inside the lookback returns the lookback
+    itself, which is the correct reading (at least this long) and keeps the
+    value bounded. Fails open to {} — every caller treats that as "no debt
+    known anywhere", i.e. exactly the previous ordering."""
+    notion = config.notion
+    if not notion.candidate_key or not notion.candidate_db_id:
+        return {}
+    props = notion.candidate_props
+    lookback = config.publish.topic_debt_lookback_hours
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=lookback)).isoformat()
+    headers = {
+        "Authorization": f"Bearer {notion.candidate_key}",
+        "Notion-Version": NOTION_VERSION,
+        "Content-Type": "application/json",
+    }
+    body = {
+        "filter": {
+            "and": [
+                {"property": props.send_status, "checkbox": {"equals": True}},
+                {"timestamp": "last_edited_time", "last_edited_time": {"after": cutoff}},
+            ]
+        },
+        "sorts": [{"timestamp": "last_edited_time", "direction": "descending"}],
+        "page_size": 100,
+    }
+    newest: dict[str, datetime] = {}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            cursor = None
+            while True:
+                payload = dict(body)
+                if cursor:
+                    payload["start_cursor"] = cursor
+                resp = await client.post(
+                    f"https://api.notion.com/v1/databases/{notion.candidate_db_id}/query",
+                    headers=headers, json=payload,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                for row in data.get("results", []):
+                    topic = _plain_text(row.get("properties", {}).get(props.topic, {}))
+                    edited = row.get("last_edited_time")
+                    if topic and edited and topic not in newest:
+                        newest[topic] = datetime.fromisoformat(edited.replace("Z", "+00:00"))
+                cursor = data.get("next_cursor")
+                if not data.get("has_more"):
+                    break
+    except Exception:
+        logger.exception("topic_publication_debt: Notion query failed — continuing with no subject debt")
+        return {}
+
+    now = datetime.now(timezone.utc)
+    debt = {t: min((now - ts).total_seconds() / 3600, lookback) for t, ts in newest.items()}
+    if debt:
+        worst = sorted(debt.items(), key=lambda kv: -kv[1])[:3]
+        logger.info("topic_publication_debt: longest unserved subjects %s",
+                    [(t, round(h, 1)) for t, h in worst])
+    return debt
+
+
 async def recent_published_topic_counts(config: AppConfig) -> dict[str, int]:
     """Counts what subjects this channel has actually published in the last
     topic_mix.window_hours — the "actual share" half of core/topic_mix.py's

@@ -102,6 +102,7 @@ from core.event_identity import EventVerifier, HubIndex
 from core.caption_guard import former_president_violation
 from core.language import is_english
 from core.notion_candidates import has_unpublished_hot_candidate, mark_dedup_rejected, mark_extraction_failed, mark_send_status, mark_writer_rejected, query_eligible_candidates, recent_published_topic_counts, record_extraction_failure
+from core.notion_candidates import topic_publication_debt
 from core.topic_mix import compute_adjustments
 from core.publish_cadence import compute_dynamic_interval
 from core.notion_sources import load_rss_sources
@@ -183,6 +184,10 @@ async def run_cycle(
     # same thing rather than each re-deriving it. Fails open to {} (no
     # adjustment anywhere), which is the pre-2026-09-25 behaviour.
     topic_adjustments = compute_adjustments(config, await recent_published_topic_counts(config))
+    # One read per cycle, shared by batch selection and ranking so the two
+    # stages cannot disagree about which subjects are owed coverage.
+    topic_debt = await topic_publication_debt(config)
+    cycle_token = str(int(datetime.now(timezone.utc).timestamp()) // 60)
 
     # Widen-on-empty (2026-09-05, per the user's "扩大范围，如果找不到合适的"
     # request): select_batch() only ever looks at `remaining` — the pool
@@ -234,7 +239,8 @@ async def run_cycle(
         if not batch:
             # Editor off, or it failed/returned nothing — the previous path,
             # unchanged, which is the point of it being a separate branch.
-            batch = select_batch(remaining, config, topic_adjustments)
+            batch = select_batch(remaining, config, topic_adjustments,
+                                 topic_debt=topic_debt, cycle_token=cycle_token)
         if not batch:
             logger.info("run_cycle: widen attempt %d — no more candidates left to try", attempt)
             break
@@ -442,7 +448,8 @@ async def run_cycle(
                 logger.info("run_cycle: editor rank %d — %s [%s] %s",
                             editor_order.get(c.page_id, -1) + 1, c.url, subject, why)
         else:
-            ranked = await ranker.rank(generated, trending_headlines, topic_adjustments)
+            ranked = await ranker.rank(generated, trending_headlines, topic_adjustments,
+                                       topic_debt=topic_debt)
         ranked_len = len(ranked)
         # 2026-09-23 — retire a candidate the dedup check keeps rejecting,
         # instead of re-extracting and re-writing it every cycle for the rest

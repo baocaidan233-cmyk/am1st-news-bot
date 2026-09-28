@@ -11,6 +11,7 @@ from agents.embedder import Embedder
 from core.config import AppConfig
 from core.hashing import cosine_similarity
 from core.models import PublishCandidate
+from agents.candidate_selector import debt_level
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,7 @@ class PriorityRanker:
     recording which candidate, if any, actually got published."""
 
     def __init__(self, config: AppConfig) -> None:
+        self._config = config
         self._embedder = Embedder(config)
 
     async def rank(
@@ -153,6 +155,7 @@ class PriorityRanker:
         batch: list[PublishCandidate],
         trending_headlines: list[str] | None = None,
         topic_adjustments: dict[str, float] | None = None,
+        topic_debt: dict[str, float] | None = None,
     ) -> list[PublishCandidate]:
         if not batch:
             return []
@@ -192,6 +195,8 @@ class PriorityRanker:
                 "heat_score": c.heat_score,
                 "topic": c.topic,
                 "topic_adjustment": round(topic_adjustment, 3),
+                "topic_debt_hours": round((topic_debt or {}).get(c.topic, 0.0), 1) if c.topic else 0.0,
+                "topic_debt_level": debt_level((topic_debt or {}).get(c.topic, 0.0), self._config) if c.topic else 0,
                 # Recorded only (2026-09-26). No term for it in priority_score yet
                 # — this week is for judging the label prospectively, not acting on it.
                 "trending_max_similarity": round(best_sim, 4),
@@ -204,5 +209,22 @@ class PriorityRanker:
 
             scored.append((c.model_copy(update={"priority_score": priority_score}), hours_since_update))
 
-        scored.sort(key=lambda item: (item[0].is_hot, item[0].priority_score, -item[1]), reverse=True)
+        # Subject coverage debt sorts above priority_score, as a level rather
+        # than a term added into it. Two reasons to keep them apart. "This
+        # subject has not run for 28 hours" and "this article may earn more
+        # likes" are different claims and blending them into one number is how
+        # the old formula stopped meaning anything. And priority_score is
+        # built from llm_score, which correlates +0.076 with engagement — it
+        # has no business outranking a subject the channel has actually
+        # stopped covering.
+        debt = topic_debt or {}
+        scored.sort(
+            key=lambda item: (
+                item[0].is_hot,
+                debt_level(debt.get(item[0].topic, 0.0), self._config) if item[0].topic else 0,
+                item[0].priority_score,
+                -item[1],
+            ),
+            reverse=True,
+        )
         return [c for c, _ in scored]
