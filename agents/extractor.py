@@ -30,6 +30,12 @@ FETCH_HEADERS = {
 # only attempted for domains actually confirmed to need it, and only as a
 # fallback after the cheap plain fetch already came back empty/too-thin.
 _BROWSER_REQUIRED_DOMAINS = (
+    # 2026-09-28: returns 403 to httpx on every header set tried, including a
+    # full desktop Chrome fingerprint, but renders normally under headless
+    # Chromium — bot detection rather than a paywall, which is exactly what
+    # this tier is for. Found when a breaking Fauci/Ebola story had already
+    # burned two of its three extraction attempts against the 403.
+    "justthenews.com",
     "nytimes.com",
     "ft.com",
     "economist.com",
