@@ -425,6 +425,18 @@ class ExtractionConfig(BaseModel):
 
     timeout_seconds: int = 20
     min_text_length: int = 200  # below this, treat extraction as failed (bot-block/JS-wall pages are usually a few dozen chars)
+    # After this many failed extractions, try the headless browser even for a
+    # domain not on _BROWSER_REQUIRED_DOMAINS. Two, so the sequence is: plain,
+    # plain, then plain-then-browser on the last attempt before the candidate
+    # is given up on (PublishConfig.extraction_max_attempts is 3).
+    #
+    # The point is the unknown blocker. A domain we already know returns 403
+    # is on the list and pays no failures at all; this catches the site nobody
+    # has noticed yet, which is how a breaking Fauci/Ebola story came within
+    # one attempt of being dropped for a 403 that headless Chromium walked
+    # straight through. -1 disables.
+    browser_after_attempts: int = 2
+
 
 
 class GettrConfig(BaseModel):
@@ -482,6 +494,19 @@ class PublishConfig(BaseModel):
     batch_max: int = 10  # was 5, raised to 10 on 2026-08-05 (extraction/content-gen only run on the selected batch now, not every scored candidate — a bigger batch costs much less than it used to). Briefly lowered back to 5 on 2026-09-02 after real data showed the winner was always found within the top 3 of the ranked batch — reverted the SAME day: the very first cycle at 5 hit "all candidates were duplicates, nothing to publish" on a day with heavy repeat coverage of a few ongoing stories (Iran, a House socialism vote), and 5 vs 10 wasn't saving much real token cost anyway (per-call cost is small) to be worth the risk of skipped publish cycles.
     priority_rank_prompt_file: str = "prompts/priority_rank_prompt.txt"
     posted_dedup_window_hours: int = 240  # was 24h — widened 2026-08-07 as a defensive backstop once the ingestion-side EventStore.mark_published() check exists (core/qdrant_store.py); matches heat.window_hours so both "have we already covered this" checks agree on how long an event stays "recent"
+    # Re-asks the event-level "have we already published this" question when a
+    # batch is formed, before anything is fetched or written. That check exists
+    # and is good, but it only ever runs once, at ingestion — and a candidate
+    # sits in the pool for up to 24 hours while this channel publishes around
+    # thirty posts. A story that was not a duplicate when it arrived at 10am is
+    # one by 4pm if we published its event at noon, and nothing re-asks.
+    #
+    # Far above the publish-side 0.70 on purpose. This runs before any cost has
+    # been paid, so it only has to catch the near-verbatim case; the 0.6-0.8
+    # band, where a genuine next development in a running story lives, is left
+    # to the caption-level check that has the full text to judge on. 0 disables.
+    batch_event_dedup_cosine: float = 0.9
+
     posted_dedup_threshold: float = 0.70  # stricter than the ingestion side's 0.8 — deliberate, per the user: fully autonomous posting should err toward under-posting
     # 2026-09-23, user request ("僵尸标记一下，没必要每次都扫描"): retire a
     # candidate from the pool once this many CONSECUTIVE publish cycles have

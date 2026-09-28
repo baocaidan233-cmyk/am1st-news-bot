@@ -181,9 +181,22 @@ class Extractor:
         _status, content = result
         return content
 
-    async def extract(self, url: str, sources: list[RssSource]) -> str | None:
+    async def extract(self, url: str, sources: list[RssSource],
+                      attempts: int = 0) -> str | None:
         """Returns the extracted main-content text, or None if extraction
-        failed — caller decides the fallback (the RSS description)."""
+        failed — caller decides the fallback (the RSS description).
+
+        `attempts` is how many times this candidate has already failed
+        extraction. Past extraction.browser_after_attempts the headless
+        browser is tried even for a domain not on the required list, because
+        by then the plain fetch has demonstrated it does not work for this
+        URL and the only thing left to change is the client.
+
+        The domain list still exists and still fires on the first attempt:
+        for a site known to answer 403 to httpx, spending two failures
+        rediscovering that is pure waste. The counter is for the sites we do
+        not know about yet — justthenews.com was one until a breaking story
+        had already burned two of its three attempts against a 403."""
         source = _find_cookie_source(url, sources)
         extraction = self._config.extraction
 
@@ -195,7 +208,12 @@ class Extractor:
         text = await asyncio.to_thread(trafilatura.extract, html) if html else None
 
         used_browser = False
-        if (not text or len(text) < extraction.min_text_length) and _needs_browser(url):
+        browser_worth_trying = (
+            _needs_browser(url)
+            or (extraction.browser_after_attempts >= 0
+                and attempts >= extraction.browser_after_attempts)
+        )
+        if (not text or len(text) < extraction.min_text_length) and browser_worth_trying:
             used_browser = True
             html = await self._fetch_browser(url, headers)
             # trafilatura's parsing is CPU-bound, synchronous — offload so
@@ -206,7 +224,7 @@ class Extractor:
         if not text or len(text) < extraction.min_text_length:
             reason = f"extracted only {len(text or '')} chars" if html else "fetch failed"
             if used_browser:
-                reason += " (after browser retry)"
+                reason += " (after browser retry, attempt %d)" % (attempts + 1)
             await self._fail(url, source, reason)
             return None
 
