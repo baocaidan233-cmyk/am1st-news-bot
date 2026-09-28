@@ -549,7 +549,15 @@ async def run_cycle(
             c.llm_comment = score_output.llm_comment
             passed = c.llm_score >= config.openai.score_threshold
             if not passed:
-                logger.info("run_cycle: %s scored %.1f, below threshold", c.url, c.llm_score)
+                # Title included (2026-09-28) because this line is the only
+                # record a rejected candidate ever existed — nothing below the
+                # score floor reaches Notion. Without it the only way to ask
+                # what the scorer throws away is to classify the URL slug, and
+                # that collapses to 其他 for 78% of a sample, which cannot
+                # distinguish "we are not fed this kind of story" from "the
+                # scorer rejects it at the door". Those have opposite fixes.
+                logger.info("run_cycle: %s scored %.1f, below threshold — %s",
+                            c.url, c.llm_score, c.title[:160])
             scored.append((c, embedding, cluster_idx, passed))
         except Exception:
             logger.exception("run_cycle: unhandled error scoring %s, skipping this item", c.url)
