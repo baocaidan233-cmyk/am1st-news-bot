@@ -9,7 +9,6 @@ from urllib.parse import urlparse
 from pydantic import BaseModel
 
 from agents.topic_tagger import TOPICS
-from agents.want_tagger import WANTS
 from core.config import AppConfig
 from core.models import PublishCandidate
 from core.openai_client import create_openai_client
@@ -35,7 +34,6 @@ Reply with JSON in exactly this form:
 class EditorPick(BaseModel):
     candidate: PublishCandidate
     subject: str | None = None
-    want: str | None = None
     why: str = ""
 
     class Config:
@@ -230,18 +228,12 @@ class EditorPicker:
                 logger.warning("EditorPicker: subject %r is not in TOPICS — using 其他 for %s",
                                raw_subject, c.url)
                 subject = "其他"
-            raw_payoff = row.get("payoff")
-            want = raw_payoff if raw_payoff in WANTS else None
-            if want is None and raw_payoff:
-                logger.warning("EditorPicker: payoff %r is not in WANTS — left unset for %s",
-                               raw_payoff, c.url)
-            picks.append(EditorPick(candidate=c, subject=subject, want=want,
-                                    why=str(row.get("why") or "")[:300]))
+            picks.append(EditorPick(candidate=c, subject=subject, why=str(row.get("why") or "")[:300]))
         if not picks:
             logger.warning("EditorPicker: response held no usable picks — falling back")
             return None
         picks = self._enforce_caps(await self._one_per_event(picks))[:ed.pick_count]
         for i, p in enumerate(picks, 1):
-            logger.info("EditorPicker: #%d %s [%s / %s] %s — %s",
-                        i, p.candidate.url, p.subject, p.want, p.candidate.title[:70], p.why)
+            logger.info("EditorPicker: #%d %s [%s] %s — %s",
+                        i, p.candidate.url, p.subject, p.candidate.title[:70], p.why)
         return picks

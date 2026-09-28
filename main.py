@@ -66,7 +66,6 @@ from agents.og_metadata import fetch_link_preview
 from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
 from agents.topic_tagger import TopicTagger
-from agents.want_tagger import WantTagger
 from agents.trending import fetch_trending_headlines
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex, core_entities_of, cross_cycle_dedup_verdict, entity_tokens, event_identity_text, extract_event_frame, log_decision, no_conflicting_specifics, verify_compatibility
@@ -83,7 +82,7 @@ logger = logging.getLogger("main")
 
 
 async def run_cycle(
-    config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, want_tagger, hub_index, event_verifier, dry_run,
+    config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run,
 ) -> None:
     sources = await load_rss_sources(config)
     if not sources:
@@ -677,7 +676,6 @@ async def run_cycle(
                 # Tagged but not acted on yet (2026-09-26): this pass only records
                 # the label so a week of it can be judged prospectively, the way
                 # the MAGA-consensus shadow run was. Nothing downstream reads it.
-                c.want = await want_tagger.tag(c)
                 if not await write_candidate(config, c):
                     logger.warning("run_cycle: candidate-pool write failed for %s", c.url)
                     continue
@@ -686,7 +684,7 @@ async def run_cycle(
                     c.url, c.url_hash, content_for_embedding, int(c.published_at.timestamp()), embedding,
                 )
                 added_count += 1
-                logger.info("run_cycle: added to candidate pool: %s (score=%.1f, topic=%s, want=%s)", c.url, c.llm_score, c.topic or "-", c.want or "-")
+                logger.info("run_cycle: added to candidate pool: %s (score=%.1f, topic=%s)", c.url, c.llm_score, c.topic or "-")
             except Exception:
                 logger.exception("run_cycle: unhandled error writing %s, skipping this item", c.url)
 
@@ -709,7 +707,6 @@ async def main() -> None:
     embedder = Embedder(config)
     scorer = Scorer(config)
     topic_tagger = TopicTagger(config)
-    want_tagger = WantTagger(config)
 
     if dry_run:
         logger.info("Running in --dry-run mode: Notion/Qdrant writes will be logged, not sent")
@@ -719,7 +716,7 @@ async def main() -> None:
             started = time.monotonic()
             try:
                 await asyncio.wait_for(
-                    run_cycle(config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, want_tagger, hub_index, event_verifier, dry_run),
+                    run_cycle(config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:

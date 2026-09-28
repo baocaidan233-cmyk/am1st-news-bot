@@ -206,7 +206,7 @@ async def run_cycle(
                     arm, cycle_no, config.editor.ab_alternate)
 
     editor_order: dict[str, int] = {}
-    editor_meta: dict[str, tuple[str | None, str | None, str]] = {}
+    editor_meta: dict[str, tuple[str | None, str]] = {}
     for attempt in range(1, config.publish.max_widen_attempts + 1):
         # Reset per attempt: a widen that falls back to select_batch must not
         # inherit the previous attempt's ordering.
@@ -227,12 +227,10 @@ async def run_cycle(
                 if picks:
                     batch = [p.candidate for p in picks]
                     editor_order = {p.candidate.page_id: i for i, p in enumerate(picks)}
-                    editor_meta = {p.candidate.page_id: (p.subject, p.want, p.why) for p in picks}
+                    editor_meta = {p.candidate.page_id: (p.subject, p.why) for p in picks}
                     for p in picks:
                         if p.subject:
                             p.candidate.topic = p.subject
-                        if p.want:
-                            p.candidate.want = p.want
         if not batch:
             # Editor off, or it failed/returned nothing — the previous path,
             # unchanged, which is the point of it being a separate branch.
@@ -410,9 +408,9 @@ async def run_cycle(
             # the editor replaced would just undo that.
             ranked = sorted(generated, key=lambda c: editor_order.get(c.page_id, 10**6))
             for c in ranked:
-                subject, want, why = editor_meta.get(c.page_id, (None, None, ""))
-                logger.info("run_cycle: editor rank %d — %s [%s / %s] %s",
-                            editor_order.get(c.page_id, -1) + 1, c.url, subject, want, why)
+                subject, why = editor_meta.get(c.page_id, (None, ""))
+                logger.info("run_cycle: editor rank %d — %s [%s] %s",
+                            editor_order.get(c.page_id, -1) + 1, c.url, subject, why)
         else:
             ranked = await ranker.rank(generated, trending_headlines, topic_adjustments)
         ranked_len = len(ranked)
