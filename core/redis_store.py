@@ -104,6 +104,64 @@ class PostedDupStrikes:
             await self._client.aclose()
 
 
+class BatchSeen:
+    """How many shortlists a candidate has already appeared on.
+
+    Exists because the previous ordering could not be escaped. Within a score
+    tier the order was sha1(url), which never changes, so a candidate the hash
+    placed outside the cut was outside it every cycle until it aged out —
+    measured 2026-09-28, 477 of 884 eligible candidates over 72 hours (54%)
+    never entered a single ranking call. Ordering by this count first means a
+    candidate that has never been looked at outranks one that has been looked
+    at and lost, which it should: losing means it was actually evaluated.
+
+    Same shape and same reasoning as PostedDupStrikes above: INCR with a TTL
+    that outlives the eligibility window and then cleans itself up. Fails open
+    to "never seen" on any Redis error, which reproduces the old ordering
+    rather than blocking a cycle."""
+
+    def __init__(self, config: AppConfig) -> None:
+        self._client = (
+            redis.from_url(config.redis.url, decode_responses=True, socket_timeout=10, socket_connect_timeout=10)
+            if config.redis.url
+            else None
+        )
+        self._prefix = config.redis.batch_seen_prefix
+        self._ttl = config.redis.caption_ttl_seconds
+
+    async def counts(self, url_hashes: list[str]) -> dict[str, int]:
+        if self._client is None or not url_hashes:
+            return {}
+        try:
+            values = await self._client.mget([self._prefix + h for h in url_hashes])
+        except Exception:
+            logger.exception("BatchSeen: read failed — treating every candidate as unseen")
+            return {}
+        out: dict[str, int] = {}
+        for h, v in zip(url_hashes, values):
+            try:
+                out[h] = int(v)
+            except (TypeError, ValueError):
+                out[h] = 0
+        return out
+
+    async def mark(self, url_hashes: list[str]) -> None:
+        if self._client is None or not url_hashes:
+            return
+        try:
+            pipe = self._client.pipeline()
+            for h in url_hashes:
+                pipe.incr(self._prefix + h)
+                pipe.expire(self._prefix + h, self._ttl)
+            await pipe.execute()
+        except Exception:
+            logger.exception("BatchSeen: write failed — a candidate may be re-shown; not fatal")
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+
+
 class CaptionCache:
     """Caches Writer.write()'s generated caption by url_hash so the same
     still-unpublished candidate gets an identical post_content (and thus an

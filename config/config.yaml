@@ -244,3 +244,11 @@ alert_cooldown_seconds: 21600  # 6h — don't re-@mention for a still-broken sou
 # 2026-09-22 — 预览图坏掉时改发我方渲染的标题卡，见 core/config.py 的 PosterConfig
 poster:
   enabled: true
+
+# 发布周期里唯一的编辑判断 —— 见 agents/editor.py / core/config.py 的 EditorConfig。
+# enabled: false 时 main_publish.py 走的是加这层之前的完全相同的路径。
+editor:
+  enabled: false
+  shortlist_size: 50
+  pick_count: 10
+  recent_titles_hours: 48.0

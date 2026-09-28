@@ -804,6 +804,41 @@ class PostedHistoryStore:
             return None
         return (points[0].payload or {}).get("sentAt")
 
+    async def recent_captions(self, hours: float, limit: int) -> list[str]:
+        """The opening line of each caption this channel actually posted in
+        the last `hours`, newest first.
+
+        For agents/editor.py's brief: the editor has to know what the audience
+        just read, and this is the real record of it — Notion's post_content
+        column has never been written since the 2026-08-05 restructure (0 of
+        500 published rows carry one), so the caption only exists here.
+
+        Only the first line is returned. It carries the story, and forty full
+        captions would crowd the brief out of the editor's attention for no
+        added information."""
+        if self._client is None:
+            return []
+        cutoff = int(time.time() - hours * 3600)
+        try:
+            points, _ = await self._client.scroll(
+                collection_name=self._collection,
+                scroll_filter=Filter(must=[FieldCondition(key="sentAt", range=Range(gte=cutoff))]),
+                order_by=OrderBy(key="sentAt", direction=Direction.DESC),
+                limit=limit,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception:
+            logger.exception("PostedHistoryStore: recent_captions failed — editor brief will omit recent posts")
+            return []
+        out: list[str] = []
+        for pt in points:
+            text = ((pt.payload or {}).get("content") or "").strip()
+            if text:
+                out.append(text.split("\n")[0][:160])
+        return out
+
+
     async def most_similar_recent(self, embedding: list[float]) -> tuple[float, str, str]:
         """Highest cosine similarity against post_content embeddings whose
         source article was published in the last window, plus that match's

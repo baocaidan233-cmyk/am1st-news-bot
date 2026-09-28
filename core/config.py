@@ -98,6 +98,7 @@ class RedisConfig(BaseModel):
     # weekend_max_age_hours (24h ceiling) so it always outlives the
     # candidate's eligibility window and self-expires afterward.
     caption_ttl_seconds: int = 172800  # 48h
+    batch_seen_prefix: str = "am1st:seen:"  # BatchSeen — how many shortlists this candidate has appeared on. Ordering by this ahead of the stable hash is what stops a fixed hash position from excluding a candidate for its whole life; see agents/candidate_selector.py's shortlist().
     dup_strike_prefix: str = "am1st:pubdup:"  # PostedDupStrikes — how many publish cycles in a row have called this candidate a duplicate; same TTL reasoning as caption_ttl_seconds (must outlive the 24h eligibility window, then self-expire)
 
 
@@ -770,6 +771,45 @@ class TopicMixConfig(BaseModel):
     )
 
 
+class EditorConfig(BaseModel):
+    """The publish cycle's one editorial judgement — see agents/editor.py.
+
+    Everything that used to decide which stories reached the ranker was
+    measured on 2026-09-28 and none of it discriminated: llm_score correlates
+    +0.076 with hour-normalised engagement with 63% of candidates tied at
+    6.0, heat_score correlates -0.047 and feeds nothing, is_hot has never
+    fired, the trending term is inert. What actually chose the batch was
+    sha1(url), and because that number never changes, a candidate it placed
+    outside the top ten stayed there every cycle until it aged out — 54% of
+    eligible candidates over 72 hours were never looked at once.
+
+    The score still does the job it can do. Measured the same day, the
+    eligible pool runs at a median of 130 candidates and a 90th percentile of
+    296, so something has to cut it down, and the score does separate coarsely
+    (7+ is 11% of the pool, 8 is 6%). It cuts the pool to shortlist_size; it
+    does not order within a tier, where it is 151-way ties.
+
+    shortlist_size is a judgement-quality limit, not a cost one. The whole
+    pool would fit in the context window — 300 candidates is about 12k tokens
+    — but a model reading a list that long attends to its ends. Keeping the
+    shortlist at a size the editor can genuinely read through is the same
+    reason we keep prompts short elsewhere.
+
+    enabled defaults to false. With it off, main_publish.py takes exactly the
+    path it took before this existed."""
+
+    enabled: bool = False
+    model: str = ""  # blank = openai.chat_model
+    prompt_file: str = "prompts/editor_prompt.txt"
+    shortlist_size: int = 50
+    pick_count: int = 10
+    recent_titles_hours: float = 48.0
+    recent_titles_max: int = 40
+    description_chars: int = 220
+    per_batch_subject_cap: int = 3
+    per_batch_source_cap: int = 3
+
+
 class AppConfig(BaseModel):
     notion: NotionConfig = Field(default_factory=NotionConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
@@ -785,6 +825,7 @@ class AppConfig(BaseModel):
     publish: PublishConfig = Field(default_factory=PublishConfig)
     dynamic_publish: DynamicPublishConfig = Field(default_factory=DynamicPublishConfig)
     topic_mix: TopicMixConfig = Field(default_factory=TopicMixConfig)
+    editor: EditorConfig = Field(default_factory=EditorConfig)
     max_publish_age_hours: int = 3
     poll_interval_seconds: int = 600
     cycle_timeout_seconds: int = 540  # 9 min — per the user's real n8n experience, a healthy cycle runs ~5min and almost never past 7min; this hard-cuts a stuck cycle so the next one always starts on schedule (main.py and main_publish.py loops both apply this, independently — see 2026-08-12 waterfall/no-external-retrigger discussion)

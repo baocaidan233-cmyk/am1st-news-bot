@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections import Counter
 from urllib.parse import urlparse
 from datetime import datetime, timezone
@@ -8,6 +9,8 @@ from zoneinfo import ZoneInfo
 
 from core.config import AppConfig
 from core.models import PublishCandidate
+
+logger = logging.getLogger(__name__)
 
 # Which timezone's calendar day decides "weekday vs weekend" — US/Eastern,
 # since this is a US-audience channel and that's the standard reference for
@@ -129,6 +132,56 @@ def _fill(batch: list[PublishCandidate], pool, limit: int, topic_cap: int, sourc
             topics[c.topic] += 1
         if src:
             sources[src] += 1
+
+
+def shortlist(
+    candidates: list[PublishCandidate],
+    config: AppConfig,
+    seen: dict[str, int] | None = None,
+    now: datetime | None = None,
+) -> list[PublishCandidate]:
+    """Cuts the eligible pool down to the set agents/editor.py can actually
+    read. Used only when editor.enabled; select_batch() below is untouched and
+    remains the path when it is off.
+
+    Applies exactly the same hard filters select_batch() does — the day-aware
+    published_at ceiling and the night score gate — and then orders by score,
+    breaking ties by how many shortlists the candidate has already appeared on
+    and only then by the stable hash.
+
+    That middle term is the whole point. The eligible pool runs at a median of
+    130 and a 90th percentile of 296 (measured 2026-09-28), so the cut is
+    real, and the score cuts it coarsely but honestly: 7+ is 11% of the pool,
+    8 is 6%. Below that it stops working — one sampled moment held 151
+    candidates tied at exactly 6.0 — and whatever broke those ties decided
+    which of them was ever looked at. That used to be sha1(url), a number that
+    never changes, so a candidate it placed below the cut was below it every
+    cycle for its whole 12-hour life: 477 of 884 eligible candidates over 72
+    hours never entered a single ranking call. Ordering by appearances first
+    means never-seen beats already-evaluated-and-passed-over, so the tie group
+    rotates instead of freezing.
+
+    `seen` missing or empty is the correct fallback, not a failure: every
+    count reads as 0, the term drops out, and the order is the old one."""
+    pub = config.publish
+    now = now or datetime.now(timezone.utc)
+    is_weekday = _is_weekday(now)
+    max_age_hours = pub.weekday_max_age_hours if is_weekday else pub.weekend_max_age_hours
+    seen = seen or {}
+
+    def hours_old(c: PublishCandidate) -> float:
+        return (now - c.published_at).total_seconds() / 3600
+
+    pool = [c for c in candidates if hours_old(c) <= max_age_hours]
+    if is_night(now, config):
+        pool = [c for c in pool if c.is_hot or c.llm_score >= pub.night_min_score]
+    pool.sort(key=lambda c: (-c.llm_score, seen.get(c.url_hash, 0), _stable_key(c)))
+    cut = pool[: config.editor.shortlist_size]
+    logger.info(
+        "shortlist: %d eligible -> %d after age/night -> %d shortlisted (never-shown %d)",
+        len(candidates), len(pool), len(cut), sum(1 for c in cut if seen.get(c.url_hash, 0) == 0),
+    )
+    return cut
 
 
 def select_batch(

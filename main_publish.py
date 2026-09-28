@@ -84,7 +84,7 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
-from agents.candidate_selector import filter_former_trump, select_batch
+from agents.candidate_selector import filter_former_trump, select_batch, shortlist
 from agents.embedder import Embedder
 from agents.extractor import Extractor
 from agents.gettr_publisher import GettrPublisher
@@ -95,6 +95,7 @@ from agents.priority_ranker import PriorityRanker, log_publish_outcome
 from agents.trending import fetch_trending_headlines
 from agents.staleness_checker import StalenessChecker
 from agents.writer import Writer
+from agents.editor import EditorPicker
 from core.alerts import AlertNotifier
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex
@@ -105,7 +106,7 @@ from core.topic_mix import compute_adjustments
 from core.publish_cadence import compute_dynamic_interval
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
-from core.redis_store import CaptionCache, PostedDupStrikes
+from core.redis_store import BatchSeen, CaptionCache, PostedDupStrikes
 from core.title_guard import title_violation
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -150,6 +151,8 @@ async def run_cycle(
     caption_cache: CaptionCache,
     dup_strikes: PostedDupStrikes,
     hub_index: HubIndex,
+    editor: EditorPicker,
+    batch_seen: BatchSeen,
     dry_run: bool,
 ) -> bool:
     """Returns True iff this cycle actually published something — main()'s
@@ -192,8 +195,37 @@ async def run_cycle(
     remaining = candidates
     winner = None
     ranked_len = 0
+    editor_order: dict[str, int] = {}
+    editor_meta: dict[str, tuple[str | None, str | None, str]] = {}
     for attempt in range(1, config.publish.max_widen_attempts + 1):
-        batch = select_batch(remaining, config, topic_adjustments)
+        # Reset per attempt: a widen that falls back to select_batch must not
+        # inherit the previous attempt's ordering.
+        editor_order, editor_meta = {}, {}
+        batch = []
+        if config.editor.enabled:
+            # One editorial judgement over the whole shortlist, in place of a
+            # score tier plus sha1(url). See agents/editor.py for why the
+            # per-story judgements it replaces could not discriminate.
+            seen_counts = await batch_seen.counts([c.url_hash for c in remaining])
+            short = shortlist(remaining, config, seen_counts)
+            if short:
+                await batch_seen.mark([c.url_hash for c in short])
+                recent = await posted_store.recent_captions(
+                    config.editor.recent_titles_hours, config.editor.recent_titles_max)
+                picks = await editor.pick(short, recent, topic_adjustments, datetime.now(timezone.utc))
+                if picks:
+                    batch = [p.candidate for p in picks]
+                    editor_order = {p.candidate.page_id: i for i, p in enumerate(picks)}
+                    editor_meta = {p.candidate.page_id: (p.subject, p.want, p.why) for p in picks}
+                    for p in picks:
+                        if p.subject:
+                            p.candidate.topic = p.subject
+                        if p.want:
+                            p.candidate.want = p.want
+        if not batch:
+            # Editor off, or it failed/returned nothing — the previous path,
+            # unchanged, which is the point of it being a separate branch.
+            batch = select_batch(remaining, config, topic_adjustments)
         if not batch:
             logger.info("run_cycle: widen attempt %d — no more candidates left to try", attempt)
             break
@@ -361,7 +393,17 @@ async def run_cycle(
             logger.info("run_cycle: widen attempt %d — all candidates dropped by post-extraction former-Trump filter", attempt)
             continue
 
-        ranked = await ranker.rank(generated, trending_headlines, topic_adjustments)
+        if editor_order:
+            # The editor already ranked these, reading all of them together
+            # with the brief. Re-scoring them one at a time with the arithmetic
+            # the editor replaced would just undo that.
+            ranked = sorted(generated, key=lambda c: editor_order.get(c.page_id, 10**6))
+            for c in ranked:
+                subject, want, why = editor_meta.get(c.page_id, (None, None, ""))
+                logger.info("run_cycle: editor rank %d — %s [%s / %s] %s",
+                            editor_order.get(c.page_id, -1) + 1, c.url, subject, want, why)
+        else:
+            ranked = await ranker.rank(generated, trending_headlines, topic_adjustments)
         ranked_len = len(ranked)
         # 2026-09-23 — retire a candidate the dedup check keeps rejecting,
         # instead of re-extracting and re-writing it every cycle for the rest
@@ -466,6 +508,8 @@ async def main() -> None:
     staleness_checker = StalenessChecker(config)
     caption_cache = CaptionCache(config)
     dup_strikes = PostedDupStrikes(config)
+    editor = EditorPicker(config)
+    batch_seen = BatchSeen(config)
     await ensure_collection_with_retry(posted_store, "am1st_posting_news_embedding")
     await ensure_collection_with_retry(event_store, "am1st_events")
 
@@ -502,7 +546,7 @@ async def main() -> None:
             published_this_cycle = False
             try:
                 published_this_cycle = await asyncio.wait_for(
-                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, staleness_checker, caption_cache, dup_strikes, hub_index, dry_run),
+                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, staleness_checker, caption_cache, dup_strikes, hub_index, editor, batch_seen, dry_run),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:
