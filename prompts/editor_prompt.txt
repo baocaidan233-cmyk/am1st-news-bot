@@ -8,7 +8,8 @@ You will receive one JSON object:
   subject_gaps          per subject: how far this channel's recent output sits from
                         where it should be. Positive means under-published, negative
                         means over-published. Absent means on target.
-  stories               the candidates. Each has id, title, description, source,
+  stories               the candidates. Each has a short numeric id, title,
+                        description, source,
                         hours_old, score (a relevance rating from an earlier stage,
                         coarse -- treat it as a floor that has already been passed,
                         not as a ranking).
@@ -70,8 +71,16 @@ SUBJECTS -- use these exact strings, one per story:
 
 OUTPUT
 
-Return EXACTLY this JSON and nothing else. "why" is one short sentence in
-Chinese saying why this story, here, now -- it is read by a human reviewing
-your choices, so make it specific to the story, not a restatement of the rules.
+Return EXACTLY this JSON and nothing else.
 
-{"picks": [{"id": "...", "subject": "媒体与审查", "want": "媒体被打脸", "why": "..."}]}
+Copy "title" back from the story you are choosing, word for word, before you
+write anything else about it. It is checked against the id: if they disagree
+the pick is thrown away, so make sure every field below describes the SAME
+story as the id.
+
+"why" is one short sentence in Chinese saying why this story, here, now. It is
+read by a human reviewing your choices, so it must be specific to this story
+-- name what happened in it. A sentence that could be attached to any story is
+worthless.
+
+{"picks": [{"id": "7", "title": "the headline copied back", "subject": "媒体与审查", "want": "媒体被打脸", "why": "..."}]}

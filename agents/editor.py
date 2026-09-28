@@ -65,9 +65,9 @@ class EditorPicker:
                  subject_gaps: dict[str, float], now) -> dict:
         ed = self._config.editor
         stories = []
-        for c in candidates:
+        for i, c in enumerate(candidates, 1):
             stories.append({
-                "id": c.page_id,
+                "id": str(i),
                 "title": c.title[:180],
                 "description": (c.description or "")[:ed.description_chars],
                 "source": urlparse(c.url).netloc.replace("www.", "").lower() if c.url else "",
@@ -107,7 +107,13 @@ class EditorPicker:
         ed = self._config.editor
         if not ed.enabled or not candidates:
             return None
-        by_id = {c.page_id: c for c in candidates}
+        # Short sequential ids, not page_ids. The first live run used 36-char
+        # UUIDs over a 50-story list and the model returned valid ids attached
+        # to reasons and labels belonging to OTHER stories -- it lost track of
+        # which row it was writing about. A one- or two-digit handle is much
+        # harder to drift on, and the echoed title below catches it when it
+        # still does.
+        by_id = {str(i): c for i, c in enumerate(candidates, 1)}
         system = self._prompt.replace("{pick_count}", str(ed.pick_count))
         try:
             resp = await self._client.chat.completions.create(
@@ -130,9 +136,22 @@ class EditorPicker:
         for row in raw:
             if not isinstance(row, dict):
                 continue
-            c = by_id.get(row.get("id"))
+            c = by_id.get(str(row.get("id")))
             if c is None or c.page_id in seen:
                 continue
+            # The model echoes the title it believes it is choosing. When that
+            # does not match the row its id points at, the pick is discarded:
+            # the id and the judgement have come apart, so neither can be
+            # trusted for this story. Compared on the first words only, since
+            # the model may shorten a long headline.
+            echoed = str(row.get("title") or "").strip().lower()
+            if echoed:
+                head = " ".join(c.title.lower().split()[:5])
+                if head and not (echoed.startswith(head[:28]) or head.startswith(echoed[:28])):
+                    logger.warning(
+                        "EditorPicker: dropped id=%s — echoed title %r does not match %r",
+                        row.get("id"), echoed[:60], c.title[:60])
+                    continue
             seen.add(c.page_id)
             subject = row.get("subject") if row.get("subject") in TOPICS else None
             want = row.get("want") if row.get("want") in WANTS else None
