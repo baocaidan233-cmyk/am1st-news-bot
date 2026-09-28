@@ -1,182 +1,222 @@
-"""What MAGA's big accounts get engagement on, against what this channel has,
-picks and publishes — plus what the scorer threw away before any of that.
+"""For each story the benchmark accounts did well with: did we have it, and did
+we publish it?
 
-Two questions, one tool, because the first one's answer is meaningless without
-the second. A subject that is big for the benchmark accounts and thin in our
-pool can mean two different things: nobody feeds us that kind of story, or the
-scorer rejects it at the door. Those have opposite fixes — add sources, or fix
-the scorer — and only the rejected-log side can tell them apart. Rejected
-candidates are never written to Notion, so the log line is the only record
-they exist at all.
+The unit is the story, not the subject mix. A subject-share comparison says our
+pool holds 5% corruption against their 16%, which sounds like a supply problem
+and may not be one — the NY Post story on the US asking China to execute
+fentanyl suppliers sat in the pool, scored, tagged and extracted, for sixteen
+consecutive cycles and aged out unpublished. Having it in the pool is worth
+nothing. So every benchmark post that performed lands in exactly one bucket:
 
-Methodology, fixed here so it is not re-chosen per run:
-  - Benchmark engagement is normalised per account against that account's own
-    median. Raw likes across accounts with 19k and 7.4M followers compare
-    nothing.
-  - The comparison is on subject mix, not on surface features. Post length,
-    emoji, hashtags and the rest were measured on this same benchmark and did
-    not separate good posts from bad ones within an account.
-  - Rejected candidates are classified from their URL slug, which is usually
-    the headline. Slugs shorter than 18 characters are skipped rather than
-    guessed at.
+  命中   we had it and published it
+  漏掉   we had it and did not publish it   <- selection failure, and the
+                                              benchmark account's own
+                                              engagement is the evidence it
+                                              was worth publishing
+  没有   it never reached our pool           <- supply failure
 
-    ./.venv/bin/python tools/maga_gap_review.py [hours] [rejected_sample]
+That split is the whole point: the two failures have opposite fixes, and the
+only stories we can prove we were wrong to skip are the ones somebody else
+published to a real audience.
+
+Matching is cosine over the benchmark post against our candidates' title +
+description within +/-36h, then one LLM confirmation on the best match above a
+floor. Cosine alone cannot decide this — measured repeatedly here, a genuine
+reprint and a different angle on the same event sit in the same band — so it
+only decides what to ask about.
+
+    ./.venv/bin/python tools/maga_gap_review.py [days] [top_n]
 """
 from __future__ import annotations
 
 import asyncio
 import collections
-import glob
-import gzip
+import datetime as dt
 import json
+import math
 import os
-import random
-import re
 import statistics as st
 import sys
 import time
-from urllib.parse import unquote, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from agents.topic_tagger import TOPICS, _PROMPT as TOPIC_PROMPT  # noqa: E402
+import httpx  # noqa: E402
+
+from agents.embedder import Embedder  # noqa: E402
 from core.config import load_config  # noqa: E402
-from core.notion_candidates import query_eligible_candidates, recent_published_topic_counts  # noqa: E402
 from core.openai_client import create_openai_client  # noqa: E402
 
 BENCHMARK = os.path.expanduser("~/maga_benchmark/posts.jsonl")
 OURS = {"gettrworldnews"}
-LOG_GLOB = "logs/main.log*"
+COSINE_FLOOR = 0.62          # below this, not worth an LLM call
+WINDOW_H = 36.0
 
 cfg = load_config("config/config.yaml")
 client = create_openai_client(cfg)
+embedder = Embedder(cfg)
 _sem = asyncio.Semaphore(8)
 
+_SAME = """Do these two describe the same underlying news event?
 
-async def tag(text: str) -> str | None:
-    if len(text) < 18:
-        return None
+The first is a post from another channel. The second is a headline our own
+newsroom had available. Same event means the same thing happened to the same
+people: a report of an incident and a statement about that same incident count
+as the same event; two similar but separate incidents do not, and two different
+people acting on one broad topic do not.
+
+Reply with JSON: {"same": true} or {"same": false}"""
+
+
+async def same_event(a: str, b: str) -> bool:
     async with _sem:
         try:
-            resp = await client.chat.completions.create(
-                model=cfg.openai.chat_model, temperature=0, max_tokens=24,
+            r = await client.chat.completions.create(
+                model=cfg.openai.chat_model, temperature=0, max_tokens=12,
                 response_format={"type": "json_object"},
-                messages=[{"role": "system", "content": TOPIC_PROMPT},
-                          {"role": "user", "content": text[:500]}])
-            t = json.loads(resp.choices[0].message.content or "{}").get("t")
-            return t if t in TOPICS else None
+                messages=[{"role": "system", "content": _SAME},
+                          {"role": "user", "content": f"A: {a[:400]}\n\nB: {b[:400]}"}])
+            return bool(json.loads(r.choices[0].message.content or "{}").get("same"))
+        except Exception:
+            return False
+
+
+async def embed(text: str) -> list[float] | None:
+    async with _sem:
+        try:
+            return await embedder.embed(text[:2000])
         except Exception:
             return None
 
 
-def log_lines() -> list[str]:
-    out: list[str] = []
-    for path in sorted(glob.glob(LOG_GLOB)):
-        try:
-            opener = gzip.open if path.endswith(".gz") else open
-            with opener(path, "rt", encoding="utf-8", errors="ignore") as f:
-                out += f.readlines()
-        except Exception:
-            continue
-    return out
+def cos(a, b):
+    if not a or not b:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a)) or 1
+    nb = math.sqrt(sum(x * x for x in b)) or 1
+    return dot / (na * nb)
 
 
-def slug_of(url: str) -> str:
-    try:
-        path = unquote(urlparse(url).path)
-    except Exception:
-        return ""
-    parts = [p for p in path.split("/") if len(p) > 18]
-    text = re.sub(r"[-_]+", " ", " ".join(parts[-2:]))
-    text = re.sub(r"\.(html?|php|aspx?|shtml)$", "", text)
-    return " ".join(re.sub(r"\b\d{5,}\b", " ", text).split())[:200]
-
-
-def benchmark_top(hours: float, n: int) -> list[dict]:
-    cutoff = time.time() - hours * 3600
+def benchmark_top(days: float, n: int) -> list[dict]:
+    cutoff = time.time() - days * 86400
     rows = []
     with open(BENCHMARK, encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
             r = json.loads(line)
-            if (r.get("cdate") or 0) / 1000 < cutoff or r.get("author") in OURS:
+            ts = (r.get("cdate") or 0) / 1000
+            if ts < cutoff or r.get("author") in OURS:
                 continue
-            text = (r.get("txt") or "")[:260] or (r.get("link_title") or "")[:260]
-            if text:
-                rows.append({"a": r.get("author"), "lk": int(r.get("like") or 0), "txt": text})
-    per: dict[str, list[int]] = collections.defaultdict(list)
+            text = (r.get("txt") or "").strip()[:400] or (r.get("link_title") or "")[:400]
+            if len(text) > 25:
+                rows.append({"a": r.get("author"), "lk": int(r.get("like") or 0), "txt": text, "ts": ts,
+                             # Whether the post points at an article at all.
+                             # Our pipeline ingests RSS articles, so a native
+                             # video or screenshot post is not something more
+                             # feeds would ever give us — it is a different
+                             # ingestion path, and lumping the two together
+                             # turns an architecture question into a fake
+                             # sourcing one.
+                             "article": bool(r.get("link")) or bool(r.get("link_title")),
+                             "media": bool(r.get("vid")) or bool(r.get("imgs"))})
+    per = collections.defaultdict(list)
     for r in rows:
         per[r["a"]].append(r["lk"])
     med = {a: (st.median(v) or 1) for a, v in per.items()}
     for r in rows:
         r["n"] = r["lk"] / med[r["a"]]
     rows.sort(key=lambda r: -r["n"])
-    print(f"大号近 {hours:g}h 帖 {len(rows)} 条（{len(per)} 个账号），取归一化最高的 {min(n, len(rows))} 条")
+    print(f"大号近 {days:g} 天帖 {len(rows)} 条（{len(per)} 个账号），取归一化最高的 {min(n, len(rows))} 条")
     return rows[:n]
 
 
-def share(counter: collections.Counter, key: str) -> float:
-    total = sum(counter.values())
-    return 100 * counter[key] / total if total else 0.0
+async def our_candidates(days: float) -> list[dict]:
+    H = {"Authorization": "Bearer " + cfg.notion.candidate_key,
+         "Notion-Version": "2022-06-28", "Content-Type": "application/json"}
+    since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days + 1)).isoformat()
+    out, cur = [], None
+    async with httpx.AsyncClient(timeout=60) as cli:
+        while True:
+            body = {"filter": {"property": "published_at", "date": {"after": since}}, "page_size": 100}
+            if cur:
+                body["start_cursor"] = cur
+            d = (await cli.post(f"https://api.notion.com/v1/databases/{cfg.notion.candidate_db_id}/query",
+                                headers=H, json=body)).json()
+            for pg in d.get("results", []):
+                p = pg["properties"]
+
+                def tx(q):
+                    t = (q or {}).get("type")
+                    return "".join(b.get("plain_text", "") for b in (q.get(t) or [])) if t in ("rich_text", "title") else ""
+                pa = ((p.get("published_at") or {}).get("date") or {}).get("start")
+                title = tx(p.get("title"))
+                if not title or not pa:
+                    continue
+                out.append({
+                    "title": title, "desc": tx(p.get("description"))[:300],
+                    "url": (p.get("url") or {}).get("url") or "",
+                    "score": (p.get("llm_score") or {}).get("number"),
+                    "sent": bool((p.get("send_status") or {}).get("checkbox")),
+                    "ts": dt.datetime.fromisoformat(pa.replace("Z", "+00:00")).timestamp(),
+                })
+            cur = d.get("next_cursor")
+            if not d.get("has_more"):
+                break
+    print(f"我们近 {days + 1:g} 天候选 {len(out)} 条（已发 {sum(1 for c in out if c['sent'])} 条）\n", flush=True)
+    return out
 
 
 async def main() -> None:
-    hours = float(sys.argv[1]) if len(sys.argv) > 1 else 72.0
-    rej_n = int(sys.argv[2]) if len(sys.argv) > 2 else 250
+    days = float(sys.argv[1]) if len(sys.argv) > 1 else 3.0
+    top_n = int(sys.argv[2]) if len(sys.argv) > 2 else 40
 
-    top = benchmark_top(hours, 45)
-    big = collections.Counter(t for t in await asyncio.gather(*[tag(r["txt"]) for r in top]) if t)
+    top = benchmark_top(days, top_n)
+    cands = await our_candidates(days)
+    tv = await asyncio.gather(*[embed(f"{c['title']}\n{c['desc']}") for c in cands])
+    bv = await asyncio.gather(*[embed(r["txt"]) for r in top])
 
-    pool = collections.Counter(c.topic for c in await query_eligible_candidates(cfg) if c.topic)
-    published = collections.Counter(await recent_published_topic_counts(cfg))
-
-    lines = log_lines()
-    # Prefers the logged title, falling back to the URL slug for lines written
-    # before the title was added. The slug is much the weaker signal — it sends
-    # 78% of a sample to 其他 — so the two are counted separately below.
-    rejected: list[tuple[str, bool]] = []
-    for line in lines:
-        m = re.search(r"run_cycle: (\S+) scored [\d.]+, below threshold(?: — (.*))?$", line.rstrip())
-        if not m:
-            continue
-        title = (m.group(2) or "").strip()
-        rejected.append((title, True) if title else (slug_of(m.group(1)), False))
-    accepted = sum(1 for line in lines if "added to candidate pool:" in line)
-    print(f"打分器日志：入池 {accepted} 条，被拒 {len(rejected)} 条"
-          f"（拒绝率 {100 * len(rejected) / max(1, accepted + len(rejected)):.0f}%）\n")
-
-    random.seed(3)
-    sample = [r for r in random.sample(rejected, min(rej_n, len(rejected))) if len(r[0]) >= 18]
-    from_title = sum(1 for _, ok in sample if ok)
-    print(f"  被拒样本 {len(sample)} 条，其中 {from_title} 条有真标题、"
-          f"{len(sample) - from_title} 条只能用 URL slug 猜")
-    slugs = [t for t, _ in sample]
-    rej_tags = await asyncio.gather(*[tag(t) for t in slugs])
-    rej = collections.Counter(t for t in rej_tags if t)
-
-    keys = sorted(set(big) | set(pool) | set(published) | set(rej), key=lambda k: -share(big, k))
-    print("%-16s%10s%10s%10s%12s" % ("题材", "大号高赞", "我们池子", "我们已发", "打分器拒掉"))
-    for k in keys:
-        print("%-16s%9.0f%%%9.0f%%%9.0f%%%11.0f%%"
-              % (k, share(big, k), share(pool, k), share(published, k), share(rej, k)))
-
-    print("\n=== 大号强、我们弱的题材，是稿源不够还是打分器拒掉 ===")
-    for k in keys:
-        gap = share(big, k) - share(published, k)
-        if gap < 5:
-            continue
-        verdict = ("打分器拒掉了不少 —— 先查打分器" if share(rej, k) >= share(pool, k)
-                   else "被拒的也不多 —— 是稿源不够")
-        print(f"  {k}：大号 {share(big, k):.0f}% / 已发 {share(published, k):.0f}% / "
-              f"池中 {share(pool, k):.0f}% / 被拒中 {share(rej, k):.0f}% → {verdict}")
-        for s, t in zip(slugs, rej_tags):
-            if t == k:
-                print(f"     被拒样本· {s[:100]}")
+    async def resolve(r, v):
+        near = [(cos(v, tv[i]), i) for i, c in enumerate(cands)
+                if tv[i] and abs(c["ts"] - r["ts"]) <= WINDOW_H * 3600]
+        near.sort(reverse=True)
+        for sim, i in near[:3]:
+            if sim < COSINE_FLOOR:
                 break
+            if await same_event(r["txt"], f"{cands[i]['title']}. {cands[i]['desc']}"):
+                return r, cands[i], sim
+        return r, None, (near[0][0] if near else 0.0)
+
+    results = await asyncio.gather(*[resolve(r, v) for r, v in zip(top, bv)])
+
+    hit = [(r, c) for r, c, _ in results if c and c["sent"]]
+    miss = [(r, c) for r, c, _ in results if c and not c["sent"]]
+    absent = [(r, s) for r, c, s in results if not c]
+    n = len(results)
+    print("=" * 76)
+    print("大号跑得好的 %d 条，我们的处理：" % n)
+    print("  命中（池里有、也发了）  %2d 条 (%.0f%%)" % (len(hit), 100 * len(hit) / n))
+    print("  漏掉（池里有、没发）    %2d 条 (%.0f%%)   ← 选稿问题" % (len(miss), 100 * len(miss) / n))
+    art = [x for x in absent if x[0]["article"]]
+    native = [x for x in absent if not x[0]["article"]]
+    print("  没有（池里根本没有）    %2d 条 (%.0f%%)" % (len(absent), 100 * len(absent) / n))
+    print("      其中带文章外链      %2d 条   ← 真·稿源问题，加源能解" % len(art))
+    print("      其中原生社交内容    %2d 条   ← 视频/截图/自述，RSS 管道拿不到" % len(native))
+    if miss:
+        print("\n=== 漏掉的（他们发了有反响，我们手里有却没发）===")
+        for r, c in sorted(miss, key=lambda x: -x[0]["n"]):
+            print("\n  [%s 归一 %.1f / %d赞]  %s" % (r["a"], r["n"], r["lk"], r["txt"][:110].replace("\n", " ")))
+            print("     我们手里： %s分  %s" % (c["score"], c["title"][:95]))
+    if absent:
+        print("\n=== 池子里根本没有的 ===")
+        for label, group in (("带文章外链（加源能解）", art), ("原生社交内容（管道拿不到）", native)):
+            print("\n  -- %s --" % label)
+            for r, _ in sorted(group, key=lambda x: -x[0]["n"])[:8]:
+                print("  [%s 归一 %.1f]  %s" % (r["a"], r["n"], r["txt"][:100].replace("\n", " ")))
 
 
 if __name__ == "__main__":
