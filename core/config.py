@@ -98,6 +98,7 @@ class RedisConfig(BaseModel):
     # weekend_max_age_hours (24h ceiling) so it always outlives the
     # candidate's eligibility window and self-expires afterward.
     caption_ttl_seconds: int = 172800  # 48h
+    cycle_counter_key: str = "am1st:cycle"  # CycleCounter — monotonic publish-cycle number, used to alternate the editor A/B arms
     batch_seen_prefix: str = "am1st:seen:"  # BatchSeen — how many shortlists this candidate has appeared on. Ordering by this ahead of the stable hash is what stops a fixed hash position from excluding a candidate for its whole life; see agents/candidate_selector.py's shortlist().
     dup_strike_prefix: str = "am1st:pubdup:"  # PostedDupStrikes — how many publish cycles in a row have called this candidate a duplicate; same TTL reasoning as caption_ttl_seconds (must outlive the 24h eligibility window, then self-expire)
 
@@ -799,6 +800,13 @@ class EditorConfig(BaseModel):
     path it took before this existed."""
 
     enabled: bool = False
+    # With this on, the editor runs on odd cycles and the previous path on
+    # even ones, both publishing for real. Shadow-running cannot answer the
+    # question: it shows what each path would have chosen but never what the
+    # unchosen story would have earned. Alternating inside the same hours is
+    # also the only way to hold time of day constant, which is the largest
+    # confound this channel has.
+    ab_alternate: bool = False
     model: str = ""  # blank = openai.chat_model
     prompt_file: str = "prompts/editor_prompt.txt"
     shortlist_size: int = 50

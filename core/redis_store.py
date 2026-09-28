@@ -104,6 +104,40 @@ class PostedDupStrikes:
             await self._client.aclose()
 
 
+class CycleCounter:
+    """A monotonic publish-cycle number, for alternating the A/B arms.
+
+    Kept in Redis rather than derived from the clock because cycles run at a
+    dynamic interval — anything keyed on the hour would split the arms
+    unevenly across the day, and time of day is the single largest confound in
+    this channel's engagement.
+
+    Falls back to a fixed 0 when Redis is unavailable, which pins the run to
+    one arm rather than flipping randomly; a broken counter should not quietly
+    turn the experiment into noise."""
+
+    def __init__(self, config: AppConfig) -> None:
+        self._client = (
+            redis.from_url(config.redis.url, decode_responses=True, socket_timeout=10, socket_connect_timeout=10)
+            if config.redis.url
+            else None
+        )
+        self._key = config.redis.cycle_counter_key
+
+    async def next(self) -> int:
+        if self._client is None:
+            return 0
+        try:
+            return int(await self._client.incr(self._key))
+        except Exception:
+            logger.exception("CycleCounter: incr failed — pinning this cycle to arm 0")
+            return 0
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+
+
 class BatchSeen:
     """How many shortlists a candidate has already appeared on.
 

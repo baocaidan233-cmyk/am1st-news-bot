@@ -249,6 +249,8 @@ poster:
 # enabled: false 时 main_publish.py 走的是加这层之前的完全相同的路径。
 editor:
   enabled: false
+  # true 时：单数轮走编辑台、双数轮走原路径，两边都真实发布。
+  ab_alternate: false
   shortlist_size: 50
   pick_count: 10
   recent_titles_hours: 48.0

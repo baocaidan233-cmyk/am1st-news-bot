@@ -106,7 +106,7 @@ from core.topic_mix import compute_adjustments
 from core.publish_cadence import compute_dynamic_interval
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
-from core.redis_store import BatchSeen, CaptionCache, PostedDupStrikes
+from core.redis_store import BatchSeen, CaptionCache, CycleCounter, PostedDupStrikes
 from core.title_guard import title_violation
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -153,6 +153,7 @@ async def run_cycle(
     hub_index: HubIndex,
     editor: EditorPicker,
     batch_seen: BatchSeen,
+    cycle_counter: CycleCounter,
     dry_run: bool,
 ) -> bool:
     """Returns True iff this cycle actually published something — main()'s
@@ -195,6 +196,15 @@ async def run_cycle(
     remaining = candidates
     winner = None
     ranked_len = 0
+    # Which arm this cycle runs. Decided once, before the widen loop, so a
+    # widen never silently changes paths mid-cycle.
+    cycle_no = await cycle_counter.next() if config.editor.ab_alternate else 0
+    use_editor = config.editor.enabled and (not config.editor.ab_alternate or cycle_no % 2 == 1)
+    arm = "editor" if use_editor else "legacy"
+    if config.editor.enabled:
+        logger.info("run_cycle: selection arm = %s (cycle %d, ab_alternate=%s)",
+                    arm, cycle_no, config.editor.ab_alternate)
+
     editor_order: dict[str, int] = {}
     editor_meta: dict[str, tuple[str | None, str | None, str]] = {}
     for attempt in range(1, config.publish.max_widen_attempts + 1):
@@ -202,7 +212,7 @@ async def run_cycle(
         # inherit the previous attempt's ordering.
         editor_order, editor_meta = {}, {}
         batch = []
-        if config.editor.enabled:
+        if use_editor:
             # One editorial judgement over the whole shortlist, in place of a
             # score tier plus sha1(url). See agents/editor.py for why the
             # per-story judgements it replaces could not discriminate.
@@ -467,7 +477,8 @@ async def run_cycle(
         await mark_send_status(config, winner.page_id)
         winner_embedding = await embedder.embed(content_for_embedding(winner.post_content, winner.url))
         await posted_store.write(
-            winner.url, winner.url_hash, winner.post_content, int(winner.published_at.timestamp()), winner_embedding,
+            winner.url, winner.url_hash, winner.post_content, int(winner.published_at.timestamp()),
+            winner_embedding, arm=arm,
         )
 
         # Flag the underlying event as published (2026-08-07) — so a later
@@ -510,6 +521,7 @@ async def main() -> None:
     dup_strikes = PostedDupStrikes(config)
     editor = EditorPicker(config)
     batch_seen = BatchSeen(config)
+    cycle_counter = CycleCounter(config)
     await ensure_collection_with_retry(posted_store, "am1st_posting_news_embedding")
     await ensure_collection_with_retry(event_store, "am1st_events")
 
@@ -546,7 +558,7 @@ async def main() -> None:
             published_this_cycle = False
             try:
                 published_this_cycle = await asyncio.wait_for(
-                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, staleness_checker, caption_cache, dup_strikes, hub_index, editor, batch_seen, dry_run),
+                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, staleness_checker, caption_cache, dup_strikes, hub_index, editor, batch_seen, cycle_counter, dry_run),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:

@@ -868,7 +868,8 @@ class PostedHistoryStore:
         payload = best.payload or {}
         return best.score, payload.get("url", ""), payload.get("content", "")
 
-    async def write(self, url: str, url_hash: str, content: str, published_at_unix: int, embedding: list[float]) -> None:
+    async def write(self, url: str, url_hash: str, content: str, published_at_unix: int,
+                    embedding: list[float], arm: str = "") -> None:
         """Called once, right after the publish cycle's winner is chosen —
         never for a rejected/duplicate candidate. `content` should be the
         post_content the embedding was computed from. `published_at_unix`
@@ -888,6 +889,13 @@ class PostedHistoryStore:
                     payload={
                         "content": content, "url": url, "urlHash": url_hash,
                         "publishedAt": published_at_unix, "sentAt": int(time.time()),
+                        # Which selection path chose this post ("editor" or
+                        # "legacy"). Written here because this is the only
+                        # record of what was actually published that also
+                        # carries a timestamp — without it the two arms of the
+                        # A/B cannot be told apart afterwards, and an A/B whose
+                        # result cannot be split is not an A/B.
+                        "arm": arm,
                     },
                 )
             ],
