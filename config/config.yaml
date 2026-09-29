@@ -254,3 +254,16 @@ editor:
   shortlist_size: 50
   pick_count: 10
   recent_titles_hours: 48.0
+
+prescore:
+  # 打分前的向量预判，见 core/prescore.py。省掉的不只是打分调用——
+  # 补描述、聚类、事件判重（含 LLM 判官）都在它后面。
+  enabled: true
+  model_file: models/prescore.json
+  log_path: logs/prescore_decisions.jsonl
+  # 固定 10% 的候选无论模型怎么判都照常打分，用来无偏地量「漏杀率」。
+  # 被跳过的稿永远没有分数，不留这一批就永远不知道跳过的代价。
+  audit_rate: 0.1
+  # 标题少于等于这么多词，一律照常打分：这一层只看标题，
+  # 而「Interesting…」这种标题打分器读的是描述，本层看不见。
+  min_title_words: 4
