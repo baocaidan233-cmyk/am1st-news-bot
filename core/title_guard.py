@@ -64,7 +64,12 @@ _STOPWORD = re.compile(rf"(?i:^(?:{_TITLE_WORDS}|{_QUALIFIER_WORDS}|mr|mrs|ms|dr
 # Benitez") does not terminate the name -- it is a two-character token, and
 # only a word-final period on a real word means the sentence ended.
 _TOKEN = re.compile(r"\s+([A-Z][\w\u00C0-\u024F'\u2019-]*\.?)")
-_POSSESSIVE = re.compile(r"['\u2019]s$")
+# The `s` is optional because a name that already ends in one takes a bare
+# apostrophe: "Susan Collins' Biddeford office" is Collins possessing an
+# office, exactly as "Michelle Wu's Office" is. Requiring the `s` read
+# Biddeford -- a city in Maine -- as her surname and blocked the story
+# (2026-09-28, live).
+_POSSESSIVE = re.compile(r"['\u2019]s?$")
 
 
 def _read_name(text: str, pos: int, limit: int = 3) -> list[str]:
@@ -103,25 +108,105 @@ def _titled_mentions(text: str) -> list[tuple[str | None, list[str]]]:
     return out
 
 
+# One capitalised token immediately before whatever follows it, nothing but
+# whitespace between them. Walking back with this instead of scanning a
+# 60-character window is what keeps a neighbouring sentence out of the name:
+# the window version collected every capitalised word near the surname, so
+# an article reading "Jason Hughes, general manager for Asia, said the Hong
+# Kong event in October..." offered {asia, hong, jason, kong, october} as his
+# given names, and "Secretary Rubio met the delegation on Monday. Rubio said"
+# offered {monday} (2026-09-28, live).
+_BACK_TOKEN = re.compile(r"([A-Z][\w\u00C0-\u024F'\u2019-]*\.?)\s+\Z")
+
+
 def _source_given_names(source: str, surname: str) -> set[str]:
     """Every capitalised token the SOURCE puts in the given-name slot before
     this surname -- the whole run, not just the adjacent one, so a middle
-    name or initial is not read as a contradiction."""
+    name or initial is not read as a contradiction.
+
+    The run has to be contiguous, and it ends at a title ("Secretary Rubio"
+    gives nothing, which is right: the article never said his given name) or
+    at a sentence boundary. Ending empty is the safe outcome -- Rule A does
+    not fire at all without a name to contradict."""
     found: set[str] = set()
     for m in re.finditer(rf"\b{re.escape(surname)}\b", source):
-        back = source[max(0, m.start() - 60):m.start()]
-        toks = re.findall(r"[A-Z][\w\u00C0-\u024F'\u2019.-]*", back)
-        tail: list[str] = []
-        for tok in reversed(toks):
-            if not back.rstrip().endswith(tok) and tok not in " ".join(back.split()[-3:]):
+        pos = m.start()
+        for _ in range(3):
+            bm = _BACK_TOKEN.search(source, 0, pos)
+            if not bm or bm.end() != pos:
                 break
-            tail.append(tok)
-            if len(tail) >= 3:
+            tok = bm.group(1)
+            pos = bm.start()
+            # A word-final period ends the sentence; a two-character token
+            # ending in one is a middle initial and keeps the run going.
+            if tok.endswith(".") and len(tok) > 2:
                 break
-        for tok in tail:
-            if not _STOPWORD.match(tok):
-                found.add(tok.lower().rstrip("."))
+            tok = tok.rstrip(".")
+            if _STOPWORD.match(tok):
+                break
+            found.add(tok.lower())
     return found
+
+
+# Short forms that are not a prefix of the formal name, so _is_short_form's
+# prefix test cannot derive them. Only the direction nickname -> formal is
+# listed, and only that direction is allowed: a caption saying "Russ" where
+# the source says "Russell" is the same man written shorter, which is what
+# every one of these people is actually called. The reverse -- a caption
+# reaching for a formal name the source never uses -- is the error this rule
+# was built for ("Peter Hegseth" against a source that says Pete), so it
+# stays blocked.
+_NICKNAMES = {
+    "bill": {"william"}, "billy": {"william"}, "will": {"william"},
+    "bob": {"robert"}, "bobby": {"robert"}, "rob": {"robert"},
+    "dick": {"richard"}, "rick": {"richard"}, "ricky": {"richard"},
+    "mike": {"michael"}, "mickey": {"michael"},
+    "tom": {"thomas"}, "tommy": {"thomas"},
+    "jim": {"james"}, "jimmy": {"james"}, "jamie": {"james"},
+    "joe": {"joseph"}, "joey": {"joseph"},
+    "jack": {"john"}, "johnny": {"john"},
+    "ted": {"edward", "theodore"}, "teddy": {"edward", "theodore"},
+    "ned": {"edward"}, "eddie": {"edward"},
+    "dave": {"david"}, "steve": {"stephen", "steven"},
+    "tony": {"anthony"}, "andy": {"andrew"}, "drew": {"andrew"},
+    "jerry": {"gerald", "jerome"}, "larry": {"lawrence"},
+    "chuck": {"charles"}, "charlie": {"charles"},
+    "hank": {"henry"}, "harry": {"henry", "harold"},
+    "ron": {"ronald"}, "don": {"donald"}, "donnie": {"donald"},
+    "ken": {"kenneth"}, "gus": {"august", "gustav"},
+    "frank": {"francis"}, "fran": {"francis", "frances"},
+    "walt": {"walter"}, "art": {"arthur"}, "bernie": {"bernard"},
+    "marty": {"martin"}, "mitch": {"mitchell"}, "sal": {"salvatore"},
+    "vinny": {"vincent"}, "gabe": {"gabriel"}, "nate": {"nathan", "nathaniel"},
+    "sue": {"susan"}, "susie": {"susan"},
+    "liz": {"elizabeth"}, "beth": {"elizabeth"}, "betsy": {"elizabeth"},
+    "libby": {"elizabeth"}, "peggy": {"margaret"}, "maggie": {"margaret"},
+    "meg": {"margaret"}, "kathy": {"katherine"}, "kate": {"katherine"},
+    "katie": {"katherine"}, "cindy": {"cynthia"}, "debbie": {"deborah"},
+    "deb": {"deborah"}, "barb": {"barbara"}, "sandy": {"sandra"},
+    "patty": {"patricia"}, "trish": {"patricia"}, "pat": {"patrick", "patricia"},
+    "jenny": {"jennifer"}, "becky": {"rebecca"}, "mandy": {"amanda"},
+    "nikki": {"nicole"}, "nick": {"nicholas"},
+}
+
+
+def _is_short_form(given: str, src_given: set[str]) -> bool:
+    """Whether the caption's given name is the source's, written shorter.
+
+    Three ways it can be: the same word, a truncation of it (Russ/Russell,
+    Ben/Benjamin), or a nickname the table knows (Bill/William). A bare
+    initial matching the source's first letter counts too -- that case was
+    already handled here before the table existed."""
+    for src in src_given:
+        if given == src:
+            return True
+        if len(given) <= 2 and src.startswith(given[:1]):
+            return True
+        if len(given) >= 3 and len(src) > len(given) and src.startswith(given):
+            return True
+        if src in _NICKNAMES.get(given, ()):
+            return True
+    return False
 
 
 def title_violation(caption: str, source: str) -> str | None:
@@ -150,17 +235,25 @@ def title_violation(caption: str, source: str) -> str | None:
         # Rule A -- the given name contradicts the source's. Only fires on a
         # real conflict (the source consistently says something else), never
         # on a gap (the source only ever uses the surname).
+        #
+        # Every token before the surname is a candidate, not just the first,
+        # which is the same latitude _source_given_names already gives the
+        # source side. A title word this list shares with a job title carries
+        # the job title into the name -- "General Manager Jason Hughes" reads
+        # as given "Manager", surname "Hughes" -- and reading only the first
+        # token made that a conflict although the source plainly said Jason
+        # (2026-09-28, live, Market Watcher). One match anywhere in the run is
+        # enough, so a stacked role, a middle name and a middle initial all
+        # stop mattering without a list of role nouns to keep current.
         if len(tokens) >= 2:
-            given = tokens[0].lower().rstrip(".")
+            given_run = [t.lower().rstrip(".") for t in tokens[:-1]]
             src_given = _source_given_names(source, surname)
-            if src_given and given not in src_given:
-                # An initial matching the source's given name is not a conflict.
-                if not (len(given) <= 2 and any(g.startswith(given[:1]) for g in src_given)):
-                    logger.warning(
-                        "title_guard: blocked — caption says %r, source says %s for surname %s",
-                        " ".join(tokens), sorted(src_given), surname,
-                    )
-                    return "given-name-conflict"
+            if src_given and not any(_is_short_form(g, src_given) for g in given_run):
+                logger.warning(
+                    "title_guard: blocked — caption says %r, source says %s for surname %s",
+                    " ".join(tokens), sorted(src_given), surname,
+                )
+                return "given-name-conflict"
 
         # Rule B -- the caption drops a qualifier the source always carries.
         if qual is None:
