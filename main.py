@@ -74,6 +74,7 @@ from core.hot_topics import fetch_active_hot_topics
 from core.language import is_english
 from core.notion_candidates import write_candidate
 from core.prescore import PreScorer, log_prescore_decision
+from core.roundup import roundup_rule
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, QdrantStore, ensure_collection_with_retry
 from core.redis_store import RedisStore
@@ -117,6 +118,25 @@ async def run_cycle(
             logger.info("run_cycle: %s dropped — non-English title/description", c.url)
     survivors = english_survivors
     logger.info("run_cycle: %d/%d survive English-language filter", len(survivors), before_lang_filter)
+    if not survivors:
+        return
+
+    # --- Layer 1.52: no digests, rolling live pages or link lists
+    # (2026-09-29, core/roundup.py) — user rule: a post has to be about one
+    # thing, and a page that is several unrelated stories cannot be written
+    # into one caption without the caption picking one and dropping the rest.
+    # Before the pre-score so a dropped page costs not even an embedding. ---
+    before_roundup = len(survivors)
+    kept = []
+    for c in survivors:
+        rule = roundup_rule(c.title or "", c.url)
+        if rule:
+            logger.info("run_cycle: %s dropped — %s (%s)", c.url, rule, (c.title or "")[:120])
+        else:
+            kept.append(c)
+    survivors = kept
+    if len(survivors) != before_roundup:
+        logger.info("run_cycle: %d/%d survive the roundup filter", len(survivors), before_roundup)
     if not survivors:
         return
 
