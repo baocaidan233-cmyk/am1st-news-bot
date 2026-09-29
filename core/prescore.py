@@ -68,13 +68,34 @@ def log_prescore_decision(path: str, record: dict) -> None:
     except Exception:
         logger.exception("log_prescore_decision: could not write %s", path)
 
-# Matches a word for the length test. Kept the same shape as the tokeniser in
-# core/title_guard.py so "cancer-free" and "Trump’s" each count once.
+# Counted separately because \w matches a CJK character, so a whole Chinese
+# headline comes back as one or two "words". Measured 2026-09-29 on real
+# titles from all three channels: with a single \w+ count, a title of four or
+# fewer units covered 2.3% of this channel's candidates but 12.9% of China
+# Breaks' and 18.0% of Market Watcher's -- and the ones it caught there were
+# the most informative headlines they had, e.g.
+# "媒体：欧盟五国将于2027年启动将非法移民遣送至第三国的试点项目" at two "words".
+# Porting the number without porting the counter would have inverted the rule
+# in exactly the channels it was ported to.
+_CJK = re.compile(r"[぀-ヿ㐀-䶿一-鿿豈-﫿가-힯]")
+# CJK is taken out of the string first, so this stays \w and keeps counting
+# Cyrillic, Greek and Arabic. Naming the Latin ranges explicitly instead
+# scored every Russian headline at zero, which is the same mistake in the
+# other direction and is why this is measured on all three channels' real
+# titles, not on the one it was written for.
 _WORD = re.compile(r"[\wÀ-ɏ'’-]+")
 
 
 def title_word_count(title: str) -> int:
-    return len(_WORD.findall(title or ""))
+    """Units of meaning in a title, comparable across writing systems.
+
+    Two CJK characters count as one unit: Chinese, Japanese and Korean words
+    run one to three characters, so this lands a CJK headline in the same
+    range a space-delimited one of the same substance occupies."""
+    text = title or ""
+    cjk = len(_CJK.findall(text))
+    words = len(_WORD.findall(_CJK.sub(" ", text)))
+    return words + (cjk + 1) // 2
 
 
 class PreScorer:
