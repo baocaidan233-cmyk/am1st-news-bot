@@ -63,16 +63,55 @@ _BROWSER_REQUIRED_DOMAINS = (
 # detection-only: recognize the teaser text and alert, same channel as
 # every other extraction failure, rather than silently treating marketing
 # copy as if it were the article.
+#
+# The three exact phrases this used to hold matched the three walls they were
+# copied from and nothing else. Washington Examiner's reads "Join Washington
+# Examiner for unlimited access", which misses "try unlimited access" by one
+# word, so five of its articles published between 2026-09-27 and 09-29 were
+# written from their opening two paragraphs. One did real damage: the op-ed
+# behind "Trump dines with Xi while the Pentagon starves the tech that could
+# defeat him" argues across 7382 characters that the villain is the Pentagon's
+# cost-plus procurement bureaucracy, and 1060 characters reached the writer --
+# the hook, one thesis sentence, and the subscription pitch. Everything naming
+# the real target sat behind the wall, so the only story left to write was
+# that the president is at a banquet while the military starves. The channel
+# published an attack on him and the user deleted it.
+#
+# Neither signal works alone. Measured on 197 real published articles
+# (2026-09-29): teasers run 726-2460 characters while legitimate articles
+# start at 342 (Instapundit's blog format), so no length cut separates them --
+# 2500 catches every teaser and 22.5% of the real articles with it. Wording
+# alone flags long pieces that merely close with a marketing footer. Together
+# they are exact: a pitch within the last 400 characters AND a body under 2500
+# caught 8 of 8 teasers with 0 of 189 false positives, and that holds for
+# every tail window from 300 to 600 and every cap from 2500 to 3000, so it is
+# not a tuned coincidence.
 _PAYWALL_TEASER_SIGNALS = (
-    "subscribe to unlock this article",
-    "try unlimited access",
+    "unlimited access",
+    "subscribe to unlock",
+    "already a member",
+    "sign in to continue",
+    "create a free account",
+    "register to continue",
+    "this article is for subscribers",
+    "start your free trial",
+    "become a member",
     "complete digital access to quality",
 )
+_TEASER_TAIL_CHARS = 400
+_TEASER_MAX_LENGTH = 2500
 
 
 def _looks_like_paywall_teaser(text: str) -> bool:
-    lowered = text.lower()
-    return any(signal in lowered for signal in _PAYWALL_TEASER_SIGNALS)
+    """Whether this is the top of an article plus the wall, not the article.
+
+    The pitch has to sit at the END, where the text was cut off. A full
+    article that closes with a subscription footer is still a full article,
+    which is what the length bound is for."""
+    if len(text) >= _TEASER_MAX_LENGTH:
+        return False
+    tail = text[-_TEASER_TAIL_CHARS:].lower()
+    return any(signal in tail for signal in _PAYWALL_TEASER_SIGNALS)
 
 
 def _domain_matches(netloc: str, domain: str) -> bool:
@@ -207,13 +246,21 @@ class Extractor:
         html = await self._fetch_plain(url, headers)
         text = await asyncio.to_thread(trafilatura.extract, html) if html else None
 
+        too_thin = not text or len(text) < extraction.min_text_length
+        # A recognised teaser is its own reason to render, whatever the domain
+        # and whatever attempt this is. Nothing else in this function can turn
+        # a truncated article back into the article, and the detector above
+        # measured 0 false positives on 189 real ones, so this cannot send
+        # anything here that was already whole. Washington Examiner's op-ed
+        # came back at 1060 characters plain and 7382 rendered.
+        truncated = bool(text) and _looks_like_paywall_teaser(text)
         used_browser = False
         browser_worth_trying = (
             _needs_browser(url)
             or (extraction.browser_after_attempts >= 0
                 and attempts >= extraction.browser_after_attempts)
         )
-        if (not text or len(text) < extraction.min_text_length) and browser_worth_trying:
+        if (too_thin and browser_worth_trying) or truncated:
             used_browser = True
             html = await self._fetch_browser(url, headers)
             # trafilatura's parsing is CPU-bound, synchronous — offload so
@@ -229,10 +276,17 @@ class Extractor:
             return None
 
         if _looks_like_paywall_teaser(text):
+            # Still the wall after rendering, so the article is genuinely out
+            # of reach. Dropping is the whole point: a caption written from
+            # the top of an article is not a shorter version of that article,
+            # it is a different claim, and on 2026-09-29 it was the opposite
+            # one. Publishing off title+description is already refused in
+            # main_publish.py for the same reason.
             await self._fail(
                 url,
                 source,
-                f"extracted text is a paywall teaser, not the article ({len(text)} chars)",
+                f"extracted text is a paywall teaser, not the article "
+                f"({len(text)} chars{', even after rendering' if used_browser else ''})",
                 alert_message=f"抓到的内容像是付费墙提示文案，cookie可能已过期，需要手动更新: {url}",
             )
             return None
