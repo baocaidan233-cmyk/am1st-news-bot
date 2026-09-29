@@ -8,3 +8,6 @@ logs/
 n8n_am1st_pipelines/
 ._*
 .env.bak*
+
+# 预判模型：每个频道用自己的数据训，不进仓库（5MB 二进制 + 权重）
+models/
