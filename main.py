@@ -73,6 +73,7 @@ from core.hashing import cosine_similarity, tokenize
 from core.hot_topics import fetch_active_hot_topics
 from core.language import is_english
 from core.notion_candidates import write_candidate
+from core.prescore import PreScorer, log_prescore_decision
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, QdrantStore, ensure_collection_with_retry
 from core.redis_store import RedisStore
@@ -83,6 +84,7 @@ logger = logging.getLogger("main")
 
 async def run_cycle(
     config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run,
+    prescorer=None,
 ) -> None:
     sources = await load_rss_sources(config)
     if not sources:
@@ -117,6 +119,34 @@ async def run_cycle(
     logger.info("run_cycle: %d/%d survive English-language filter", len(survivors), before_lang_filter)
     if not survivors:
         return
+
+    # --- Layer 1.55: embedding pre-score (2026-09-29, core/prescore.py) —
+    # drop a candidate whose title the model is confident cannot reach the
+    # pool gate, before anything expensive touches it. It sits here rather
+    # than beside the Scorer on purpose: Layers 1.6 to 3 below spend an HTTP
+    # fetch, a clustering embed and, when the rule layer is unsure, an LLM
+    # dedup judge on every candidate that gets this far, and one dropped here
+    # costs none of them. Title embeddings go out in one batched request,
+    # fractions of a cent per cycle. Any failure scores everyone. ---
+    if prescorer is not None and prescorer.enabled:
+        try:
+            vectors = await embedder.embed_many([(c.title or " ")[:500] for c in survivors])
+            kept, decisions = [], Counter()
+            for c, v in zip(survivors, vectors):
+                decision, detail = prescorer.decide(c.url_hash, c.title or "", v)
+                decisions[decision] += 1
+                log_prescore_decision(config.prescore.log_path,
+                                      {"url": c.url, "title": (c.title or "")[:160],
+                                       "decision": decision, **detail})
+                if decision != "skip":
+                    kept.append(c)
+            logger.info("run_cycle: pre-score %s (model %s) — %d/%d go on to be scored",
+                        dict(decisions), prescorer.version, len(kept), len(survivors))
+            survivors = kept
+        except Exception:
+            logger.exception("run_cycle: pre-score failed — scoring everything this cycle")
+        if not survivors:
+            return
 
     # --- Layer 1.6: description backfill via the article page's own
     # og:description meta tag (2026-08-07) — some RSS feeds give a title
@@ -707,6 +737,7 @@ async def main() -> None:
     embedder = Embedder(config)
     scorer = Scorer(config)
     topic_tagger = TopicTagger(config)
+    prescorer = PreScorer(config)
 
     if dry_run:
         logger.info("Running in --dry-run mode: Notion/Qdrant writes will be logged, not sent")
@@ -716,7 +747,7 @@ async def main() -> None:
             started = time.monotonic()
             try:
                 await asyncio.wait_for(
-                    run_cycle(config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run),
+                    run_cycle(config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run, prescorer),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:

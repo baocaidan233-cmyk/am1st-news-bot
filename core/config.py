@@ -856,6 +856,32 @@ class EditorConfig(BaseModel):
     per_batch_source_cap: int = 3
 
 
+class PreScoreConfig(BaseModel):
+    """core/prescore.py — the embedding pre-score at main.py's Layer 1.55.
+
+    Measured on this channel's own 1730 labelled titles (2026-09-29): 8.6% of
+    candidates skipped with nothing at 5, 6 or 7 lost. Every candidate it
+    skips also costs no og:description fetch, no clustering embed and no
+    event-store dedup, because all three run after it and before the Scorer.
+
+    audit_rate is the share of ALL candidates, fixed by url_hash before the
+    model looks, that is scored whatever the model says. It is the only
+    unbiased measurement of what skipping costs: a skipped candidate never
+    gets a score, so no other sample can say what we lost. Certifying a miss
+    rate under 1% takes roughly 300 audited candidates at the gate with none
+    missed, which at this channel's volume is about a week.
+
+    min_title_words sends a title of that many words or fewer to the Scorer
+    untouched. See core/prescore.py for why that is worth more here than the
+    model's own threshold is."""
+
+    enabled: bool = False
+    model_file: str = "models/prescore.json"
+    log_path: str = "logs/prescore_decisions.jsonl"
+    audit_rate: float = 0.1
+    min_title_words: int = 4
+
+
 class AppConfig(BaseModel):
     notion: NotionConfig = Field(default_factory=NotionConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
@@ -872,6 +898,7 @@ class AppConfig(BaseModel):
     dynamic_publish: DynamicPublishConfig = Field(default_factory=DynamicPublishConfig)
     topic_mix: TopicMixConfig = Field(default_factory=TopicMixConfig)
     editor: EditorConfig = Field(default_factory=EditorConfig)
+    prescore: PreScoreConfig = Field(default_factory=PreScoreConfig)
     max_publish_age_hours: int = 3
     poll_interval_seconds: int = 600
     cycle_timeout_seconds: int = 540  # 9 min — per the user's real n8n experience, a healthy cycle runs ~5min and almost never past 7min; this hard-cuts a stuck cycle so the next one always starts on schedule (main.py and main_publish.py loops both apply this, independently — see 2026-08-12 waterfall/no-external-retrigger discussion)
