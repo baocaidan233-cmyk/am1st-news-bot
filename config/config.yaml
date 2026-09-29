@@ -261,9 +261,12 @@ prescore:
   enabled: true
   model_file: models/prescore.json
   log_path: logs/prescore_decisions.jsonl
-  # 固定 10% 的候选无论模型怎么判都照常打分，用来无偏地量「漏杀率」。
+  # 固定这一比例的候选无论模型怎么判都照常打分，用来无偏地量「漏杀率」。
   # 被跳过的稿永远没有分数，不留这一批就永远不知道跳过的代价。
-  audit_rate: 0.1
-  # 标题少于等于这么多词，一律照常打分：这一层只看标题，
+  # 上线首日用 0.3：既更保守，又让明天就能有结论——每天约 138 条到闸门，
+  # 单侧 95% 上界明天就能到约 2%；留 0.1 要等 6.5 天。校准完再降回 0.1。
+  audit_rate: 0.3
+  # 标题少于等于这么多「词」，一律照常打分：这一层只看标题，
   # 而「Interesting…」这种标题打分器读的是描述，本层看不见。
-  min_title_words: 4
+  # 计数按字符体系归一（两个 CJK 字符算一个词），见 core/prescore.py。
+  min_title_words: 6
