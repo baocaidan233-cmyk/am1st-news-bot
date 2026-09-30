@@ -109,6 +109,32 @@ async def accepted_rows(config) -> list[dict]:
     return out
 
 
+def audit_decisions(config) -> dict[str, str]:
+    """url -> the pre-score verdict, for rows the audit cohort forced through.
+
+    Once the layer is live, a candidate it skipped is never scored and so can
+    never appear in the labels above. What survives is the set the model was
+    already willing to pass, and training on that alone lets the model confirm
+    its own judgement: the kinds of story it skips stop appearing, so the next
+    model skips them harder. The audit cohort is the only slice not filtered
+    by the model, and the ones inside it the model wanted to skip are the only
+    rows that can argue back. They stand in for every skipped candidate, so
+    they are weighted by the reciprocal of the cohort's share."""
+    out: dict[str, str] = {}
+    for path in sorted(glob.glob(config.prescore.log_path + "*")):
+        for line in _lines(path):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            if r.get("url") and r.get("decision"):
+                out[r["url"]] = r["decision"]
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="models/prescore.json")
@@ -145,6 +171,14 @@ def main() -> None:
           f"({sum(1 for r in rows if r['llm_score'] >= keep_min)} at or above the {keep_min:.0f} gate)")
     print("scores:", dict(sorted(Counter(r["llm_score"] for r in rows).items())))
 
+    verdicts = audit_decisions(config)
+    rate = max(config.prescore.audit_rate, 1e-6)
+    weights = np.array([1.0 / rate if verdicts.get(r["url"]) == "audit_would_skip" else 1.0
+                        for r in rows])
+    n_reweighted = int((weights > 1).sum())
+    print(f"inverse-propensity weighting: {n_reweighted} rows the model wanted to skip and the "
+          f"audit cohort kept, weighted {1/rate:.0f}x")
+
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
     vectors: list = []
     for i in range(0, len(rows), 256):
@@ -162,14 +196,15 @@ def main() -> None:
     judgeable = np.array([title_word_count(r["title"]) > config.prescore.min_title_words for r in rows])
     ts = np.array([r["ts"] for r in rows])
 
-    def fit(Xs, ys, protect):
+    def fit(Xs, ys, protect, ws=None):
         model = LogisticRegression(C=1.0, max_iter=3000, class_weight="balanced")
         oof = cross_val_predict(model, Xs, ys, cv=StratifiedKFold(5, shuffle=True, random_state=0),
-                                method="predict_proba")[:, 1]
-        model.fit(Xs, ys)
+                                method="predict_proba",
+                                params={"sample_weight": ws} if ws is not None else None)[:, 1]
+        model.fit(Xs, ys, sample_weight=ws)
         return model, (float(np.min(oof[protect])) if protect.any() else 0.0), oof
 
-    _, _, oof_all = fit(X, y, keep & judgeable)
+    _, _, oof_all = fit(X, y, keep & judgeable, weights)
     print(f"out-of-fold AUC: >=5 {roc_auc_score(y, oof_all):.4f}", end="")
     for gate in (6.0, 7.0):
         yg = np.array([r["llm_score"] >= gate for r in rows])
@@ -186,7 +221,7 @@ def main() -> None:
         tr, te = ts < cut, ts >= cut
         if tr.sum() < 200 or te.sum() < 100:
             continue
-        model, thr, _ = fit(X[tr], y[tr], (keep & judgeable)[tr])
+        model, thr, _ = fit(X[tr], y[tr], (keep & judgeable)[tr], weights[tr])
         skip = (model.predict_proba(X[te])[:, 1] < thr) & judgeable[te]
         lost = []
         for gate in (5.0, 6.0, 7.0):
@@ -194,7 +229,7 @@ def main() -> None:
             lost.append(f"{int((skip & yg).sum())}/{int(yg.sum())}")
         print(f"{tr.sum():>7} {te.sum():>7} {skip.mean():>8.1%} {lost[0]:>10} {lost[1]:>10} {lost[2]:>10}")
 
-    model, threshold, oof = fit(X, y, keep & judgeable)
+    model, threshold, oof = fit(X, y, keep & judgeable, weights)
     skipped = ((model.predict_proba(X)[:, 1] < threshold) & judgeable).mean()
     print(f"\nfull fit: threshold {threshold:.4f}, would skip {skipped:.1%} of these rows")
 
@@ -220,6 +255,8 @@ def main() -> None:
         "version": args.version,
         "trained_at": int(time.time()),
         "n_train": len(rows),
+        "n_reweighted": n_reweighted,
+        "audit_rate": config.prescore.audit_rate,
         "n_at_gate": int(keep.sum()),
         "gate": keep_min,
         "target": "score>=5",
