@@ -44,6 +44,11 @@ openai:
   scoring_prompt_file: "prompts/scoring_prompt.txt"
   content_gen_prompt_file: "prompts/content_gen_prompt.txt"
   score_threshold: 5.0  # inclusive — score >= 5.0 passes
+  # 影子打分（2026-10-01）：只观察。生产决策完全由上面的 Scorer 决定，
+  # 影子的答案只写日志。关掉它只是省下每条候选一次 gpt-4o-mini 调用。
+  shadow_scoring_enabled: true
+  shadow_scoring_prompt_file: "prompts/scoring_prompt_v2.txt"
+  shadow_scoring_log_path: "logs/scorer_shadow.jsonl"
 
 dedup:
   # 2026-09-01: raised 0.8 -> 0.85, live A/B test at Caidan's request. Real

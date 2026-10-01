@@ -65,6 +65,7 @@ from agents.embedder import Embedder
 from agents.og_metadata import fetch_link_preview
 from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
+from agents.scorer_shadow import ShadowScorer
 from agents.topic_tagger import TopicTagger
 from agents.trending import fetch_trending_headlines
 from core.config import load_config
@@ -85,7 +86,7 @@ logger = logging.getLogger("main")
 
 async def run_cycle(
     config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run,
-    prescorer=None,
+    prescorer=None, shadow_scorer=None,
 ) -> None:
     sources = await load_rss_sources(config)
     if not sources:
@@ -610,6 +611,16 @@ async def run_cycle(
             scored.append((c, embedding, cluster_idx, passed))
         except Exception:
             logger.exception("run_cycle: unhandled error scoring %s, skipping this item", c.url)
+            continue
+        # Shadow scoring — observes only, and deliberately sits in its OWN
+        # try/except after `passed` is already decided, so that no failure in
+        # it can reach the production path (2026-10-01, see
+        # agents/scorer_shadow.py).
+        if shadow_scorer is not None:
+            try:
+                await shadow_scorer.observe(c, c.llm_score)
+            except Exception:
+                logger.debug("run_cycle: shadow scoring failed for %s", c.url)
 
     added_count = 0
     for cluster_idx, cluster in enumerate(clusters):
@@ -756,6 +767,17 @@ async def main() -> None:
     await ensure_collection_with_retry(event_store, "am1st_events")
     embedder = Embedder(config)
     scorer = Scorer(config)
+    # Built once alongside Scorer, not per cycle: it holds an AsyncOpenAI client
+    # and rebuilding one every ten minutes leaks httpx connections. Observes
+    # only — see agents/scorer_shadow.py.
+    shadow_scorer = None
+    if config.openai.shadow_scoring_enabled:
+        try:
+            shadow_scorer = ShadowScorer(config)
+            logger.info("shadow scoring is ON (observes only, writes %s)",
+                        config.openai.shadow_scoring_log_path)
+        except Exception:
+            logger.exception("shadow scorer failed to start — continuing without it")
     topic_tagger = TopicTagger(config)
     prescorer = PreScorer(config)
 
@@ -767,7 +789,7 @@ async def main() -> None:
             started = time.monotonic()
             try:
                 await asyncio.wait_for(
-                    run_cycle(config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run, prescorer),
+                    run_cycle(config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run, prescorer, shadow_scorer),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:
