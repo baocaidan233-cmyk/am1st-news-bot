@@ -65,7 +65,10 @@ async def main() -> None:
     for left, age, c in live:
         mark = " ←急" if left < 4 else ""
         print(f"{left:6.1f}h {age:6.1f}h {c.llm_score:5.1f}  {(c.title or '')[:62]}{mark}")
-        print(f"{'':>22}{c.url[:72]}")
+        # Full URL, never truncated: it is meant to be copied into
+        # publish_one.py, and twice today a URL rebuilt from a truncated
+        # display pointed at a different article than the one intended.
+        print(f"{'':>22}{c.url}")
     print(f"\n发其中一条：.venv/bin/python tools/publish_one.py <url> --dry")
 
 
