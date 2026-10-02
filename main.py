@@ -614,11 +614,14 @@ async def run_cycle(
             continue
         # Shadow scoring — observes only, and deliberately sits in its OWN
         # try/except after `passed` is already decided, so that no failure in
-        # it can reach the production path (2026-10-01, see
-        # agents/scorer_shadow.py).
+        # it can reach the production path (2026-10-01). As of 2026-10-02 the
+        # two scorers have swapped: the RETIRED 21-theme prompt is what runs
+        # here, so that what the new production scorer throws away stays
+        # visible. See agents/scorer_shadow.py.
         if shadow_scorer is not None:
             try:
-                await shadow_scorer.observe(c, c.llm_score)
+                await shadow_scorer.observe(
+                    c, c.llm_score, c.llm_comment, trending_headlines)
             except Exception:
                 logger.debug("run_cycle: shadow scoring failed for %s", c.url)
 

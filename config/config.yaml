@@ -41,13 +41,15 @@ redis:
 openai:
   chat_model: "gpt-4o-mini"  # every OpenAI-backed call — Writer, Scorer, PriorityRanker, EventVerifier — see core/config.py comment
   embedding_model: "text-embedding-3-small"
-  scoring_prompt_file: "prompts/scoring_prompt.txt"
+  scoring_prompt_file: "prompts/scoring_prompt_v2.txt"  # 2026-10-02 换上；退役的 scoring_prompt.txt 现在跑影子
   content_gen_prompt_file: "prompts/content_gen_prompt.txt"
   score_threshold: 5.0  # inclusive — score >= 5.0 passes
-  # 影子打分（2026-10-01）：只观察。生产决策完全由上面的 Scorer 决定，
-  # 影子的答案只写日志。关掉它只是省下每条候选一次 gpt-4o-mini 调用。
+  # 影子打分：只观察。生产决策完全由上面的 Scorer 决定，影子的答案只写日志。
+  # 关掉它只是省下每条候选一次 gpt-4o-mini 调用。
+  # 2026-10-02 两个打分器对调：v2 上生产，退役的 21 主题 prompt 改跑影子，
+  # 为的是能看见新打分器扔掉的东西里有没有后来变成热点的。看几天就可以关。
   shadow_scoring_enabled: true
-  shadow_scoring_prompt_file: "prompts/scoring_prompt_v2.txt"
+  shadow_scoring_prompt_file: "prompts/scoring_prompt.txt"
   shadow_scoring_log_path: "logs/scorer_shadow.jsonl"
 
 dedup:
