@@ -189,17 +189,22 @@ async def main() -> None:
 
     today = days[-1]
     multi = [g for g in groups.values() if len(g) > 1]
-    # 按「今天还在拒」排序，而不是按总量：一个三天前拒完就没了的簇，
-    # 是已经过去的事；今天仍在累积的那个才是现在正在丢的稿。
-    multi.sort(key=lambda g: (sum(1 for r in g if r["day"] == today), len(g)), reverse=True)
+    # Sorted by total size. The first draft of this sorted by "how many are
+    # still being refused today", on the theory that a cluster that stopped is
+    # over — and running it immediately showed why that is wrong: it put
+    # today's two-item clusters above the Lindsay Clancy cluster's 15, burying
+    # the exact case this report exists for. 13 refusals yesterday and one more
+    # today is the bigger loss than two today. Still-active clusters are
+    # flagged rather than reordered.
+    multi.sort(key=len, reverse=True)
     print(f"=== 反复被拒的故事（{len(multi)} 簇有 2 条以上）===")
-    print("    排序按「今天仍在拒的条数」，不是总量\n")
+    print("    排序按总量；仍在累积的另行标注\n")
     for g in multi[:a.show]:
         n_today = sum(1 for r in g if r["day"] == today)
         g.sort(key=lambda r: r["day"])
         spread = Counter(r["day"][5:] for r in g)
         scores = sorted({r["score"] for r in g})
-        flag = "  ← 今天还在拒" if n_today >= 2 else ""
+        flag = "  ← 今天仍在拒" if n_today else ""
         print(f"  {len(g):>3} 条  今天 {n_today:>2}  分数 {scores}{flag}")
         print(f"       逐日 {dict(spread)}")
         print(f"       {g[0]['title'][:88]}")
