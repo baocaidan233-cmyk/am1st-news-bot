@@ -45,10 +45,17 @@ openai:
   content_gen_prompt_file: "prompts/content_gen_prompt.txt"
   score_threshold: 5.0  # inclusive — score >= 5.0 passes
   # 影子打分：只观察。生产决策完全由上面的 Scorer 决定，影子的答案只写日志。
-  # 关掉它只是省下每条候选一次 gpt-4o-mini 调用。
-  # 2026-10-02 两个打分器对调：v2 上生产，退役的 21 主题 prompt 改跑影子，
-  # 为的是能看见新打分器扔掉的东西里有没有后来变成热点的。看几天就可以关。
-  shadow_scoring_enabled: true
+  #
+  # 2026-10-02 当天开、当天关。开它是为了看见 v2 扔掉了什么；关它是因为
+  # tools/reject_report.py 把同一个问题答得更好也更便宜：
+  #   影子（让退役 prompt 把每条候选重判一遍）   $0.861/天
+  #   被拒聚类日报（读自己日志 + embedding）     $0.0005/天
+  # 差 1700 倍，而且日报给的是「Lindsay Clancy 被拒了 26 次」，影子给的是
+  # 「这一条两个打分器分歧」—— 前者才是我们要问的问题。$0.861/天 相当于
+  # Market_Watcher 整个频道一天的开销（$0.834，10-01 实测）。
+  #
+  # 要再开（比如换打分 prompt 时想要逐条对照），改回 true 即可，代码都在。
+  shadow_scoring_enabled: false
   shadow_scoring_prompt_file: "prompts/scoring_prompt.txt"
   shadow_scoring_log_path: "logs/scorer_shadow.jsonl"
 
