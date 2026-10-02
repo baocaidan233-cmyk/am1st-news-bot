@@ -1,6 +1,36 @@
 """Train the Layer 1.55 pre-score model — see core/prescore.py.
 
-Labels come from two places because this channel keeps them in two places:
+TWO LABEL SOURCES, and --labels-from is REQUIRED so that the choice is always
+made on purpose. There is no default, because the two are not interchangeable
+and a silent fallback is how a retrain would quietly undo a fix:
+
+  --labels-from log      the historical source, described below. Negatives are
+                         the Scorer's own rejection lines in main.log.
+  --labels-from offline  a file of {title: {g,d,who,drop}} answers produced by
+                         running the live scoring prompt over the candidate
+                         stream offline, joined to logs/prescore_decisions.jsonl
+                         for the url and timestamp. Needs --labels PATH.
+
+Why "offline" exists (2026-10-02). The "log" source has a hole that cannot be
+closed from inside it: a candidate this very model SKIPS never reaches the
+Scorer, so it has no score and no rejection line, so it is absent from training.
+The model therefore cannot see the cases where it is wrong. The audit cohort
+(prescore.audit_rate) covers that region at 10% with inverse-propensity
+weighting, which is why it exists — but 10% of the region where the errors live
+is thin. The "offline" source labels EVERY row including the skipped ones, so no
+reweighting is needed and the error region is fully represented; inverse-
+propensity weighting is therefore switched off in that mode, and applying both
+would double-count.
+
+The hole was not theoretical. The model shipped 2026-09-30 was trained against
+the retired 21-theme scoring prompt, and when production moved to
+prompts/scoring_prompt_v2.txt on 2026-10-02 it kept skipping what the retired
+prompt would have refused — including the Lindsay Clancy retrial, which v2
+scores 6.0 and would publish, at p=0.0467 against a 0.0649 threshold. Retrained
+on offline labels, the same title comes out at p=0.7711.
+
+Labels for --labels-from log come from two places because this channel keeps
+them in two places:
 a candidate the Scorer rejected leaves a line in main.log carrying its URL,
 its score and (since 2026-09-28) its title, and one it accepted is a row in
 the Notion candidate database. Neither half alone can train this: Notion has
@@ -88,6 +118,39 @@ def rejected_rows() -> list[dict]:
     return rows
 
 
+def offline_rows(labels_path: str) -> list[dict]:
+    """Rows from an offline labelling pass. Every candidate that reached Layer
+    1.55 is here, skipped ones included, which is the whole point of this source.
+
+    The labels file maps title -> the four closed-set fields exactly as
+    core.scoring.normalise returns them; the score is recomputed here with
+    core.scoring.compute_score rather than stored, so this can never drift from
+    what the live Scorer would have produced from the same fields."""
+    from core.scoring import compute_score
+
+    with open(labels_path, encoding="utf-8") as fh:
+        labels = json.load(fh)
+    rows, seen = [], set()
+    with open("logs/prescore_decisions.jsonl", encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            title = (d.get("title") or "").strip()
+            url = d.get("url")
+            if not title or not url or url in seen:
+                continue
+            fields = labels.get(title)
+            if not fields:
+                continue
+            seen.add(url)
+            rows.append({"ts": int(d["logged_at"]), "url": url, "title": title,
+                         "llm_score": compute_score(fields, title)})
+    rows.sort(key=lambda r: r["ts"])
+    return rows
+
+
 async def accepted_rows(config) -> list[dict]:
     import httpx
     props = config.notion.candidate_props
@@ -158,7 +221,16 @@ def main() -> None:
     ap.add_argument("--keep-min", type=float, default=None,
                     help="threshold keeps every training row scoring at least this "
                          "(default: config openai.score_threshold)")
+    # Required on purpose — see the module docstring. A default here is how a
+    # later retrain would silently go back to the source with the blind spot.
+    ap.add_argument("--labels-from", choices=("log", "offline"), required=True,
+                    help="log: Scorer rejection lines + Notion. "
+                         "offline: --labels file covering every candidate, skipped included.")
+    ap.add_argument("--labels", default=None,
+                    help="with --labels-from offline: {title: {g,d,who,drop}} JSON")
     args = ap.parse_args()
+    if args.labels_from == "offline" and not args.labels:
+        ap.error("--labels-from offline needs --labels PATH")
 
     from dotenv import load_dotenv
     load_dotenv(ROOT / ".env")
@@ -173,27 +245,42 @@ def main() -> None:
     config = load_config("config/config.yaml")
     keep_min = args.keep_min if args.keep_min is not None else config.openai.score_threshold
 
-    rejected = rejected_rows()
-    if not rejected:
-        sys.exit("no rejected rows in logs/main.log* — is the title still being logged with the score?")
-    accepted = asyncio.run(accepted_rows(config))
-    first_negative = min(r["ts"] for r in rejected)
-    seen = {r["url"] for r in rejected}
-    rows = rejected + [r for r in accepted if r["ts"] >= first_negative and r["url"] not in seen]
-    rows.sort(key=lambda r: r["ts"])
+    if args.labels_from == "offline":
+        rows = offline_rows(args.labels)
+        if not rows:
+            sys.exit(f"no rows matched between {args.labels} and logs/prescore_decisions.jsonl")
+        first_negative = min(r["ts"] for r in rows)
+    else:
+        rejected = rejected_rows()
+        if not rejected:
+            sys.exit("no rejected rows in logs/main.log* — is the title still being logged with the score?")
+        accepted = asyncio.run(accepted_rows(config))
+        first_negative = min(r["ts"] for r in rejected)
+        seen = {r["url"] for r in rejected}
+        rows = rejected + [r for r in accepted if r["ts"] >= first_negative and r["url"] not in seen]
+        rows.sort(key=lambda r: r["ts"])
     if len(rows) < 500:
         sys.exit(f"only {len(rows)} labelled rows — not enough to train")
     print(f"{len(rows)} rows from {datetime.datetime.utcfromtimestamp(first_negative):%Y-%m-%d %H:%M} UTC "
           f"({sum(1 for r in rows if r['llm_score'] >= keep_min)} at or above the {keep_min:.0f} gate)")
     print("scores:", dict(sorted(Counter(r["llm_score"] for r in rows).items())))
 
-    verdicts = audit_decisions(config)
-    rate = max(config.prescore.audit_rate, 1e-6)
-    weights = np.array([1.0 / rate if verdicts.get(r["url"]) == "audit_would_skip" else 1.0
-                        for r in rows])
-    n_reweighted = int((weights > 1).sum())
-    print(f"inverse-propensity weighting: {n_reweighted} rows the model wanted to skip and the "
-          f"audit cohort kept, weighted {1/rate:.0f}x")
+    # Inverse-propensity weighting corrects for the "log" source seeing the
+    # skip region only through the audit cohort. The "offline" source labels
+    # that region in full, so weighting it again would double-count it.
+    if args.labels_from == "offline":
+        weights = None
+        n_reweighted = 0
+        print("inverse-propensity weighting: off — every candidate is labelled, "
+              "including the ones the model would have skipped")
+    else:
+        verdicts = audit_decisions(config)
+        rate = max(config.prescore.audit_rate, 1e-6)
+        weights = np.array([1.0 / rate if verdicts.get(r["url"]) == "audit_would_skip" else 1.0
+                            for r in rows])
+        n_reweighted = int((weights > 1).sum())
+        print(f"inverse-propensity weighting: {n_reweighted} rows the model wanted to skip and the "
+              f"audit cohort kept, weighted {1/rate:.0f}x")
 
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
     vectors: list = []
@@ -276,6 +363,9 @@ def main() -> None:
         "n_at_gate": int(keep.sum()),
         "gate": keep_min,
         "target": "score>=5",
+        "labels_from": args.labels_from,
+        "labels_file": args.labels if args.labels_from == "offline" else None,
+        "scoring_prompt": config.openai.scoring_prompt_file,
         "threshold_rule": f"min out-of-fold p among score>={keep_min:.0f} with a judgeable title",
         "embedding_model": "text-embedding-3-small",
         "input": "title[:500]",
