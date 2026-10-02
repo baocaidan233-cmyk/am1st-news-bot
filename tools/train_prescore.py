@@ -380,6 +380,21 @@ def main() -> None:
         "ood_cut": ood_cut,
     }), encoding="utf-8")
     print(f"wrote {out} and {out.parent / ref_name}")
+    # The reference file is named after --out's stem and the model records that
+    # name, so training to a staging path and then copying the pair to
+    # models/prescore.json leaves the json pointing at a file that is no longer
+    # there. core/prescore.py raises on that and disables the pre-filter
+    # ENTIRELY — fail-safe, every candidate gets scored, and silent unless
+    # someone reads the log. That happened on 2026-10-02. Say so out loud.
+    if str(out) != config.prescore.model_file:
+        print(f"\nNOTE: this is not {config.prescore.model_file}. To put it live, copy BOTH files and "
+              f"rewrite the json's ood_ref_file, e.g.\n"
+              f"  cp {out} {config.prescore.model_file}\n"
+              f"  cp {out.parent / ref_name} "
+              f"{Path(config.prescore.model_file).with_name(Path(config.prescore.model_file).stem + '_ref.npy')}\n"
+              f"  then set ood_ref_file to "
+              f"\"{Path(config.prescore.model_file).stem}_ref.npy\"\n"
+              f"Leaving it pointing at {ref_name} disables the pre-filter outright.")
 
 
 if __name__ == "__main__":
