@@ -42,10 +42,25 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
-# "run_cycle: <url> scored 4.0, below threshold — <title>"
+# Two shapes, because main.py's rejection line gained a field on 2026-10-02:
+#   before:  run_cycle: <url> scored 4.0, below threshold — <title>
+#   after:   run_cycle: <url> scored 4.0, below threshold — <llm_comment> — <title>
+# Both must parse, or a retrain silently trains on a mixture of titles and
+# "comment — title" strings and the embeddings stop meaning anything.
 _REJECTED = re.compile(
     r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+ INFO main: run_cycle: (\S+) scored ([\d.]+), "
     r"below threshold — (.+)$")
+
+
+def _title_from_tail(tail: str) -> str:
+    """The comment, when present, is the Scorer's llm_comment and always carries
+    a "field=value" pair; a real headline does not. Splitting on that rather
+    than on the separator keeps both log shapes readable."""
+    if " — " in tail:
+        head, rest = tail.split(" — ", 1)
+        if "=" in head:
+            return rest.strip()
+    return tail.strip()
 
 
 def _lines(path: str):
@@ -62,13 +77,14 @@ def rejected_rows() -> list[dict]:
             m = _REJECTED.match(line)
             if not m:
                 continue
-            stamp, url, score, title = m.groups()
-            if url in seen or not title.strip():
+            stamp, url, score, tail = m.groups()
+            title = _title_from_tail(tail)
+            if url in seen or not title:
                 continue
             seen.add(url)
             rows.append({"ts": int(datetime.datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
                                    .replace(tzinfo=datetime.timezone.utc).timestamp()),
-                         "url": url, "title": title.strip(), "llm_score": float(score)})
+                         "url": url, "title": title, "llm_score": float(score)})
     return rows
 
 
