@@ -324,7 +324,10 @@ def main() -> None:
         tr, te = ts < cut, ts >= cut
         if tr.sum() < 200 or te.sum() < 100:
             continue
-        model, thr, _ = fit(X[tr], y[tr], (keep & judgeable)[tr], weights[tr])
+        # weights is None in offline mode, where every row is labelled and
+        # nothing needs reweighting — so it cannot be sliced like an array.
+        model, thr, _ = fit(X[tr], y[tr], (keep & judgeable)[tr],
+                            None if weights is None else weights[tr])
         skip = (model.predict_proba(X[te])[:, 1] < thr) & judgeable[te]
         lost = []
         for gate in (5.0, 6.0, 7.0):
