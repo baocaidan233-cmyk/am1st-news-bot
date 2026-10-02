@@ -17,11 +17,16 @@ Three measures, in the order they become readable:
   breakout rate — share of posts at or above twice the channel's own median.
 
 2026-10-02: the engagement measure was likes ONLY until today, which would have
-made this A/B not count — the optimisation target on this channel is the total of
-all three, comments especially. Fixing it meant changing where the numbers come
-from, not just adding two fields: measured against the live endpoint this file
-used, aux.post carries lkbpst and shbpst but `cm` is None and aux.s_pst comes
-back empty, so comments are not available there at all. They are in
+made this A/B not count. The optimisation target on this channel is the SUM of
+all three and nothing else — not one of them weighted above the others. The three
+are split out only to explain why a total moved, never as the result. (An earlier
+draft of this comment said "comments especially"; that is wrong and the user
+corrected it: "评论不是我最在意的，engage 总数我最在意。三个值都重要。")
+
+Fixing it meant changing where the numbers come from, not just adding two fields:
+measured against the live endpoint this file used, aux.post carries lkbpst and
+shbpst but `cm` is None and aux.s_pst comes back empty, so comments are not
+available there at all. They are in
 logs/engagement_snapshots.jsonl, which the hourly collector has been writing all
 along, so that is the source now — and it is the same estimator every other
 measurement on this channel uses: the highest reading at or before a fixed 12h
