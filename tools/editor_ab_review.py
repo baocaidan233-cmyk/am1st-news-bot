@@ -10,10 +10,22 @@ Three measures, in the order they become readable:
       editor is supposed to improve directly, since its brief lists what was
       just published. 50% of all candidates reaching that check are judged
       duplicates today.
-  hour-normalised engagement — likes over the median likes of the same posting
-      hour, on posts at least 12 hours old. Never compare raw likes across
-      arms: posting hour is the largest single effect in this channel.
+  hour-normalised engagement TOTAL — likes + comments + reposts, over the median
+      total of the same posting hour, on posts at least 12 hours old. Never
+      compare raw totals across arms: posting hour is the largest single effect
+      in this channel, worth about 2.2x between the best and worst.
   breakout rate — share of posts at or above twice the channel's own median.
+
+2026-10-02: the engagement measure was likes ONLY until today, which would have
+made this A/B not count — the optimisation target on this channel is the total of
+all three, comments especially. Fixing it meant changing where the numbers come
+from, not just adding two fields: measured against the live endpoint this file
+used, aux.post carries lkbpst and shbpst but `cm` is None and aux.s_pst comes
+back empty, so comments are not available there at all. They are in
+logs/engagement_snapshots.jsonl, which the hourly collector has been writing all
+along, so that is the source now — and it is the same estimator every other
+measurement on this channel uses: the highest reading at or before a fixed 12h
+age, divided by the median of that UTC hour.
 
 Reads the arm from the published record's payload, so only posts written after
 that field existed can be split.
@@ -26,11 +38,9 @@ import asyncio
 import collections
 import json
 import os
-import re
 import statistics as st
 import sys
 import time
-import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
@@ -41,42 +51,63 @@ from qdrant_client import AsyncQdrantClient  # noqa: E402
 
 from core.config import load_config  # noqa: E402
 
-HANDLE = "gettrworldnews"
 
 
-def gettr_posts() -> list[dict]:
-    out: list[dict] = []
-    for off in range(0, 200, 20):
-        url = (f"https://api.gettr.com/u/user/{HANDLE}/posts"
-               f"?offset={off}&max=20&dir=fwd&incl=posts&fp=f_uo")
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        data = json.loads(urllib.request.urlopen(req, timeout=30).read())
-        posts = ((data.get("result") or {}).get("aux") or {}).get("post") or {}
-        if not posts:
-            break
-        for v in posts.values():
-            text, ts = (v.get("txt") or "").strip(), v.get("cdate")
-            if text and ts:
-                out.append({"txt": text, "lk": int(v.get("lkbpst") or 0), "ts": ts / 1000})
-    return out
+SNAPSHOTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "logs", "engagement_snapshots.jsonl")
 
 
-def normalise(posts: list[dict]) -> dict[str, float]:
-    """url -> likes / median likes of that posting hour, mature posts only."""
-    now = time.time()
-    mature = [p for p in posts if now - p["ts"] >= 12 * 3600]
-    by_hour: dict[int, list[int]] = collections.defaultdict(list)
-    for p in mature:
-        by_hour[time.gmtime(p["ts"]).tm_hour].append(p["lk"])
-    med = {h: st.median(v) for h, v in by_hour.items() if len(v) >= 3}
-    overall = st.median([p["lk"] for p in mature]) or 1
-    out: dict[str, float] = {}
-    for p in mature:
-        m = re.search(r"https?://\S+", p["txt"])
-        if not m:
+def engagement_by_source() -> dict[str, float]:
+    """source url -> hour-normalised (likes + comments + reposts).
+
+    Same estimator as every other engagement measurement on this channel: the
+    highest total among readings at or before a fixed 12h age, so a post read
+    at 3h is not compared against one read at 30h; a post with no reading
+    inside that window falls back to its first reading; posts whose cdate
+    predates the earliest snapshot are excluded, because the collector cannot
+    have seen them young.
+    """
+    rows = []
+    try:
+        with open(SNAPSHOTS, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    continue
+    except FileNotFoundError:
+        print(f"no snapshots at {SNAPSHOTS} — is the engagement collector timer on?")
+        return {}
+    if not rows:
+        return {}
+    earliest = min(r["ts"] for r in rows)
+    best: dict[str, dict] = {}
+    first: dict[str, dict] = {}
+    for r in rows:
+        pid, cdate = r.get("post_id"), (r.get("cdate") or 0) / 1000.0
+        if not pid or cdate < earliest or not r.get("src"):
             continue
-        base = med.get(time.gmtime(p["ts"]).tm_hour, overall) or overall
-        out[m.group(0).rstrip(").,").split("?")[0]] = p["lk"] / base
+        total = (r.get("lk") or 0) + (r.get("cm") or 0) + (r.get("sh") or 0)
+        first.setdefault(pid, {"cdate": cdate, "src": r["src"], "total": total})
+        if (r["ts"] - cdate) / 3600.0 > 12:
+            continue
+        cur = best.setdefault(pid, {"cdate": cdate, "src": r["src"], "total": -1})
+        if total >= cur["total"]:
+            cur["total"] = total
+    for pid, r in first.items():
+        best.setdefault(pid, r)
+    mature = [v for v in best.values() if time.time() - v["cdate"] >= 12 * 3600]
+    if not mature:
+        return {}
+    by_hour: dict[int, list[int]] = collections.defaultdict(list)
+    for v in mature:
+        by_hour[time.gmtime(v["cdate"]).tm_hour].append(v["total"])
+    med = {h: st.median(x) for h, x in by_hour.items() if len(x) >= 3}
+    overall = st.median([v["total"] for v in mature]) or 1
+    out: dict[str, float] = {}
+    for v in mature:
+        base = med.get(time.gmtime(v["cdate"]).tm_hour, overall) or overall
+        out[v["src"].split("?")[0]] = v["total"] / base
     return out
 
 
@@ -100,7 +131,10 @@ async def main() -> None:
         print("还没有带 arm 标记的帖子 —— A/B 尚未开始，或开始后还没发过。")
         return
 
-    norm = normalise(gettr_posts())
+    norm = engagement_by_source()
+    if not norm:
+        print('没有可用的互动读数 —— 无法比较')
+        return
     by_arm: dict[str, list[float]] = collections.defaultdict(list)
     for r in rows:
         arm = r.get("arm")
