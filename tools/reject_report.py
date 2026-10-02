@@ -218,16 +218,20 @@ async def main() -> None:
         print("  这批日志行还没带判断字段（2026-10-02 之后写的才有）")
     else:
         print(f"  {len(with_reasons)}/{len(rows)} 条带判断")
+        # The grievance is appended after a "|" inside the LAST field, so a
+        # field has to be cut at the "|" before counting it. Without that,
+        # "who=none" and "who=none | 无诉求" count as two different values and
+        # one value appears as two rows — a table that is wrong in exactly the
+        # way that produces a wrong conclusion later.
+        def fields(reasons: str) -> list[str]:
+            return [p.split("|")[0].strip() for p in reasons.split(";")]
+
         for key in ("d=", "who="):
-            vals = Counter()
-            for r in with_reasons:
-                for part in r["reasons"].split(";"):
-                    part = part.strip()
-                    if part.startswith(key):
-                        vals[part] += 1
+            vals = Counter(f for r in with_reasons for f in fields(r["reasons"])
+                           if f.startswith(key))
             print(f"    {dict(vals.most_common())}")
-        hard = Counter(p.strip() for r in with_reasons for p in r["reasons"].split(";")
-                       if "DROP=" in p)
+        hard = Counter(f for r in with_reasons for f in fields(r["reasons"])
+                       if f.startswith("DROP="))
         if hard:
             print(f"    硬拒: {dict(hard.most_common())}")
         nog = sum(1 for r in with_reasons if "无诉求" in r["reasons"])
