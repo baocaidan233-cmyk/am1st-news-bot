@@ -20,6 +20,8 @@ from urllib.parse import urljoin
 
 import httpx
 
+from core.title_tail import strip_publisher
+
 logger = logging.getLogger(__name__)
 
 _META_TAG_RE = re.compile(r"<meta\b[^>]+>", re.IGNORECASE | re.DOTALL)
@@ -128,6 +130,22 @@ def _extract_fields(body: str, url: str) -> dict:
     if prev_ttl and _looks_non_english(prev_ttl):
         logger.info("og_metadata: rejected non-English title for %s: %r", url, prev_ttl)
         prev_ttl = None
+    # The publisher's own name, off the end of the preview card's headline
+    # (2026-10-02). Measured over 927 published posts: 14.2% carried one, about
+    # 6 a day. See core/title_tail.py — the publisher is derived from this
+    # article's own hostname, so there is no list of names to keep up to date.
+    if prev_ttl:
+        cleaned, rule = strip_publisher(prev_ttl, url)
+        if rule == "x_handle":
+            # Not a headline at all — the poster's display name. Dropping it
+            # lets main_publish.py fall back to the feed's own title, which is
+            # the actual headline.
+            logger.info("og_metadata: og:title is an X display name for %s: %r", url, prev_ttl)
+            prev_ttl = None
+        elif rule and cleaned and cleaned != prev_ttl:
+            logger.info("og_metadata: stripped %s from title for %s: %r -> %r",
+                        rule, url, prev_ttl, cleaned)
+            prev_ttl = cleaned
     if prev_desc and _looks_non_english(prev_desc):
         logger.info("og_metadata: rejected non-English description for %s: %r", url, prev_desc)
         prev_desc = None
