@@ -122,6 +122,13 @@ def _fill(batch: list[PublishCandidate], pool, limit: int, topic_cap: int,
     sources = Counter(_source_of(c) for c in batch if _source_of(c))
     walked: list[str] = []
     skipped: dict[str, str] = {}
+    # Materialised so the trace can record how many candidates were COMPETING,
+    # not just how many the scan reached. The first version logged n_in as
+    # kept+excluded, and `kept` here is the batch itself rather than this
+    # pass's input — so "how many aged candidates were in the running" came
+    # out as the batch size. Order is unchanged.
+    pool = list(pool)
+    n_offered = len(pool)
     for c in pool:
         pid = getattr(c, "page_id", "") or getattr(c, "url", "")
         if len(batch) >= limit:
@@ -131,7 +138,8 @@ def _fill(batch: list[PublishCandidate], pool, limit: int, topic_cap: int,
             # could not tell apart.
             if trace is not None:
                 trace.stage(f"fill:{label}", batch, skipped, order=walked,
-                            stopped_at=len(walked), capacity_reached=True)
+                            stopped_at=len(walked), capacity_reached=True,
+                            n_offered=n_offered, batch_size=len(batch))
             return
         walked.append(pid)
         if topic_cap > 0 and c.topic and topics[c.topic] >= topic_cap:
@@ -148,7 +156,8 @@ def _fill(batch: list[PublishCandidate], pool, limit: int, topic_cap: int,
             sources[src] += 1
     if trace is not None:
         trace.stage(f"fill:{label}", batch, skipped, order=walked,
-                    stopped_at=len(walked), capacity_reached=False)
+                    stopped_at=len(walked), capacity_reached=False,
+                    n_offered=n_offered, batch_size=len(batch))
 
 
 def shortlist(
