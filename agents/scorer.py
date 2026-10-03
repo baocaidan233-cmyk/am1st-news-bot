@@ -2,16 +2,47 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from core.config import AppConfig
 from core.models import Candidate
 from core.openai_client import create_openai_client
-from core.scoring import compute_score, describe, normalise
 
 logger = logging.getLogger(__name__)
+
+# 2026-10-03 — restored. This file was replaced on 2026-10-02 by a four-judgment
+# scorer (prompts/scoring_prompt_v2.txt, scored in core/scoring.py) and the
+# channel owner reverted it the next day. Both the decision and the reason are
+# recorded here so the same mistake is not repeated:
+#
+# v2 scored the channel's #1, #2 and #3 posts by engagement at 5.5, below the
+# 6.0 weekday publishing floor — 344.5x, 229.4x and 214.3x hour-normalised
+# against a channel median of 70. It read their grievances correctly ("they have
+# divided loyalties and our country is at risk") and then gave all three
+# who=none despite each having a named actor, because its `d` and `who` axes
+# reward completed institutional action and are blind to someone NAMING a wrong.
+# A procedural story scored higher: "Kansas, Roblox strike $10 million-plus
+# deal to strengthen child safety" got 7.5 and realised 0.53x; "20 Alaska
+# scholarship groups approved" got 6.0 with no grievance at all.
+#
+# The case for replacing this file was weaker than it was presented as. The
+# whitelist argument was structural and still stands — 66 candidates on one
+# ordinary murder retrial were refused, 44 at exactly 4.0, because the case was
+# on none of the 21 Core Themes. But the evidence that v2 was BETTER was a
+# quartile ratio, and a quartile ratio cannot see the tail where this channel's
+# value is concentrated. Worse, this prompt puts 37% of its scores on the single
+# value 6.0, so the bottom-quartile cut lands inside that tie block and the
+# ratio moves with input order: re-measured on the same 716 posts it ranges
+# 1.19x-1.24x across shuffles, against the single 1.16x figure that was reported.
+# v2's 1.32x was a real but much smaller edge than claimed, bought by blocking
+# the three best posts the channel has made.
+#
+# Do not replace this file again on an aggregate separation metric. The decision
+# needs a fixed publish budget, total engagement as the primary number, and the
+# high-engagement tail as a separate constraint that a change must not damage.
 
 
 class ScoreOutput(BaseModel):
@@ -20,46 +51,38 @@ class ScoreOutput(BaseModel):
 
 
 class Scorer:
-    """AI relevancy scoring. Asks four closed-set judgments and computes the
-    score in code — see core/scoring.py for every weight and the measurements
-    behind it.
+    """AI relevancy scoring — same prompt/role/theme list as the original
+    AM1ST n8n workflow's Scoring node, ported verbatim (prompts/scoring_prompt.txt).
 
-    2026-10-02: swapped onto prompts/scoring_prompt_v2.txt after 13 hours and
-    734 candidates of shadow running. prompts/scoring_prompt.txt, the 21-theme
-    whitelist this replaces, is NOT deleted — it now runs in shadow
-    (agents/scorer_shadow.py), so for the next few days we can still see what
-    the new prompt throws away and whether any of it became a story. That
-    reversal is the only reason the old prompt file is still in the repo.
+    Moved BACK to config.openai.chat_model (gpt-4o-mini) on 2026-09-01,
+    reverting the 2026-08-14 move to gpt-5-nano — a ~19-hour live test run
+    (real RSS data, real Notion candidate pool, real Gettr test-account
+    publishes) surfaced a judgment-quality regression the original switch's
+    verification never checked: 2026-08-14 only confirmed gpt-5-nano
+    returned well-formed, non-empty JSON, never whether its actual scores
+    stayed editorially sound. Confirmed live, 2026-09-01, by re-scoring
+    several REAL candidates gpt-5-nano had just passed at the 5.0 floor: a
+    Rheinmetall drone story with zero US angle (Germany's own aviation
+    authority certifying a German company's drone), a Karim Benzema soccer
+    transfer, a Cuba retail-policy story, a Texas crane rescue — all
+    scored >=5, each with reasoning that rationalized a tenuous "could
+    plausibly relate if reframed" angle rather than applying
+    prompts/scoring_prompt.txt's own explicit "sports, weather, celebrity
+    gossip with no political dimension" rejection list. The prompt's "lean
+    toward passing when thin" guidance (written for genuinely ambiguous
+    cases) was apparently read by gpt-5-nano as blanket permission to
+    always find SOME angle rather than firmly reject clearly off-theme
+    content — a failure mode gpt-4o-mini did not previously exhibit in
+    this role. 2026-09-01, same day: PriorityRanker and EventVerifier also
+    moved back to chat_model — a live test found each of their own
+    nano_model-era judgment calls unreliable too (see
+    agents/priority_ranker.py and core/event_identity.py), so this was not
+    a Scorer-only problem after all; nothing in this codebase runs on
+    gpt-5-nano anymore.
 
-    Three things the shadow run settled, all on real production candidates:
-
-      * Hard rejections. 64 `trivia` rejections in 13 hours, and the retired
-        prompt would have published ZERO of them — pure redundancy, free.
-        17 `anti_admin`, of which the retired prompt would have published 6.
-        On those 6 the new judgment is right 4 times and wrong twice ("Obama
-        Judge Rules President Trump Cannot Fire..." is our side being attacked
-        BY a judge, not an attack on us; "ICE changes course again in tweaking
-        traffic stop policies" is neutral reporting). The prompt already states
-        the rule it is getting wrong, in those words, so this is not fixed by
-        rewording it — adding stance rules to a prompt has been falsified
-        repeatedly on these bots. Accepted deliberately: two bad rejections out
-        of ~450 passing candidates a day, against the leak it closes. Seven
-        posts flagged anti_admin went live on the channel in the 14 days before
-        this shipped, which is the rule this project cares most about.
-      * It is NOT fed the description. The shadow ran on title + description;
-        both engagement validations (716 of our own published posts, 900 peer
-        posts) ran on the title alone, so the title alone is what ships. Do not
-        "improve" this by adding the description without re-measuring the
-        ladder, because the grievance rate moves a lot with it.
-      * heat_score, hours_since_event_first_seen and the trending headlines are
-        no longer sent. The retired prompt's score bands referenced heat_score
-        directly; this prompt has no band that uses it, and nothing was fitted
-        with it in the input. agents/priority_ranker.py still uses both signals
-        at ranking time, which is where they belong. The `trending_headlines`
-        argument is kept so callers need no change, and is ignored.
-
-    temperature is 0, not the retired prompt's 0.3: the measurements were taken
-    at 0, and a closed-set judgment has nothing to gain from sampling."""
+    No secondary Gemini autofix model; a single retry with the parse error
+    appended does the same job the original's autoFix/second-model fallback
+    did."""
 
     def __init__(self, config: AppConfig) -> None:
         self._client = create_openai_client(config)
@@ -76,39 +99,55 @@ class Scorer:
             ],
         )
         if self._model.startswith("gpt-5"):
-            kwargs["max_completion_tokens"] = 120
+            kwargs["max_completion_tokens"] = 500
             kwargs["reasoning_effort"] = "minimal"
         else:
-            kwargs["temperature"] = 0
-            kwargs["max_tokens"] = 120
+            kwargs["temperature"] = 0.3
+            kwargs["max_tokens"] = 500
         resp = await self._client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content or ""
 
-    async def score(
-        self, candidate: Candidate, trending_headlines: list[str] | None = None
-    ) -> ScoreOutput | None:
-        # trending_headlines is accepted and ignored — see the class docstring.
-        text = (candidate.title or "").strip()[:900]
-        if not text:
-            logger.warning("Scorer: no title to score for %s", candidate.url)
-            return None
-        fields = None
-        for attempt in (1, 2):
+    async def score(self, candidate: Candidate, trending_headlines: list[str] | None = None) -> ScoreOutput | None:
+        # Corroboration signal (2026-08-06 — see core/config.py's HeatConfig
+        # and project_am1st_migration memory's 2026-08-05 design note):
+        # heat_score/event_first_seen_at are set by main.py's Layer 3, from
+        # the cross-cycle Qdrant query, before this is called. heat_score=1.0
+        # means only this one source so far; event_first_seen_at falls back
+        # to this article's own published_at when nothing earlier was found.
+        first_seen = candidate.event_first_seen_at or candidate.published_at
+        hours_since_first_seen = round((datetime.now(timezone.utc) - first_seen).total_seconds() / 3600, 1)
+        # Trending headlines (2026-09-04) — same free Google News feed
+        # agents/trending.py already supplies to main_publish.py's
+        # priority_ranker, reused here so the Scorer has an EXTERNAL signal
+        # of what's actually getting mainstream attention right now,
+        # distinct from heat_score (which only reflects how many of AM1ST's
+        # own RSS sources have corroborated THIS specific candidate's
+        # underlying event). Optional/best-effort — an empty list (fetch
+        # failure, or a caller that doesn't pass one) just omits the
+        # section below, same fail-open convention as everywhere else.
+        trending_block = ""
+        if trending_headlines:
+            headlines = "\n".join(f"- {h}" for h in trending_headlines)
+            trending_block = f"\n\nCurrently trending in US news (Google News, for context only):\n{headlines}"
+        user_message = (
+            f"Title: {candidate.title}\n\nDescription: {candidate.description}"
+            f"\n\nCorroboration: heat_score={candidate.heat_score:.1f} (1.0 = only this one source"
+            f" reporting it so far; higher means more outlets, weighted, are covering the same event),"
+            f" hours_since_event_first_seen={hours_since_first_seen}"
+            f"{trending_block}"
+        )
+        raw = await self._call(user_message)
+        try:
+            return ScoreOutput.model_validate(json.loads(raw))
+        except (json.JSONDecodeError, ValidationError) as e:
+            logger.warning("Scorer: malformed output for %s, retrying once: %s", candidate.url, e)
+            retry_message = (
+                f"{user_message}\n\nYour previous response could not be parsed as "
+                f'{{"llm_score": float, "llm_comment": string}}. Error: {e}. Return valid JSON only.'
+            )
+            raw_retry = await self._call(retry_message)
             try:
-                raw = await self._call(text)
-                fields = normalise(json.loads(raw))
-            except json.JSONDecodeError as e:
-                logger.warning("Scorer: unparseable JSON for %s (attempt %d): %s",
-                               candidate.url, attempt, e)
-                fields = None
-            if fields is not None:
-                break
-            if attempt == 1:
-                logger.warning("Scorer: answer outside the closed sets for %s, retrying once",
-                               candidate.url)
-        if fields is None:
-            # Same failure branch the retired Scorer had: main.py logs it and
-            # skips this one candidate. Measured at 1 in 500 on 500 real items.
-            logger.error("Scorer: gave up on %s after retry", candidate.url)
-            return None
-        return ScoreOutput(llm_score=compute_score(fields, text), llm_comment=describe(fields))
+                return ScoreOutput.model_validate(json.loads(raw_retry))
+            except (json.JSONDecodeError, ValidationError):
+                logger.error("Scorer: gave up on %s after retry", candidate.url)
+                return None
