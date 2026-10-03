@@ -110,7 +110,8 @@ def _source_of(c: PublishCandidate) -> str:
         return ""
 
 
-def _fill(batch: list[PublishCandidate], pool, limit: int, topic_cap: int, source_cap: int) -> None:
+def _fill(batch: list[PublishCandidate], pool, limit: int, topic_cap: int,
+          source_cap: int, trace=None, label: str = "") -> None:
     """Appends from `pool` up to `limit`, skipping anything whose subject or
     whose source already holds its cap of slots in this batch.
 
@@ -119,19 +120,35 @@ def _fill(batch: list[PublishCandidate], pool, limit: int, topic_cap: int, sourc
     that outlet's news judgement. Either cap <= 0 disables it."""
     topics = Counter(c.topic for c in batch if c.topic)
     sources = Counter(_source_of(c) for c in batch if _source_of(c))
+    walked: list[str] = []
+    skipped: dict[str, str] = {}
     for c in pool:
+        pid = getattr(c, "page_id", "") or getattr(c, "url", "")
         if len(batch) >= limit:
+            # Everything from here on was never examined. Recording where the
+            # scan stopped is the difference between "looked at and skipped"
+            # and "the batch was already full" — the two the previous logs
+            # could not tell apart.
+            if trace is not None:
+                trace.stage(f"fill:{label}", batch, skipped, order=walked,
+                            stopped_at=len(walked), capacity_reached=True)
             return
+        walked.append(pid)
         if topic_cap > 0 and c.topic and topics[c.topic] >= topic_cap:
+            skipped[pid] = f"topic_cap:{c.topic}:{topics[c.topic]}/{topic_cap}"
             continue
         src = _source_of(c)
         if source_cap > 0 and src and sources[src] >= source_cap:
+            skipped[pid] = f"source_cap:{src}:{sources[src]}/{source_cap}"
             continue
         batch.append(c)
         if c.topic:
             topics[c.topic] += 1
         if src:
             sources[src] += 1
+    if trace is not None:
+        trace.stage(f"fill:{label}", batch, skipped, order=walked,
+                    stopped_at=len(walked), capacity_reached=False)
 
 
 def shortlist(
@@ -204,6 +221,7 @@ def select_batch(
     topic_adjustments: dict[str, float] | None = None,
     topic_debt: dict[str, float] | None = None,
     cycle_token: str = "",
+    trace=None,
 ) -> list[PublishCandidate]:
     """Tiered batch selection — same cascade as the original n8n "batch of
     top 5" node: prefer fresh+high-scoring, progressively relax until at
@@ -270,7 +288,20 @@ def select_batch(
     def hours_old(c: PublishCandidate) -> float:
         return (now - c.published_at).total_seconds() / 3600
 
+    if trace is not None:
+        trace.note(now=now.isoformat(), is_weekday=is_weekday,
+                   preferred_floor=preferred_floor, fallback_floor=fallback_floor,
+                   max_age_hours=max_age_hours, fresh_hours=pub.fresh_hours,
+                   tier1_min_score=_TIER1_MIN_SCORE, batch_max=pub.batch_max,
+                   batch_min=pub.batch_min)
+        trace.stage("returned", candidates, {})
+    _before = candidates
     candidates = [c for c in candidates if hours_old(c) <= max_age_hours]
+    if trace is not None:
+        kept_ids = {getattr(c, "page_id", "") for c in candidates}
+        trace.stage("age_ceiling", candidates,
+                    {(getattr(c, "page_id", "") or ""): "older_than_%.0fh:%.1f" % (max_age_hours, hours_old(c))
+                     for c in _before if (getattr(c, "page_id", "") or "") not in kept_ids})
 
     # 2026-09-17 — overnight quality gate; see PublishConfig.night_min_score
     # for the decision-log evidence behind the window and the threshold.
@@ -283,9 +314,23 @@ def select_batch(
     # still be publishable overnight, the same guarantee the force-include
     # below already makes against the score tiers.
     if is_night(now, config):
+        _b = candidates
         candidates = [c for c in candidates if c.is_hot or c.llm_score >= pub.night_min_score]
+        if trace is not None:
+            kept_ids = {getattr(c, "page_id", "") for c in candidates}
+            trace.stage("night_gate", candidates,
+                        {(getattr(c, "page_id", "") or ""): "night_min_score:%.1f" % c.llm_score
+                         for c in _b if (getattr(c, "page_id", "") or "") not in kept_ids})
 
     fresh = [c for c in candidates if hours_old(c) <= pub.fresh_hours]
+    if trace is not None:
+        fresh_ids = {getattr(c, "page_id", "") for c in fresh}
+        trace.stage("fresh", fresh,
+                    {(getattr(c, "page_id", "") or ""): "not_fresh:%.1fh" % hours_old(c)
+                     for c in candidates if (getattr(c, "page_id", "") or "") not in fresh_ids})
+        trace.stage("tier1_input", [c for c in fresh if c.llm_score >= _TIER1_MIN_SCORE],
+                    {(getattr(c, "page_id", "") or ""): "below_tier1:%.1f" % c.llm_score
+                     for c in fresh if c.llm_score < _TIER1_MIN_SCORE})
 
     adj = topic_adjustments or {}
     tcap = config.topic_mix.per_batch_cap if config.topic_mix.enabled else 0
@@ -338,19 +383,19 @@ def select_batch(
 
     batch: list[PublishCandidate] = []
     _fill(batch, sorted((c for c in fresh if c.llm_score >= _TIER1_MIN_SCORE), key=key),
-          pub.batch_max, tcap, scap)
+          pub.batch_max, tcap, scap, trace, "tier1")
 
     if len(batch) < pub.batch_max:
         picked_ids = {c.page_id for c in batch}
         _fill(batch, sorted(
             (c for c in fresh if preferred_floor <= c.llm_score < _TIER1_MIN_SCORE and c.page_id not in picked_ids),
-            key=key), pub.batch_max, tcap, scap)
+            key=key), pub.batch_max, tcap, scap, trace, "tier2_fresh_mid")
 
     if len(batch) < pub.batch_max:
         picked_ids = {c.page_id for c in batch}
         _fill(batch, sorted(
             (c for c in candidates if c.llm_score >= preferred_floor and c.page_id not in picked_ids),
-            key=key), pub.batch_max, tcap, scap)
+            key=key), pub.batch_max, tcap, scap, trace, "tier3_aged")
 
     if is_weekday and len(batch) < pub.batch_max:
         # Weekday-only extra fallback: still room in the batch, so relax
@@ -358,7 +403,7 @@ def select_batch(
         picked_ids = {c.page_id for c in batch}
         _fill(batch, sorted(
             (c for c in candidates if fallback_floor <= c.llm_score < preferred_floor and c.page_id not in picked_ids),
-            key=key), pub.batch_max, tcap, scap)
+            key=key), pub.batch_max, tcap, scap, trace, "tier4_weekday_relax")
 
     # Same cascade re-run with the subject cap off, so the cap can only ever
     # change WHICH candidates fill a batch, never leave the batch short and
@@ -367,7 +412,7 @@ def select_batch(
         picked_ids = {c.page_id for c in batch}
         _fill(batch, sorted(
             (c for c in candidates if c.llm_score >= fallback_floor and c.page_id not in picked_ids),
-            key=key), pub.batch_max, 0, 0)
+            key=key), pub.batch_max, 0, 0, trace, "tier5_caps_off")
 
     if len(batch) < pub.batch_min:
         # Last resort: newest overall, regardless of score.

@@ -641,6 +641,15 @@ class PublishConfig(BaseModel):
     # happens to publish most, and a batch of ten from one outlet is ten copies
     # of that outlet's news judgement. 0 disables it.
     per_batch_source_cap: int = 3
+    # 2026-10-03 — per-cycle record of where every eligible candidate went.
+    # Observation only (core/selection_trace.py). On because eight rounds of
+    # eliminating hypotheses one at a time did not find why a fresh 8.0
+    # candidate appeared in zero of thirteen consecutive batches, and the
+    # existing logs record only what ENTERED a batch, never the set it was
+    # drawn from. Turn off once that is answered; it writes a local JSONL and
+    # nothing reads it automatically.
+    selection_trace: bool = True
+    selection_trace_path: str = "logs/selection_trace.jsonl"
 
     staleness_check_hours_floor: int = 72  # 2026-09-05 — agents/staleness_checker.py's LLM call only runs when event_first_seen_at is at least this old; reuses dedup.cross_cycle_window_hours' existing 72h convention rather than picking a new number, per the user's explicit cost concern (this would otherwise double the LLM calls made for every candidate, not just the minority whose underlying event is genuinely old)
 

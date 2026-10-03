@@ -96,6 +96,7 @@ from agents.trending import fetch_trending_headlines
 from agents.staleness_checker import StalenessChecker
 from agents.writer import Writer
 from agents.editor import EditorPicker
+from core.selection_trace import SelectionTrace
 from core.alerts import AlertNotifier
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex
@@ -188,6 +189,14 @@ async def run_cycle(
     # stages cannot disagree about which subjects are owed coverage.
     topic_debt = await topic_publication_debt(config)
     cycle_token = str(int(datetime.now(timezone.utc).timestamp()) // 60)
+    # Observation only — see core/selection_trace.py. Fails open everywhere, so
+    # a trace that cannot be written cannot change what gets published.
+    trace = None
+    try:
+        if getattr(config.publish, "selection_trace", False):
+            trace = SelectionTrace(config.publish.selection_trace_path)
+    except Exception:
+        trace = None
 
     # Widen-on-empty (2026-09-05, per the user's "扩大范围，如果找不到合适的"
     # request): select_batch() only ever looks at `remaining` — the pool
@@ -240,10 +249,16 @@ async def run_cycle(
             # Editor off, or it failed/returned nothing — the previous path,
             # unchanged, which is the point of it being a separate branch.
             batch = select_batch(remaining, config, topic_adjustments,
-                                 topic_debt=topic_debt, cycle_token=cycle_token)
+                                 topic_debt=topic_debt, cycle_token=cycle_token,
+                                 trace=trace)
         if not batch:
             logger.info("run_cycle: widen attempt %d — no more candidates left to try", attempt)
             break
+        if trace is not None:
+            try:
+                trace.flush(batch)
+            except Exception:
+                pass
         logger.info("run_cycle: widen attempt %d — selected batch of %d for extraction/content-gen", attempt, len(batch))
         tried_ids = {c.page_id for c in batch}
         remaining = [c for c in remaining if c.page_id not in tried_ids]
