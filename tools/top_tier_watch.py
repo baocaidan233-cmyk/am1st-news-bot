@@ -44,7 +44,23 @@ async def main() -> None:
     a = ap.parse_args()
 
     cfg = load_config("config/config.yaml")
-    ceiling = cfg.publish.candidate_max_age_hours
+    # Three different clocks, and the first version of this file used the
+    # wrong one. candidate_max_age_hours (24h) is only the Notion QUERY
+    # ceiling. Selection is tighter and tiered:
+    #   fresh_hours (4h)            tier 1, which is the >=7.0 tier, draws
+    #                               ONLY from candidates younger than this
+    #   weekday_max_age_hours (12h) everything is dropped past this on a
+    #   weekend_max_age_hours (24h) weekday, 24h at the weekend
+    # Reporting 24h told the operator a 19h-old 7.0 had "4.1h left" when its
+    # top-tier eligibility had ended 15 hours earlier and its eligibility of
+    # any kind was already over. Everything recovered by hand on 2026-10-02
+    # was 13-21h old: not expiring, long gone, and only publishable because
+    # tools/publish_one.py bypasses select_batch.
+    pub = cfg.publish
+    tier1 = pub.fresh_hours
+    today_ceiling = (pub.weekday_max_age_hours
+                     if datetime.now(timezone.utc).weekday() < 5
+                     else pub.weekend_max_age_hours)
     pool = await query_eligible_candidates(cfg)
     now = datetime.now(timezone.utc)
     rows = []
@@ -52,19 +68,28 @@ async def main() -> None:
         if (c.llm_score or 0) < a.min_score:
             continue
         age = (now - c.published_at).total_seconds() / 3600
-        rows.append((ceiling - age, age, c))
+        rows.append((tier1 - age, age, c))
     rows.sort()
-    live = [r for r in rows if r[0] > 0]
-    print(f"\n候选池 {len(pool)} 条，其中 >={a.min_score:.1f} 分的 {len(rows)} 条，"
-          f"还在 {ceiling}h 窗口内的 {len(live)} 条")
-    if not live:
-        print("窗口内没有顶档稿 —— 要么都发了，要么都已经过期")
+    in_tier1 = [r for r in rows if r[1] <= tier1]
+    selectable = [r for r in rows if tier1 < r[1] <= today_ceiling]
+    gone = [r for r in rows if r[1] > today_ceiling]
+    print(f"\n候选池 {len(pool)} 条，>={a.min_score:.1f} 分的 {len(rows)} 条")
+    print(f"  tier1 可见（<{tier1}h，这是 >=7.0 档唯一的入口）  {len(in_tier1)} 条")
+    print(f"  仅低档可选（{tier1}-{today_ceiling}h）                    {len(selectable)} 条")
+    print(f"  已出局（>{today_ceiling}h，正常周期发不了）              {len(gone)} 条")
+    if not rows:
         return
-    print(f"\n{'剩余':>7} {'龄':>7} {'分':>5}  标题")
-    print("-" * 96)
-    for left, age, c in live:
-        mark = " ←急" if left < 4 else ""
-        print(f"{left:6.1f}h {age:6.1f}h {c.llm_score:5.1f}  {(c.title or '')[:62]}{mark}")
+    print(f"\n{'tier1剩余':>10} {'龄':>7} {'分':>5}  状态   标题")
+    print("-" * 100)
+    for left, age, c in rows:
+        if age <= tier1:
+            state, mark = "tier1", (" ←急" if left < 1 else "")
+        elif age <= today_ceiling:
+            state, mark = "仅低档", ""
+        else:
+            state, mark = "已出局", ""
+        shown = f"{left:9.1f}h" if age <= tier1 else f"{'—':>10}"
+        print(f"{shown} {age:6.1f}h {c.llm_score:5.1f}  {state}  {(c.title or '')[:56]}{mark}")
         # Full URL, never truncated: it is meant to be copied into
         # publish_one.py, and twice today a URL rebuilt from a truncated
         # display pointed at a different article than the one intended.
