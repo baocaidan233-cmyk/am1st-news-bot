@@ -221,7 +221,7 @@ dynamic_publish:
 # 和 core/topic_mix.py。这里的 targets 是编辑方针，不是拟合参数：
 # 想让某个题材多发/少发，直接改这里的份额，控制器照做。
 topic_mix:
-  enabled: true
+  enabled: false
   gain: 4.0
   max_adjustment: 1.0
   window_hours: 24.0
