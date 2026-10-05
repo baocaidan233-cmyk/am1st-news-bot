@@ -371,9 +371,9 @@ def select_batch(
         trace.stage("fresh", fresh,
                     {(getattr(c, "page_id", "") or ""): "not_fresh:%.1fh" % hours_old(c)
                      for c in candidates if (getattr(c, "page_id", "") or "") not in fresh_ids})
-        trace.stage("tier1_input", [c for c in fresh if c.llm_score >= _TIER1_MIN_SCORE],
+        trace.stage("tier1_input", [c for c in candidates if c.llm_score >= _TIER1_MIN_SCORE],
                     {(getattr(c, "page_id", "") or ""): "below_tier1:%.1f" % c.llm_score
-                     for c in fresh if c.llm_score < _TIER1_MIN_SCORE})
+                     for c in candidates if c.llm_score < _TIER1_MIN_SCORE})
 
     adj = topic_adjustments or {}
     tcap = config.topic_mix.per_batch_cap if config.topic_mix.enabled else 0
@@ -425,7 +425,26 @@ def select_batch(
                     (cycle_token + (c.url or c.page_id)).encode("utf-8")).hexdigest())
 
     batch: list[PublishCandidate] = []
-    _fill(batch, sorted((c for c in fresh if c.llm_score >= _TIER1_MIN_SCORE), key=key),
+    # tier1 draws from `candidates`, not from `fresh`. The two filters are
+    # different questions and conflating them is what 87b0e15 half-fixed:
+    # that change gave the top band the pool's own 24h ceiling, but tier1 --
+    # the only place the batch is filled score-first -- was still gated on
+    # fresh_hours, so a 7.0 at five hours could reach the batch only through
+    # tier3, which runs at all only when tier1 and tier2 leave room and
+    # orders by subject debt and a hash with no score term in it. Widening
+    # the outer ceiling alone moved those candidates from deleted to queued
+    # in the tier that starves, which is why the 2026-10-05 recovery still
+    # had to go out by hand.
+    #
+    # Measured the same day: the pool held six candidates at 7.0 or above
+    # (three 7.0, three 8.0) and tier1 could see three of them. The other
+    # three were 19 to 24 hours old. Over the previous 14 days 76 top-band
+    # candidates aged out unpublished and only 2.6% of them were stories
+    # covered from another source; the channel's second-highest post ever
+    # (277 engagement, 3.79x) was an 8.0 that sat 18.1 hours and went out by
+    # hand. The ceiling that applies here is still age_ceiling_for()'s, so
+    # nothing enters that the filter above already rejected.
+    _fill(batch, sorted((c for c in candidates if c.llm_score >= _TIER1_MIN_SCORE), key=key),
           pub.batch_max, tcap, scap, trace, "tier1")
 
     if len(batch) < pub.batch_max:
