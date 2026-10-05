@@ -181,14 +181,33 @@ class PriorityRanker:
                 elif best_sim >= _TRENDING_SIM_LOW:
                     trending_bonus = 1.0
 
-            freshness_penalty = _FRESHNESS_DECAY_K * math.log(1 + hours_since_update)
+            # 2026-10-05 — the top band is exempt from the freshness penalty,
+            # the same exemption and the same threshold the age ceiling in
+            # agents/candidate_selector.py already carries. Without it this
+            # stage undid that one: tier1 now admits a top-band candidate
+            # anywhere inside its 24h window, and at K=1.0 the penalty reaches
+            # 2.0 by ten hours, so a 20-hour 8.0 scored 5.33 against 5.42 for
+            # a one-hour 6.0 and lost the batch it had just been let into.
+            # The channel owner's instruction on 2026-10-05 was to publish the
+            # top band even when it is late.
+            freshness_penalty = (0.0 if c.llm_score >= _TOP_BAND
+                                 else _FRESHNESS_DECAY_K * math.log(1 + hours_since_update))
             # Subject-mix term (2026-09-25) — the same adjustment
             # agents/candidate_selector.py used to pick this batch, applied
             # again here so the two stages agree on what they are optimising.
             # Bounded by TopicMixConfig.max_adjustment and signed: a subject
             # already over its share target contributes a negative value.
             topic_adjustment = topic_adjustments.get(c.topic, 0.0) if c.topic else 0.0
-            priority_score = c.llm_score + topic_adjustment + trending_bonus - freshness_penalty
+            # 2026-10-05 — trending_bonus out of the formula, per the channel
+            # owner: it is worth nothing for finding a breakout. Its source is
+            # Google News' NATION section, i.e. mainstream national coverage,
+            # and the editor brief says in as many words that a candidate
+            # which merely repeats a mainstream frame is worth LESS -- while
+            # this term could only ever add, up to +2.0. It fired on 7% of
+            # candidates with a median best-match cosine of 0.319 and was
+            # never checked against engagement. Still computed and logged, so
+            # the record shows what it would have given.
+            priority_score = c.llm_score + topic_adjustment - freshness_penalty
 
             _log_decision({
                 "page_id": c.page_id,
@@ -220,11 +239,14 @@ class PriorityRanker:
         # built from llm_score, which correlates +0.076 with engagement — it
         # has no business outranking a subject the channel has actually
         # stopped covering.
-        debt = topic_debt or {}
+        # 2026-10-05 — subject debt removed from this ordering for the same
+        # reason it left agents/candidate_selector.py: the eighteen-category
+        # partition it rests on was never the channel owner's instruction.
+        # It used to sit ABOVE priority_score here, so a subject the channel
+        # had not run in eighteen hours outranked the score entirely.
         scored.sort(
             key=lambda item: (
                 item[0].is_hot,
-                debt_level(debt.get(item[0].topic, 0.0), self._config) if item[0].topic else 0,
                 item[0].priority_score,
                 -item[1],
             ),

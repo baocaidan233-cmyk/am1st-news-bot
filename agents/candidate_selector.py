@@ -375,7 +375,6 @@ def select_batch(
                     {(getattr(c, "page_id", "") or ""): "below_tier1:%.1f" % c.llm_score
                      for c in candidates if c.llm_score < _TIER1_MIN_SCORE})
 
-    adj = topic_adjustments or {}
     tcap = config.topic_mix.per_batch_cap if config.topic_mix.enabled else 0
     scap = pub.per_batch_source_cap
 
@@ -415,14 +414,28 @@ def select_batch(
     # Keeping them separate is also correct on its own terms — publication
     # debt is what the channel has actually published, and selecting into a
     # batch is not publishing.
-    debt = topic_debt or {}
-
-    def key(c: PublishCandidate) -> tuple[int, float, str]:
-        level = debt_level(debt.get(c.topic, 0.0), config) if c.topic else 0
-        return (-level,
-                -(adj.get(c.topic, 0.0) if c.topic else 0.0),
-                _stable_key(c) if not cycle_token else hashlib.sha1(
-                    (cycle_token + (c.url or c.page_id)).encode("utf-8")).hexdigest())
+    # Ordering inside a tier is a hash and nothing else, as of 2026-10-05.
+    #
+    # It used to be (-subject debt level, -subject mix adjustment, hash). Both
+    # subject terms are gone because neither was ever the channel owner's
+    # instruction. The mix targets were fitted to n=573 past posts and then
+    # labelled editorial policy; sixteen of the eighteen rested on differences
+    # that were not significant, and across 571 published posts only one
+    # bucket reached significance at all -- which itself disappears once what
+    # the reader gets is controlled for (p 0.011 -> 0.37), while the reverse
+    # does not. Subject debt was the better-built half, an observed "hours
+    # since we last ran this subject" with no target in it, but it still
+    # partitions by the same eighteen categories, and the owner did not ask
+    # for that partition to order anything either.
+    #
+    # What is left is honest rather than good: nothing available can order
+    # the middle of the pool. The score cannot -- 97.8% of candidates carry
+    # 5.0 or 6.0 -- and that is why tier1 is now filled score-first over the
+    # whole top band (see the _fill below) and why the mid-band is explicitly
+    # a draw rather than a formula pretending to rank it.
+    def key(c: PublishCandidate) -> str:
+        return (_stable_key(c) if not cycle_token else hashlib.sha1(
+            (cycle_token + (c.url or c.page_id)).encode("utf-8")).hexdigest())
 
     batch: list[PublishCandidate] = []
     # tier1 draws from `candidates`, not from `fresh`. The two filters are

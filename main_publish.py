@@ -186,9 +186,10 @@ async def run_cycle(
     # same thing rather than each re-deriving it. Fails open to {} (no
     # adjustment anywhere), which is the pre-2026-09-25 behaviour.
     topic_adjustments = compute_adjustments(config, await recent_published_topic_counts(config))
-    # One read per cycle, shared by batch selection and ranking so the two
-    # stages cannot disagree about which subjects are owed coverage.
-    topic_debt = await topic_publication_debt(config)
+    # Subject debt is no longer read: as of 2026-10-05 neither selection nor
+    # ranking orders by it. core/notion_candidates.py's topic_publication_debt
+    # and agents/candidate_selector.py's debt_level are kept for the
+    # measurement they document, not called.
     cycle_token = str(int(datetime.now(timezone.utc).timestamp()) // 60)
     # Observation only — see core/selection_trace.py. Fails open everywhere, so
     # a trace that cannot be written cannot change what gets published.
@@ -250,8 +251,7 @@ async def run_cycle(
             # Editor off, or it failed/returned nothing — the previous path,
             # unchanged, which is the point of it being a separate branch.
             batch = select_batch(remaining, config, topic_adjustments,
-                                 topic_debt=topic_debt, cycle_token=cycle_token,
-                                 trace=trace)
+                                 cycle_token=cycle_token, trace=trace)
         if not batch:
             logger.info("run_cycle: widen attempt %d — no more candidates left to try", attempt)
             break
@@ -497,8 +497,7 @@ async def run_cycle(
                 logger.info("run_cycle: editor rank %d — %s [%s] %s",
                             editor_order.get(c.page_id, -1) + 1, c.url, subject, why)
         else:
-            ranked = await ranker.rank(generated, trending_headlines, topic_adjustments,
-                                       topic_debt=topic_debt)
+            ranked = await ranker.rank(generated, trending_headlines, topic_adjustments)
         ranked_len = len(ranked)
         # 2026-09-23 — retire a candidate the dedup check keeps rejecting,
         # instead of re-extracting and re-writing it every cycle for the rest
