@@ -81,6 +81,38 @@ def filter_former_trump(candidates: list[PublishCandidate]) -> list[PublishCandi
     return kept
 
 
+def age_ceiling_for(c: PublishCandidate, day_ceiling: float, config: AppConfig) -> float:
+    """How old this candidate may be, in hours.
+
+    The top band gets the pool's own outer bound instead of the day-aware
+    one. On a weekday that ceiling is 12h, and it was deleting exactly the
+    candidates the score is right about.
+
+    Measured. The score emits three values across the live pool -- 5.0, 6.0
+    and 8.0, nothing between 6.0 and 8.0 -- so it cannot order within a
+    band, but the top band is real: over 716 published posts the 8.0 tier
+    breaks out 7.3% of the time against 1.1% at 6.0. A 2026-10-02 audit over
+    14 days found 7.0 and 8.0 candidates publish only 48% of the time, 76 of
+    them aged past the window unpublished, and only 2.6% of those 76 were
+    stories this channel had covered from another source -- the rest were
+    simply lost. The channel's second-highest post of all time (277
+    engagement, 3.79x the median) was an 8.0 that entered the pool at
+    2026-10-01 22:02 and went out by hand 18.1 hours later, because no
+    normal cycle could still reach it. On 2026-10-05 three more 8.0
+    candidates sat at 22.9 to 24.1 hours, all past the weekday ceiling, and
+    went out by hand again on the channel owner's instruction -- publish
+    them even though they are late.
+
+    This is not a general relaxation of the freshness rule. It gives one
+    band, 2.2% of the pool, the window the whole pool already has at the
+    weekend, and it invents no new number: candidate_max_age_hours is the
+    Notion query's own ceiling, so nothing older than that is ever fetched.
+    """
+    if c.llm_score >= _TIER1_MIN_SCORE:
+        return max(float(day_ceiling), float(config.publish.candidate_max_age_hours))
+    return float(day_ceiling)
+
+
 def _stable_key(c: PublishCandidate) -> str:
     """A deterministic pseudo-random ordering key, from the candidate's own url.
 
@@ -198,7 +230,8 @@ def shortlist(
     def hours_old(c: PublishCandidate) -> float:
         return (now - c.published_at).total_seconds() / 3600
 
-    pool = [c for c in candidates if hours_old(c) <= max_age_hours]
+    pool = [c for c in candidates
+            if hours_old(c) <= age_ceiling_for(c, max_age_hours, config)]
     if is_night(now, config):
         pool = [c for c in pool if c.is_hot or c.llm_score >= pub.night_min_score]
     pool.sort(key=lambda c: (-c.llm_score, seen.get(c.url_hash, 0), _stable_key(c)))
@@ -305,11 +338,12 @@ def select_batch(
                    batch_min=pub.batch_min)
         trace.stage("returned", candidates, {})
     _before = candidates
-    candidates = [c for c in candidates if hours_old(c) <= max_age_hours]
+    candidates = [c for c in candidates
+                  if hours_old(c) <= age_ceiling_for(c, max_age_hours, config)]
     if trace is not None:
         kept_ids = {getattr(c, "page_id", "") for c in candidates}
         trace.stage("age_ceiling", candidates,
-                    {(getattr(c, "page_id", "") or ""): "older_than_%.0fh:%.1f" % (max_age_hours, hours_old(c))
+                    {(getattr(c, "page_id", "") or ""): "older_than_%.0fh:%.1f" % (age_ceiling_for(c, max_age_hours, config), hours_old(c))
                      for c in _before if (getattr(c, "page_id", "") or "") not in kept_ids})
 
     # 2026-09-17 — overnight quality gate; see PublishConfig.night_min_score
