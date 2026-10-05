@@ -110,6 +110,7 @@ from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
 from core.redis_store import BatchSeen, CaptionCache, CycleCounter, PostedDupStrikes
 from core.title_guard import title_violation
+from core.stance_guard import epithet_violation
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("main_publish")
@@ -431,6 +432,31 @@ async def run_cycle(
                 )
                 continue
 
+            # Third gate on the same caption, plus the headline it will carry.
+            # A different question again: not "is this fact wrong" but "are we
+            # sneering at our own side". On 2026-10-05 this channel published
+            # a post whose card read "Trump Goons Melt Down at CNN Star Over
+            # Propaganda Ads" and whose caption called the administration's
+            # own ads "propaganda ads" in its own voice. It took 26 engagement
+            # against a channel median near 60. Nothing could have stopped it:
+            # scoring.py's anti_admin field went offline-only with the 10-02
+            # revert, and the editor prompt's one sentence on framing failed
+            # on 3 of its first 9 picks.
+            #
+            # Only the free, code half is wired. Measured over 22 real
+            # published captions x 3 runs: the epithet check caught the one
+            # known violation every time with no false positives, while the
+            # model half caught zero true positives and blocked 4 different
+            # good posts (85, 69, 82 and 49 engagement, all at or above the
+            # median) across two prompt designs. See core/stance_guard.py.
+            stance_rule = epithet_violation(post_content, getattr(c, "title", "") or "")
+            if stance_rule:
+                logger.warning(
+                    "run_cycle: %s — blocked by stance_guard rule %s, dropped from batch",
+                    c.url, stance_rule,
+                )
+                continue
+
             if not cached and not Writer.is_no_comment(post_content):
                 await caption_cache.set(c.url_hash, post_content)
             if Writer.is_no_comment(post_content):
@@ -503,6 +529,19 @@ async def run_cycle(
         return False
 
     og = await fetch_link_preview(winner.url)
+    # The card title is the publisher's own og:title, which the loop above
+    # could not see -- it is fetched once, for the winner only. It is also
+    # the first thing a reader sees, so an epithet here cannot be published
+    # even though the caption already passed. Nothing goes out this cycle;
+    # the candidate stays in the pool and will be refused here again for
+    # free, which is cheaper than deciding on its behalf that it is dead.
+    card_rule = epithet_violation("", og.get("prev_ttl") or winner.title or "")
+    if card_rule:
+        logger.warning(
+            "run_cycle: %s — card title blocked by stance_guard rule %s, "
+            "nothing published this cycle", winner.url, card_rule,
+        )
+        return False
     # 2026-09-22 — when the preview image Gettr would render is missing or
     # broken, attach our own headline card instead (agents/poster.py). Returns
     # None whenever the preview is fine, when the feature is off, or when
