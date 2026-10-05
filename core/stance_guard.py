@@ -65,6 +65,27 @@ _EPITHET_NEAR_SUBJECT = re.compile(
 # language AIMED AT US -- and all three were written into that prompt as
 # must-pass examples before the run. So the judgement moved to code and the
 # model kept the extraction, the job it does reliably here.
+#
+# The redesign was then run over all 1,124 posts this channel published from
+# 2026-09-19, with their real engagement. It flagged 106 of them, and of the
+# twelve highest-engagement flags about nine are plainly wrong in the same
+# direction-blind way: "the prior administration relied on" (an attack on
+# Biden), "echoing the administration commitment under President Trump to
+# dismantle terror finance networks" (praise), "prompting ICE to defend its
+# position" against rioters, "The Trump Effect on Immigration Is Real", and
+# an ICE order that "Sparks Base Revolt" -- criticism from the right, which
+# the prompt names as must-pass. It matches the WORD administration or ICE
+# near anything negative, whichever way the negative points.
+#
+# The flagged group does run at 0.95x against 1.01x, but that is not evidence
+# the stance call works. Split by target: opposition 1.07x with a 6.1%
+# breakout rate, none 0.92x/3.8%, administration 0.92%/2.3%. The pattern is
+# that NOT attacking the opposition underperforms -- the appeal-layer result
+# arrived at through a different question -- and the blocked group is mostly
+# posts that happen not to attack anyone.
+#
+# So this function stays unwired until there is a real set of violations to
+# measure precision against. Two in 1,124 is not that set.
 _TARGETS = ("administration", "enforcement", "opposition", "foreign", "none")
 # The only two targets this channel cannot be hostile to in its own voice.
 _BLOCKING = frozenset(("administration", "enforcement"))
