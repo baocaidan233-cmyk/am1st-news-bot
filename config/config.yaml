@@ -267,9 +267,9 @@ poster:
 # 发布周期里唯一的编辑判断 —— 见 agents/editor.py / core/config.py 的 EditorConfig。
 # enabled: false 时 main_publish.py 走的是加这层之前的完全相同的路径。
 editor:
-  enabled: false
+  enabled: true
   # true 时：单数轮走编辑台、双数轮走原路径，两边都真实发布。
-  ab_alternate: false
+  ab_alternate: true
   shortlist_size: 50
   pick_count: 10
   recent_titles_hours: 48.0
