@@ -17,10 +17,15 @@ the bodies, because the version this was ported from would have been wrong in
 both directions:
 
 - Leading News's `^LIVE:` is written for rolling pages like "Australia news
-  live:". Here LIVE: means a single event being streamed, and "LIVE: President
-  Trump Holds a Rally in Mobile, AL" is the highest-scoring candidate in the
-  whole 1730-row sample at 8.0, with three more rally and press-conference
-  streams at 6.0. Hence _SINGLE_EVENT.
+  live:". Here LIVE: usually means a single event being streamed, and "LIVE:
+  President Trump Holds a Rally in Mobile, AL" was the highest-scoring
+  candidate in the whole 1730-row sample at 8.0. That exemption is gone as of
+  2026-10-06, by the channel owner's decision: every live or stream page is
+  treated as a roundup, single event or not ("不能为了一两条的好互动，让频道
+  冒着发拼盘新闻的风险"). Gateway Pundit's "Watch Live: ... and More!" pages
+  are a multi-story show behind a single "CLICK HERE TO WATCH RIGHT NOW!", and
+  most other outlets' watch-live pages are a video with no article for the
+  extractor to find. Hence _LIVE_STREAM, checked before any exemption.
 - Matching "briefing" in a URL caught /briefing-room/, a place in the White
   House, so the URL rule does not look for it.
 - "things you need to know" reads as a digest and is not one: on Market
@@ -47,8 +52,18 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
+# Live and stream pages of any kind, single event or not (owner, 2026-10-06).
+# Title: a leading "LIVE:" / "LIVE NOW:" / "WATCH LIVE:", "watch live" anywhere,
+# "livestream", or Gateway Pundit's "... and More!" show title. URL: a
+# watch-live or livestream slug, Epoch TV's /live-now-..., RSBN's /video/live-...
+# Not a bare "live-" slug: /live-nation-sued/ is a story about Live Nation.
+_LIVE_STREAM_TITLE = re.compile(
+    r"^\W*(?:watch\s+)?live(?:\s+now)?\s*[:|–-]|\bwatch\s+live\b|\blive\s*stream\b|\band\s+more!",
+    re.IGNORECASE)
+_LIVE_STREAM_URL = re.compile(r"/(?:[^/]*watch-live|[^/]*live-?stream|live-now-)[^/]*(?=/|$)|/video/live-", re.IGNORECASE)
+
 # One named event covered live or in full is a single subject, whatever the
-# title calls itself.
+# title calls itself. No longer exempts a live stream: _LIVE_STREAM_* runs first.
 _SINGLE_EVENT = re.compile(
     r"(?i)\b(rally|speech|remarks|address|announcement|press conference|news conference|"
     r"briefing room|hearing|testimony|interview|debate|summit|signing|roundtable|"
@@ -88,6 +103,10 @@ def roundup_rule(title: str, url: str) -> str | None:
     """The name of the rule this candidate breaks, or None."""
     text = title or ""
     lowered = text.lower()
+    if _LIVE_STREAM_TITLE.search(text):
+        return "live_stream"
+    if _LIVE_STREAM_URL.search(urlparse(url or "").path or ""):
+        return "live_stream_url"
     if any(name in lowered for name in _SINGLE_SUBJECT_COLUMNS):
         return None
     if _SINGLE_EVENT.search(text):
