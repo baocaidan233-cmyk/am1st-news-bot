@@ -54,6 +54,31 @@ _EPITHET_NEAR_SUBJECT = re.compile(
     re.I,
 )
 
+# The same idea for mocking framing, added 2026-10-06. Between 09-20 and 10-02
+# this channel published 24 Daily Beast stories and about 20 of them carried
+# that outlet's mockery in the card title: "Press-Starved Trump, 80, Announces
+# Desperate TV Move", "Desperate Trump Smashes Speed Limit", "Trumpy Justice",
+# "Trump's New Power Grab", "White House Melts Down at CNN Host". The epithet
+# list above caught two of them. Over the 884 titles published to date these
+# patterns block those seven and nothing else; the one other hit in testing,
+# "... Out Loud in Trump RANT" (a pro-Trump post mocking a critic), is why
+# "rant" is not in the list. Every word here must sit right against Trump's
+# side, so "Trump Derangement Syndrome meltdown" or "White House mocks CNN
+# meltdown" do not match, and adjectives a right-wing outlet also uses about
+# its own base ("furious", "fuming") are left out.
+_SIDE = r"(?:(?:donald\s+)?trump|maga|vance|hegseth|white\s+house|team\s+trump)(?![\w-])"
+_MOCK_ADJ = (r"(?:desperate|press-starved|confused|seething|triggered|humiliated|panicked|unhinged"
+             r"|bonkers|deranged|petty|rattled|flailing|disgraced|cringe|thin-skinned|whiny)")
+_MOCK_ACT = (r"(?:tantrum|meltdown|melts\s+down|tirade|freak-?out|freaks\s+out|spirals|unravels"
+             r"|thirsts|lashes\s+out|whines|sulks|power\s+grab|self-own)")
+_MOCKING_FRAME = re.compile(
+    r"\btrump,\s*\d{2},"                                             # "Trump, 80," age mockery
+    r"|\btrumpy\b"
+    rf"|\b{_MOCK_ADJ}\s+{_SIDE}"                                     # "Desperate Trump"
+    rf"|\b{_SIDE}(?:['’]s)?\s+(?:(?:media|new|latest|own|bizarre|public)\s+)?{_MOCK_ACT}\b",
+    re.I,
+)
+
 # The model names a target from a closed set and quotes the words. It does
 # NOT decide whether the channel should publish -- that is code, below. The
 # first version asked it the publish question directly and, over 22 real
@@ -122,6 +147,9 @@ def epithet_violation(caption: str, card_title: str = "") -> str | None:
         m = _EPITHET_NEAR_SUBJECT.search(text)
         if m:
             return "epithet-in-%s:%s" % (where, m.group(0)[:48])
+        m = _MOCKING_FRAME.search(text)
+        if m:
+            return "mocking-in-%s:%s" % (where, m.group(0)[:48])
     return None
 
 
