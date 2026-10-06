@@ -227,6 +227,7 @@ class PriorityRanker:
                 "freshness_penalty": round(freshness_penalty, 3),
                 "priority_score": round(priority_score, 3),
                 "is_hot": c.is_hot,
+                "appeal": c.appeal,
             })
 
             scored.append((c.model_copy(update={"priority_score": priority_score}), hours_since_update))

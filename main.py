@@ -66,6 +66,7 @@ from agents.og_metadata import fetch_link_preview
 from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
 from agents.scorer_shadow import ShadowScorer
+from agents.appeal_tagger import AppealTagger
 from agents.topic_tagger import TopicTagger
 from agents.trending import fetch_trending_headlines
 from core.config import load_config
@@ -78,7 +79,7 @@ from core.prescore import PreScorer, log_prescore_decision
 from core.roundup import roundup_rule
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, QdrantStore, ensure_collection_with_retry
-from core.redis_store import RedisStore
+from core.redis_store import AppealLabels, RedisStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("main")
@@ -86,7 +87,7 @@ logger = logging.getLogger("main")
 
 async def run_cycle(
     config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run,
-    prescorer=None, shadow_scorer=None,
+    prescorer=None, shadow_scorer=None, appeal_tagger=None, appeal_labels=None,
 ) -> None:
     sources = await load_rss_sources(config)
     if not sources:
@@ -741,6 +742,10 @@ async def run_cycle(
                 # scoring loop also covers items that lose their cluster or
                 # fall below threshold. Fails open to None (see TopicTagger).
                 c.topic = await topic_tagger.tag(c)
+                # Yes/no reader appeal (2026-10-06, agents/appeal_tagger.py),
+                # read back by the publish cycle to order candidates that share
+                # a score. Fails open to None = ordered as no appeal.
+                appeal = await appeal_tagger.tag(c) if appeal_tagger is not None else None
                 # Tagged but not acted on yet (2026-09-26): this pass only records
                 # the label so a week of it can be judged prospectively, the way
                 # the MAGA-consensus shadow run was. Nothing downstream reads it.
@@ -751,8 +756,11 @@ async def run_cycle(
                 await qdrant_store.write_embedding(
                     c.url, c.url_hash, content_for_embedding, int(c.published_at.timestamp()), embedding,
                 )
+                if appeal is not None and appeal_labels is not None and not dry_run:
+                    await appeal_labels.set(c.url_hash, appeal)
                 added_count += 1
-                logger.info("run_cycle: added to candidate pool: %s (score=%.1f, topic=%s)", c.url, c.llm_score, c.topic or "-")
+                logger.info("run_cycle: added to candidate pool: %s (score=%.1f, topic=%s, appeal=%s)",
+                            c.url, c.llm_score, c.topic or "-", {True: "yes", False: "no"}.get(appeal, "-"))
             except Exception:
                 logger.exception("run_cycle: unhandled error writing %s, skipping this item", c.url)
 
@@ -786,6 +794,8 @@ async def main() -> None:
         except Exception:
             logger.exception("shadow scorer failed to start — continuing without it")
     topic_tagger = TopicTagger(config)
+    appeal_tagger = AppealTagger(config)
+    appeal_labels = AppealLabels(config)
     prescorer = PreScorer(config)
 
     if dry_run:
@@ -796,7 +806,8 @@ async def main() -> None:
             started = time.monotonic()
             try:
                 await asyncio.wait_for(
-                    run_cycle(config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run, prescorer, shadow_scorer),
+                    run_cycle(config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run, prescorer, shadow_scorer,
+                              appeal_tagger, appeal_labels),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:
@@ -816,6 +827,7 @@ async def main() -> None:
         await qdrant_store.close()
         await event_store.close()
         await hub_index.close()
+        await appeal_labels.close()
 
 
 if __name__ == "__main__":

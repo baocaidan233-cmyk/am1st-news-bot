@@ -237,3 +237,46 @@ class CaptionCache:
     async def close(self) -> None:
         if self._client is not None:
             await self._client.aclose()
+
+
+class AppealLabels:
+    """The yes/no appeal label agents/appeal_tagger.py gives a candidate when it
+    enters the pool, keyed by url_hash, for the separate publish process to read
+    back (2026-10-06). Kept here rather than as a Notion column because only
+    the selector reads it and nothing about it needs a human to see it.
+
+    Fails open both ways: a set that cannot be written is logged and dropped,
+    and a read that cannot be made returns no labels, which the selector
+    treats as "no appeal" for everyone -- the previous hash order exactly."""
+
+    def __init__(self, config: AppConfig) -> None:
+        self._prefix = config.redis.appeal_prefix
+        self._ttl = config.redis.appeal_ttl_seconds
+        self._client = (
+            redis.from_url(config.redis.url, decode_responses=True, socket_timeout=10, socket_connect_timeout=10)
+            if config.redis.url
+            else None
+        )
+
+    async def set(self, url_hash: str, appeal: bool) -> None:
+        if self._client is None or not url_hash:
+            return
+        try:
+            await self._client.set(self._prefix + url_hash, "1" if appeal else "0", ex=self._ttl)
+        except Exception:
+            logger.exception("AppealLabels: set failed for %s — candidate stays unlabelled", url_hash)
+
+    async def get_many(self, url_hashes: list[str]) -> dict[str, bool]:
+        hashes = [h for h in url_hashes if h]
+        if self._client is None or not hashes:
+            return {}
+        try:
+            values = await self._client.mget([self._prefix + h for h in hashes])
+        except Exception:
+            logger.exception("AppealLabels: read failed — ordering without appeal this cycle (fail open)")
+            return {}
+        return {h: v == "1" for h, v in zip(hashes, values) if v is not None}
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()

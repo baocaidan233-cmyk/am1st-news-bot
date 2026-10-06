@@ -433,9 +433,20 @@ def select_batch(
     # 5.0 or 6.0 -- and that is why tier1 is now filled score-first over the
     # whole top band (see the _fill below) and why the mid-band is explicitly
     # a draw rather than a formula pretending to rank it.
-    def key(c: PublishCandidate) -> str:
-        return (_stable_key(c) if not cycle_token else hashlib.sha1(
+    #
+    # 2026-10-06, owner-approved trial: within a tier, a candidate whose story
+    # carries a reader appeal (agents/appeal_tagger.py) goes ahead of one that
+    # does not, and the hash only orders inside each group. The tiers above are
+    # untouched, so this never lifts a candidate past a higher score band; it
+    # decides which of the many equal-score candidates make the batch the
+    # ranker picks from. Unlabelled (None) sorts with "no appeal". Off unless
+    # publish.appeal_order, and then the key is the hash alone, as before.
+    appeal_first = config.publish.appeal_order
+
+    def key(c: PublishCandidate):
+        h = (_stable_key(c) if not cycle_token else hashlib.sha1(
             (cycle_token + (c.url or c.page_id)).encode("utf-8")).hexdigest())
+        return (0 if c.appeal else 1, h) if appeal_first else h
 
     batch: list[PublishCandidate] = []
     # tier1 draws from `candidates`, not from `fresh`. The two filters are

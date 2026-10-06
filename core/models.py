@@ -101,4 +101,8 @@ class PublishCandidate(BaseModel):
 
     # Same reader want as Candidate, read back from Notion.
 
+    # Yes/no reader appeal from core/redis_store.AppealLabels (2026-10-06). None
+    # means unlabelled, which the selector orders exactly like no appeal.
+    appeal: Optional[bool] = None
+
     gettr_post_id: Optional[str] = None

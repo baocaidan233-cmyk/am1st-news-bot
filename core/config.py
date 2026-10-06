@@ -100,6 +100,8 @@ class RedisConfig(BaseModel):
     cycle_counter_key: str = "am1st:cycle"  # CycleCounter — monotonic publish-cycle number, used to alternate the editor A/B arms
     batch_seen_prefix: str = "am1st:seen:"  # BatchSeen — how many shortlists this candidate has appeared on. Ordering by this ahead of the stable hash is what stops a fixed hash position from excluding a candidate for its whole life; see agents/candidate_selector.py's shortlist().
     dup_strike_prefix: str = "am1st:pubdup:"  # PostedDupStrikes — how many publish cycles in a row have called this candidate a duplicate; same TTL reasoning as caption_ttl_seconds (must outlive the 24h eligibility window, then self-expire)
+    appeal_prefix: str = "am1st:appeal:"  # AppealLabels — the yes/no reader-appeal label, written at pool entry by agents/appeal_tagger.py, read by the publish cycle
+    appeal_ttl_seconds: int = 172800  # 48h, same reasoning as caption_ttl_seconds: outlive the 24h eligibility window, then self-expire
 
 
 class OpenAIConfig(BaseModel):
@@ -494,6 +496,11 @@ class PublishConfig(BaseModel):
 
     interval_seconds: int = 1800  # 30 minutes
     candidate_min_score: float = 5.0  # Notion query floor — the lower of weekday/weekend_min_score, so both are actually fetched; select_batch applies the day-aware floor on top
+    # Within one score band, candidates whose story carries a reader appeal go
+    # first (agents/appeal_tagger.py, agents/candidate_selector.py). Never moves
+    # a candidate across a band. Off by default so a missing config line means
+    # the previous order.
+    appeal_order: bool = False
     weekday_min_score: float = 6.0  # weekdays: heavier real news volume, prefer this floor first
     weekend_min_score: float = 5.0  # weekends: lighter volume, use this floor directly (also the weekday fallback if 6+ doesn't fill the batch)
     candidate_max_age_hours: int = 24  # Notion query ceiling — same pattern as candidate_min_score: the WIDER of weekday/weekend_max_age_hours below, so weekend-eligible candidates aren't excluded before select_batch() even sees them; select_batch() applies the actual day-aware ceiling on top

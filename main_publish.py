@@ -108,7 +108,7 @@ from core.topic_mix import compute_adjustments
 from core.publish_cadence import compute_dynamic_interval
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
-from core.redis_store import BatchSeen, CaptionCache, CycleCounter, PostedDupStrikes
+from core.redis_store import AppealLabels, BatchSeen, CaptionCache, CycleCounter, PostedDupStrikes
 from core.title_guard import title_violation
 from core.stance_guard import epithet_violation
 
@@ -158,6 +158,7 @@ async def run_cycle(
     batch_seen: BatchSeen,
     cycle_counter: CycleCounter,
     dry_run: bool,
+    appeal_labels: AppealLabels | None = None,
 ) -> bool:
     """Returns True iff this cycle actually published something — main()'s
     loop uses this to track how recently the channel last posted, so the
@@ -177,6 +178,17 @@ async def run_cycle(
     if not candidates:
         logger.info("run_cycle: all candidates dropped by former-Trump filter")
         return False
+
+    # Reader-appeal labels written at pool entry (2026-10-06). Only read when
+    # publish.appeal_order is on; an unlabelled candidate keeps appeal=None,
+    # which agents/candidate_selector.py orders exactly like no appeal.
+    if config.publish.appeal_order and appeal_labels is not None:
+        labels = await appeal_labels.get_many([c.url_hash for c in candidates])
+        for c in candidates:
+            c.appeal = labels.get(c.url_hash)
+        logger.info("run_cycle: appeal labels — %d yes, %d no, %d unlabelled of %d eligible",
+                    sum(c.appeal is True for c in candidates), sum(c.appeal is False for c in candidates),
+                    sum(c.appeal is None for c in candidates), len(candidates))
 
     sources = await load_rss_sources(config)
     trending_headlines = await fetch_trending_headlines()
@@ -618,6 +630,7 @@ async def main() -> None:
     dup_strikes = PostedDupStrikes(config)
     editor = EditorPicker(config)
     batch_seen = BatchSeen(config)
+    appeal_labels = AppealLabels(config)
     cycle_counter = CycleCounter(config)
     await ensure_collection_with_retry(posted_store, "am1st_posting_news_embedding")
     await ensure_collection_with_retry(event_store, "am1st_events")
@@ -655,7 +668,8 @@ async def main() -> None:
             published_this_cycle = False
             try:
                 published_this_cycle = await asyncio.wait_for(
-                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, staleness_checker, caption_cache, dup_strikes, hub_index, editor, batch_seen, cycle_counter, dry_run),
+                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, staleness_checker, caption_cache, dup_strikes, hub_index, editor, batch_seen, cycle_counter, dry_run,
+                              appeal_labels),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:
@@ -717,6 +731,7 @@ async def main() -> None:
         await caption_cache.close()
         await dup_strikes.close()
         await hub_index.close()
+        await appeal_labels.close()
 
 
 if __name__ == "__main__":
