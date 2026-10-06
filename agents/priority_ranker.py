@@ -11,7 +11,7 @@ from agents.embedder import Embedder
 from core.config import AppConfig
 from core.hashing import cosine_similarity
 from core.models import PublishCandidate
-from agents.candidate_selector import debt_level
+from agents.candidate_selector import debt_level, _TIER1_MIN_SCORE as _TOP_BAND
 
 logger = logging.getLogger(__name__)
 
