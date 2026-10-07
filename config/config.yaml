@@ -148,6 +148,7 @@ gettr:
 publish:
   interval_seconds: 1800       # 30 minutes
   candidate_min_score: 5.0     # Notion query floor (lower of weekday/weekend below) — unchanged, still the lower of the two
+  stance_vector_model_file: "models/stance_vec.json"  # 2026-10-07 第二道立场兜底（与词表并列），门槛 0.8 写在模型文件里，用户定「保守些」；置空即关闭
   appeal_order: true            # 2026-10-06 owner-approved trial: within a score band, candidates with a reader appeal go first (agents/appeal_tagger.py). false = previous hash order
   weekday_min_score: 6.0        # raised to 7.0 2026-09-14 per 7-day audit, reverted same day — user judged too few real 7+ stories on a given day, tier would starve too often before falling back
   weekend_min_score: 5.0

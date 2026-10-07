@@ -110,7 +110,7 @@ from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
 from core.redis_store import AppealLabels, BatchSeen, CaptionCache, CycleCounter, PostedDupStrikes
 from core.title_guard import title_violation
-from core.stance_guard import epithet_violation
+from core.stance_guard import StanceVectorGuard, epithet_violation
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("main_publish")
@@ -159,6 +159,7 @@ async def run_cycle(
     cycle_counter: CycleCounter,
     dry_run: bool,
     appeal_labels: AppealLabels | None = None,
+    stance_vec: StanceVectorGuard | None = None,
 ) -> bool:
     """Returns True iff this cycle actually published something — main()'s
     loop uses this to track how recently the channel last posted, so the
@@ -312,6 +313,22 @@ async def run_cycle(
                             attempt, dropped)
             if not batch:
                 logger.info("run_cycle: widen attempt %d — every candidate was an already-published event", attempt)
+                continue
+
+        # Second stance net, on the headline alone and before anything is paid
+        # for: a headline written from the hostile side is dropped here instead
+        # of being extracted and captioned first. See StanceVectorGuard.
+        if stance_vec is not None and stance_vec.enabled:
+            kept = []
+            for c in batch:
+                rule = await stance_vec.violation(getattr(c, "title", "") or "")
+                if rule:
+                    logger.warning("run_cycle: %s — blocked by stance_guard rule %s, dropped from batch", c.url, rule)
+                    continue
+                kept.append(c)
+            batch = kept
+            if not batch:
+                logger.info("run_cycle: widen attempt %d — every candidate failed the vector stance check", attempt)
                 continue
 
         generated = []
@@ -631,6 +648,7 @@ async def main() -> None:
     editor = EditorPicker(config)
     batch_seen = BatchSeen(config)
     appeal_labels = AppealLabels(config)
+    stance_vec = StanceVectorGuard(config)
     cycle_counter = CycleCounter(config)
     await ensure_collection_with_retry(posted_store, "am1st_posting_news_embedding")
     await ensure_collection_with_retry(event_store, "am1st_events")
@@ -669,7 +687,7 @@ async def main() -> None:
             try:
                 published_this_cycle = await asyncio.wait_for(
                     run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, staleness_checker, caption_cache, dup_strikes, hub_index, editor, batch_seen, cycle_counter, dry_run,
-                              appeal_labels),
+                              appeal_labels, stance_vec),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:

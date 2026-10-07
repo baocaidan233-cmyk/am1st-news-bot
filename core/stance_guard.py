@@ -204,3 +204,71 @@ async def stance_violation(client, model: str, caption: str,
                     target, quote[:60])
         return None
     return "hostile-at-%s:%s" % (target, quote[:64])
+
+
+class StanceVectorGuard:
+    """The second safety net beside epithet_violation() (2026-10-07, owner:
+    "可以保守些。然后这两道兜底"). A logistic regression on the headline's
+    embedding that scores whose side the headline is written from --
+    tools/train_stance_vec.py has the training data and the measurements.
+
+    Conservative by the owner's choice: the threshold (0.8, stored in the model
+    file) blocked none of this channel's own good posts in testing and catches
+    roughly half of hostile-frame headlines; it misses hostility carried by the
+    story rather than by mocking wording (the "electric-shock gloves" ICE piece
+    scored 0.72). It is a net, not the stance judgement.
+
+    Fails open everywhere: no model file, a failed embedding call or anything
+    unexpected returns None and nothing is blocked. Scores are cached per title
+    for the life of the process, so a candidate the selector keeps offering is
+    embedded once."""
+
+    def __init__(self, config) -> None:
+        import math
+        from pathlib import Path
+
+        import numpy as np
+
+        from core.openai_client import create_openai_client
+
+        self._np, self._math = np, math
+        self.enabled = False
+        self._cache: dict[str, float] = {}
+        path = Path(config.publish.stance_vector_model_file or "")
+        if not config.publish.stance_vector_model_file:
+            return
+        try:
+            model = json.loads(path.read_text(encoding="utf-8"))
+            self._w = np.asarray(model["w"], dtype=np.float32)
+            self._b = float(model["b"])
+            self.threshold = float(model["threshold"])
+            self._embed_model = model.get("embedding_model", "text-embedding-3-small")
+            self.version = model.get("version", "?")
+            self._client = create_openai_client(config)
+            self.enabled = True
+            logger.info("StanceVectorGuard: loaded %s (threshold %.2f, %s training titles)",
+                        self.version, self.threshold, model.get("n_train"))
+        except Exception:
+            logger.exception("StanceVectorGuard: model %s not usable — vector stance check off", path)
+
+    async def score(self, title: str) -> float | None:
+        title = (title or "").strip()
+        if not self.enabled or not title:
+            return None
+        if title in self._cache:
+            return self._cache[title]
+        try:
+            resp = await self._client.embeddings.create(model=self._embed_model, input=title)
+            z = float(self._np.dot(self._w, self._np.asarray(resp.data[0].embedding, dtype=self._np.float32))) + self._b
+            p = 1.0 / (1.0 + self._math.exp(-z))
+        except Exception:
+            logger.exception("StanceVectorGuard: scoring failed for %r — not blocking", title[:80])
+            return None
+        self._cache[title] = p
+        return p
+
+    async def violation(self, title: str) -> str | None:
+        p = await self.score(title)
+        if p is not None and p >= self.threshold:
+            return "vector:%.2f" % p
+        return None
