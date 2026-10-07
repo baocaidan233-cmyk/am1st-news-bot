@@ -41,7 +41,7 @@ redis:
 openai:
   chat_model: "gpt-4o-mini"  # every OpenAI-backed call — Writer, Scorer, PriorityRanker, EventVerifier — see core/config.py comment
   embedding_model: "text-embedding-3-small"
-  scoring_prompt_file: "prompts/scoring_prompt.txt"  # 2026-10-03 回退：v2 把频道互动前三名压到 5.5 分发不出去，见 agents/scorer.py 顶部
+  scoring_prompt_file: "prompts/scoring_prompt_v23.txt"  # 2026-10-07 切到手术版 v2.3（用户批准）：解决分数坍塌，8 分档成顶档；旧版 prompts/scoring_prompt.txt 保留，改回这一行即可回滚。2026-10-03 那次回退的是另一个 v2（scoring_prompt_v2.txt），不是这个
   content_gen_prompt_file: "prompts/content_gen_prompt.txt"
   score_threshold: 5.0  # inclusive — score >= 5.0 passes
   # 影子打分：只观察。生产决策完全由上面的 Scorer 决定，影子的答案只写日志。

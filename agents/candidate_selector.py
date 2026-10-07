@@ -42,7 +42,14 @@ _FORMER_TRUMP_PHRASES = (
 # Independent of publish.candidate_min_score (the floor used by the Notion
 # query) — the original n8n "batch of top 5" node hardcodes this tier
 # boundary at 7 regardless of what the floor is set to.
-_TIER1_MIN_SCORE = 7.0
+#
+# 8.0 from 2026-10-07, together with the scoring prompt v2.3 (owner-approved).
+# Under the old prompt 7 and 8 were reached almost only through heat and held
+# ~8% of the pool between them; v2.3 spreads the scale and puts ~28% of the pool
+# at 7+ and ~10% at 8+, with 8 the band that separates breakouts (gatewaypundit
+# 16% inside it vs 4.6% overall). This line also decides who gets the 24h age
+# ceiling and the freshness exemption (agents/priority_ranker.py imports it).
+_TIER1_MIN_SCORE = 8.0
 
 
 def _is_weekday(now: datetime) -> bool:
