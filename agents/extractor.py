@@ -14,6 +14,16 @@ from core.render_client import render as render_service_render
 
 logger = logging.getLogger(__name__)
 
+
+def _main_text(html: str) -> str | None:
+    """The article body only. trafilatura keeps the comment section by default
+    (include_comments=True), and that is reader text, not the story: on
+    2026-10-06 a Conservative Treehouse article came back at 35,830 characters
+    with its readers' posts in it, including a link to a different outlet's
+    version of the story, all of which the writer could have quoted as fact.
+    Channel owner: reader comments must not be scraped."""
+    return trafilatura.extract(html, include_comments=False)
+
 # Same headers as agents/rss_fetcher.py's FEED_HEADERS — a bare httpx client
 # gets blocked by some sites' basic bot filters.
 FETCH_HEADERS = {
@@ -244,7 +254,7 @@ class Extractor:
             headers["cookie"] = source.cookie
 
         html = await self._fetch_plain(url, headers)
-        text = await asyncio.to_thread(trafilatura.extract, html) if html else None
+        text = await asyncio.to_thread(_main_text, html) if html else None
 
         too_thin = not text or len(text) < extraction.min_text_length
         # A recognised teaser is its own reason to render, whatever the domain
@@ -266,7 +276,7 @@ class Extractor:
             # trafilatura's parsing is CPU-bound, synchronous — offload so
             # it doesn't block the event loop while other candidates are in
             # flight.
-            text = await asyncio.to_thread(trafilatura.extract, html) if html else None
+            text = await asyncio.to_thread(_main_text, html) if html else None
 
         if not text or len(text) < extraction.min_text_length:
             reason = f"extracted only {len(text or '')} chars" if html else "fetch failed"
