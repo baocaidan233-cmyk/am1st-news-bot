@@ -84,7 +84,7 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
-from agents.candidate_selector import DUTY_TOPICS, filter_former_trump, select_batch, shortlist
+from agents.candidate_selector import filter_former_trump, is_duty, select_batch, shortlist
 from agents.embedder import Embedder
 from agents.extractor import Extractor
 from agents.gettr_publisher import GettrPublisher
@@ -191,7 +191,7 @@ async def run_cycle(
                     "%d duty-subject candidates without an appeal ordered as if they had one",
                     sum(c.appeal is True for c in candidates), sum(c.appeal is False for c in candidates),
                     sum(c.appeal is None for c in candidates), len(candidates),
-                    sum(1 for c in candidates if not c.appeal and c.topic in DUTY_TOPICS))
+                    sum(1 for c in candidates if not c.appeal and is_duty(c)))
 
     sources = await load_rss_sources(config)
     trending_headlines = await fetch_trending_headlines()

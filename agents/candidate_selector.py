@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import logging
 from collections import Counter
 from urllib.parse import urlparse
@@ -53,6 +54,20 @@ _TIER1_MIN_SCORE = 8.0
 
 # Subjects the channel publishes as a duty, whatever their reader appeal (see key() in select_batch).
 DUTY_TOPICS = frozenset(("中国CCP",))
+# The subject label is one of eighteen, picked once, so a story that is both
+# diplomacy and China gets one of them: on 2026-10-08, of 25 pool titles naming
+# China, 6 were labelled something else ("15 Economies Sign US-Led Statement
+# Against Industrial Overcapacity; China, Russia ..." went to 外交与战争). A title
+# that names China is therefore duty too. Code, no model call (owner: no more
+# calls). It only moves a candidate forward inside its own score band, so a word
+# that over-matches costs nothing worse than that.
+_DUTY_TITLE = re.compile(r"\b(?:china|chinese|beijing|ccp|taiwan|taiwanese|hong kong|xi jinping)\b", re.I)
+_DUTY_TITLE_CASED = re.compile(r"\bXi\b|\bPLA\b")   # case matters: "XI" is a numeral, "pla" is not the army
+
+
+def is_duty(c: PublishCandidate) -> bool:
+    title = getattr(c, "title", "") or ""
+    return c.topic in DUTY_TOPICS or bool(_DUTY_TITLE.search(title) or _DUTY_TITLE_CASED.search(title))
 
 
 def _is_weekday(now: datetime) -> bool:
@@ -466,7 +481,7 @@ def select_batch(
     def key(c: PublishCandidate):
         h = (_stable_key(c) if not cycle_token else hashlib.sha1(
             (cycle_token + (c.url or c.page_id)).encode("utf-8")).hexdigest())
-        return (0 if (c.appeal or c.topic in DUTY_TOPICS) else 1, h) if appeal_first else h
+        return (0 if (c.appeal or is_duty(c)) else 1, h) if appeal_first else h
 
     batch: list[PublishCandidate] = []
     # tier1 draws from `candidates`, not from `fresh`. The two filters are
