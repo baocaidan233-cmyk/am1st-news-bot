@@ -51,6 +51,9 @@ _FORMER_TRUMP_PHRASES = (
 # ceiling and the freshness exemption (agents/priority_ranker.py imports it).
 _TIER1_MIN_SCORE = 8.0
 
+# Subjects the channel publishes as a duty, whatever their reader appeal (see key() in select_batch).
+DUTY_TOPICS = frozenset(("中国CCP",))
+
 
 def _is_weekday(now: datetime) -> bool:
     return now.astimezone(_DAY_TZ).weekday() < 5  # Mon=0 ... Sun=6
@@ -448,12 +451,22 @@ def select_batch(
     # decides which of the many equal-score candidates make the batch the
     # ranker picks from. Unlabelled (None) sorts with "no appeal". Off unless
     # publish.appeal_order, and then the key is the hash alone, as before.
+    #
+    # 2026-10-08, owner: duty stories go as if they carried an appeal. Of 13
+    # Trump-Xi stories where the two leaders actually dealt with each other, the
+    # appeal labeller called 8 "none" -- plain hard news ("trade truce extended
+    # through January", "Xi lays out terms to avoid military conflict") gives the
+    # reader no line to repeat -- so they sorted behind every appeal story in
+    # their band and could wait out their whole life in the pool. The owner's
+    # rule is that such stories go out even when engagement is low. "Duty" is the
+    # subject label agents/topic_tagger.py already gave the candidate at pool
+    # entry (中国CCP), not a new word list.
     appeal_first = config.publish.appeal_order
 
     def key(c: PublishCandidate):
         h = (_stable_key(c) if not cycle_token else hashlib.sha1(
             (cycle_token + (c.url or c.page_id)).encode("utf-8")).hexdigest())
-        return (0 if c.appeal else 1, h) if appeal_first else h
+        return (0 if (c.appeal or c.topic in DUTY_TOPICS) else 1, h) if appeal_first else h
 
     batch: list[PublishCandidate] = []
     # tier1 draws from `candidates`, not from `fresh`. The two filters are
