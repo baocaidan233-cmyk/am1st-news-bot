@@ -1,14 +1,15 @@
 """Train the vector stance check -- see core/stance_guard.StanceVectorGuard.
 
 What it learns is whose side a headline is written from, not whether it is
-negative. Labels come from the outlet, by distant supervision, and the outlet is
-never an input to the model:
+negative. The outlet is never an input to the model:
 
   1  a left-hostile outlet's headline about Trump's side (Daily Beast, HuffPost,
-     MS NOW, the Guardian, Rolling Stone, The New Republic ...)
-  0  a right-leaning outlet's headline about the same side, a wire service's,
-     and every title this channel has published that did not come from one of
-     the hostile outlets above
+     MS NOW, the Guardian, Rolling Stone, The New Republic ...) that attacks in
+     its own voice -- hand-labelled, see LABELS below
+  0  the same outlets' headlines that report someone else's attack, or just
+     report (hand-labelled); a right-leaning outlet's headline about the same
+     side, a wire service's, and every title this channel has published that
+     did not come from one of the hostile outlets above
 
 A titles-only logistic regression on text-embedding-3-small, the same embedding
 model the pipeline already uses.
@@ -20,6 +21,20 @@ list: 12.9%); 3.6% of right-outlet and 5.6% of wire headlines; and of the 210
 posts the channel actually published after the cut, 4 -- all four of them
 hostile-frame posts. Hand-flagged errors are never training data: titles listed
 in HOLDOUT stay out so they remain an honest check.
+
+2026-10-08: labelling every hostile-outlet headline 1 taught the model the
+outlet, not the voice -- of 19 candidates it blocked in a day, about 12 only
+reported an attack (Warnock, Carville, "Trump rebukes advisers", "heckled at
+rally"). Owner's rule: our posts may not attack Trump or use attack words, but
+may report how someone attacks him. So the 494 hostile-outlet headlines logged
+up to then were labelled by hand (by Claude, not the owner) in LABELS: 1 =
+attacks in its own voice, 0 = reports. Hostile-outlet headlines not in LABELS are
+left out. Same cut, same negatives, measured after the cut at 0.8:
+                                        distant  hand
+  hostile outlet, labelled attack        63.2%  59.7%   (should block)
+  hostile outlet, labelled report        24.7%   7.1%   (should pass)
+  right outlets / wires                  3.4% / 10.6%   0.9% / 0%
+  our own posts, 490 MAGA-account posts  0% / 0.2%      0% / 0%
 
   ./.venv/bin/python tools/train_stance_vec.py [--cut 2026-10-03] --out models/stance_vec.json
 
@@ -53,6 +68,8 @@ RIGHT = re.compile(r"gatewaypundit|breitbart|newsmax|dailycaller|townhall|redsta
                    r"washingtonexaminer|freebeacon|justthenews|trendingpolitics|conservativebrief|dailysignal|theepochtimes|instapundit")
 WIRE = re.compile(r"apnews|reuters|thehill\.com|upi\.com|newsnationnow|axios")
 
+LABELS = os.path.join("tools", "stance_labels.json")
+
 # Hand-flagged hostile-frame posts (2026-10-06/07). Held out of training on purpose.
 HOLDOUT = {
     "Trump Makes Natalie Harp, 35, Guest of Honor on Maiden Flight", "Trump Whisks Natalie Harp Away Again After Late Night",
@@ -70,6 +87,7 @@ HOLDOUT = {
 
 
 def collect(cut_ts: float) -> list[tuple[str, int]]:
+    hand = json.load(open(LABELS, encoding="utf-8"))
     rows: dict[str, int] = {}
     for line in open("logs/prescore_decisions.jsonl", encoding="utf-8"):
         r = json.loads(line)
@@ -77,7 +95,8 @@ def collect(cut_ts: float) -> list[tuple[str, int]]:
         if r["logged_at"] >= cut_ts or t in HOLDOUT or t in rows or len(t) < 20 or not SIDE.search(t):
             continue
         if HOSTILE.search(u):
-            rows[t] = 1
+            if t in hand:
+                rows[t] = hand[t]
         elif RIGHT.search(u) or WIRE.search(u):
             rows[t] = 0
     for line in open("logs/engagement_snapshots.jsonl", encoding="utf-8"):
@@ -105,7 +124,7 @@ def main() -> None:
     clf = LogisticRegression(C=2.0, max_iter=2000, class_weight="balanced")
     clf.fit(np.array(vecs), [y for _, y in data])
     model = {
-        "version": "stance-vec-" + a.cut.replace("-", ""),
+        "version": "stance-vec-" + a.cut.replace("-", "") + "-hand",
         "trained_at": int(dt.datetime.now(dt.timezone.utc).timestamp()),
         "embedding_model": "text-embedding-3-small", "input": "title",
         "n_train": len(data), "n_hostile": sum(y for _, y in data), "cut": a.cut,
