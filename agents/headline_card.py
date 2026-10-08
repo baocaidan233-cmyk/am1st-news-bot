@@ -32,8 +32,13 @@ from __future__ import annotations
 from PIL import Image, ImageDraw, ImageFont
 
 W, H = 1080, 1080          # Gettr renders square; matches the sibling bots since 2026-08-05
-BG = (24, 26, 30)          # near-black, for the no-photo card
-RED = (176, 34, 40)
+# Plain card palette (2026-10-08, owner: "lighter, American retro colours --
+# the near-black one is too dark"): parchment ground, Old Glory navy and red.
+# Was BG (24, 26, 30) with white text.
+CREAM = (244, 235, 213)    # parchment, the card ground
+NAVY = (28, 44, 79)        # headline text and the outer stripes
+RED = (178, 34, 52)        # Old Glory red: tag and inner stripes
+MUTED = (96, 104, 122)     # attribution
 
 # DejaVu Sans Bold is present on the deploy VM (Ubuntu); Liberation Sans Bold
 # is the fallback in case that package ever changes. Both are system fonts —
@@ -111,7 +116,8 @@ def _fit_title(draw: ImageDraw.ImageDraw, title: str, max_width: int, max_lines:
     return f, lines, 40
 
 
-def _draw_tag_and_title(draw: ImageDraw.ImageDraw, title: str, tag_text: str, tag_y: int | None, on_photo: bool) -> None:
+def _draw_tag_and_title(draw: ImageDraw.ImageDraw, title: str, tag_text: str, tag_y: int | None, on_photo: bool,
+                        title_fill="white", tag_fill="white") -> None:
     """tag_y=None centres the tag+headline block vertically.
 
     The source module used a fixed tag_y for both card shapes. On a photo that
@@ -135,22 +141,22 @@ def _draw_tag_and_title(draw: ImageDraw.ImageDraw, title: str, tag_text: str, ta
         tag_y = max(96, (H - block_h) // 2 - 40)   # -40 lifts it off dead centre, which sits low to the eye
 
     draw.rectangle([tag_x, tag_y, tag_x + tag_w, tag_y + tag_h], fill=RED)
-    draw.text((tag_x + pad_x, tag_y + pad_y - 4), tag_text, font=tag_font, fill="white")
+    draw.text((tag_x + pad_x, tag_y + pad_y - 4), tag_text, font=tag_font, fill=tag_fill)
 
     y = tag_y + tag_h + 34
     for line in lines:
         if on_photo:
             _draw_text_punchy(draw, (64, y), line, title_font, "white", (0, 0, 0))
         else:
-            draw.text((64, y), line, font=title_font, fill="white")
+            draw.text((64, y), line, font=title_font, fill=title_fill)
         y += line_height
 
 
-def _draw_attribution(draw: ImageDraw.ImageDraw, text: str, fill, shadow=None) -> None:
+def _draw_attribution(draw: ImageDraw.ImageDraw, text: str, fill, shadow=None, y: int = H - 52) -> None:
     if not text:
         return
     f = _font(22)
-    x, y = 64, H - 52
+    x = 64
     if shadow:
         draw.text((x + 2, y + 2), text, font=f, fill=shadow)
     draw.text((x, y), text, font=f, fill=fill)
@@ -159,12 +165,15 @@ def _draw_attribution(draw: ImageDraw.ImageDraw, text: str, fill, shadow=None) -
 def make_card(title: str, out_path: str, tag_text: str, attribution: str = "") -> None:
     """Plain-background headline card — what this channel actually uses today,
     because the trigger (no usable preview image) means there is no photo."""
-    img = Image.new("RGB", (W, H), BG)
+    img = Image.new("RGB", (W, H), CREAM)
     draw = ImageDraw.Draw(img)
-    draw.rectangle([0, 0, W, 14], fill=RED)
-    _draw_tag_and_title(draw, title, tag_text, tag_y=None, on_photo=False)
-    _draw_attribution(draw, attribution, "white", (0, 0, 0))
-    draw.rectangle([0, H - 14, W, H], fill=RED)
+    # flag-style bands: navy, a parchment gap, red -- mirrored at the bottom
+    draw.rectangle([0, 0, W, 18], fill=NAVY)
+    draw.rectangle([0, 24, W, 32], fill=RED)
+    draw.rectangle([0, H - 33, W, H - 25], fill=RED)
+    draw.rectangle([0, H - 19, W, H], fill=NAVY)
+    _draw_tag_and_title(draw, title, tag_text, tag_y=None, on_photo=False, title_fill=NAVY, tag_fill=CREAM)
+    _draw_attribution(draw, attribution, MUTED, y=H - 74)   # clear of the bottom bands
     img.save(out_path, quality=92)
 
 
