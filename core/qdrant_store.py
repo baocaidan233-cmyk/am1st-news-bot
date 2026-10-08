@@ -122,7 +122,7 @@ class QdrantStore:
             collection_name=self._collection, field_name="publishedAt", field_schema=PayloadSchemaType.INTEGER,
         )
 
-    async def most_similar_recent(self, embedding: list[float]) -> tuple[float, str]:
+    async def most_similar_recent(self, embedding: list[float]) -> tuple[float, str, str]:
         """Highest cosine similarity against title+description embeddings
         whose source article was published in the last cross_cycle_window_hours,
         plus that matched point's own title+description text. Returns
@@ -144,7 +144,7 @@ class QdrantStore:
         pairs sitting at 0.79-0.80 cosine, just under the 0.8 cutoff this
         used to trust alone — see that function's docstring."""
         if self._client is None:
-            return 0.0, ""
+            return 0.0, "", ""
         cutoff = time.time() - self._window_seconds
         try:
             result = await self._client.query_points(
@@ -156,11 +156,14 @@ class QdrantStore:
             )
         except Exception:
             logger.exception("QdrantStore: query failed, treating as no match")
-            return 0.0, ""
+            return 0.0, "", ""
         points = result.points
         if not points:
-            return 0.0, ""
-        return points[0].score, (points[0].payload or {}).get("content", "")
+            return 0.0, "", ""
+        payload = points[0].payload or {}
+        # The matched point's urlHash too (2026-10-08), so main.py can ask whether
+        # that earlier version is still publishable before calling a newcomer its duplicate.
+        return points[0].score, payload.get("content", ""), payload.get("urlHash", "")
 
     async def write_embedding(self, url: str, url_hash: str, content: str, published_at_unix: int, embedding: list[float]) -> None:
         """Called once, right when a candidate is accepted into the Notion

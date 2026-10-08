@@ -101,6 +101,8 @@ class RedisConfig(BaseModel):
     batch_seen_prefix: str = "am1st:seen:"  # BatchSeen — how many shortlists this candidate has appeared on. Ordering by this ahead of the stable hash is what stops a fixed hash position from excluding a candidate for its whole life; see agents/candidate_selector.py's shortlist().
     dup_strike_prefix: str = "am1st:pubdup:"  # PostedDupStrikes — how many publish cycles in a row have called this candidate a duplicate; same TTL reasoning as caption_ttl_seconds (must outlive the 24h eligibility window, then self-expire)
     appeal_prefix: str = "am1st:appeal:"  # AppealLabels — the yes/no reader-appeal label, written at pool entry by agents/appeal_tagger.py, read by the publish cycle
+    stuck_prefix: str = "am1st:stuck:"  # StuckVersions — pool candidates the publish cycle cannot publish; ingestion dedup stops treating them as their story's version
+    stuck_ttl_seconds: int = 172800  # 48h, outlives the 24h eligibility window
     appeal_ttl_seconds: int = 172800  # 48h, same reasoning as caption_ttl_seconds: outlive the 24h eligibility window, then self-expire
 
 

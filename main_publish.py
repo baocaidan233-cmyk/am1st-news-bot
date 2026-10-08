@@ -108,7 +108,7 @@ from core.topic_mix import compute_adjustments
 from core.publish_cadence import compute_dynamic_interval
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
-from core.redis_store import AppealLabels, BatchSeen, CaptionCache, CycleCounter, PostedDupStrikes
+from core.redis_store import AppealLabels, BatchSeen, CaptionCache, CycleCounter, PostedDupStrikes, StuckVersions
 from core.title_guard import title_violation
 from core.stance_guard import StanceVectorGuard, epithet_violation
 
@@ -160,6 +160,7 @@ async def run_cycle(
     dry_run: bool,
     appeal_labels: AppealLabels | None = None,
     stance_vec: StanceVectorGuard | None = None,
+    stuck_versions: StuckVersions | None = None,
 ) -> bool:
     """Returns True iff this cycle actually published something — main()'s
     loop uses this to track how recently the channel last posted, so the
@@ -326,6 +327,8 @@ async def run_cycle(
                 rule = await stance_vec.violation(getattr(c, "title", "") or "")
                 if rule:
                     logger.warning("run_cycle: %s — blocked by stance_guard rule %s, dropped from batch", c.url, rule)
+                    if stuck_versions is not None and not dry_run:
+                        await stuck_versions.mark(c.url_hash, "stance")
                     continue
                 kept.append(c)
             batch = kept
@@ -348,6 +351,8 @@ async def run_cycle(
                 # PublishConfig.extraction_max_attempts. A real paywall still
                 # drops out, just after a bounded number of tries instead of one.
                 await record_extraction_failure(config, c.page_id, c.extraction_attempts)
+                if stuck_versions is not None and not dry_run:
+                    await stuck_versions.mark(c.url_hash, "extraction")
                 continue
             c.content = text
 
@@ -486,6 +491,8 @@ async def run_cycle(
                     "run_cycle: %s — blocked by stance_guard rule %s, dropped from batch",
                     c.url, stance_rule,
                 )
+                if stuck_versions is not None and not dry_run:
+                    await stuck_versions.mark(c.url_hash, "stance")
                 continue
 
             if not cached and not Writer.is_no_comment(post_content):
@@ -499,6 +506,8 @@ async def run_cycle(
                 # cycle — see mark_writer_rejected()'s docstring for the
                 # real repeat-offender that prompted this.
                 await mark_writer_rejected(config, c.page_id)
+                if stuck_versions is not None and not dry_run:
+                    await stuck_versions.mark(c.url_hash, "no-comment")
                 continue
             # Link appended after generation, not counted against the writer's
             # word cap — the AI's own output stays pure caption text.
@@ -577,6 +586,8 @@ async def run_cycle(
         )
         if not dry_run and await mark_writer_rejected(config, winner.page_id):
             logger.info("run_cycle: %s retired from the pool — its card title will never pass", winner.url)
+        if stuck_versions is not None and not dry_run:
+            await stuck_versions.mark(winner.url_hash, "stance")
         return False
     # 2026-09-22 — when the preview image Gettr would render is missing or
     # broken, attach our own headline card instead (agents/poster.py). Returns
@@ -657,6 +668,7 @@ async def main() -> None:
     batch_seen = BatchSeen(config)
     appeal_labels = AppealLabels(config)
     stance_vec = StanceVectorGuard(config)
+    stuck_versions = StuckVersions(config)
     cycle_counter = CycleCounter(config)
     await ensure_collection_with_retry(posted_store, "am1st_posting_news_embedding")
     await ensure_collection_with_retry(event_store, "am1st_events")
@@ -695,7 +707,7 @@ async def main() -> None:
             try:
                 published_this_cycle = await asyncio.wait_for(
                     run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, staleness_checker, caption_cache, dup_strikes, hub_index, editor, batch_seen, cycle_counter, dry_run,
-                              appeal_labels, stance_vec),
+                              appeal_labels, stance_vec, stuck_versions),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:
@@ -758,6 +770,7 @@ async def main() -> None:
         await dup_strikes.close()
         await hub_index.close()
         await appeal_labels.close()
+        await stuck_versions.close()
 
 
 if __name__ == "__main__":

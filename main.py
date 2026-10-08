@@ -79,7 +79,7 @@ from core.prescore import PreScorer, log_prescore_decision
 from core.roundup import roundup_rule
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, QdrantStore, ensure_collection_with_retry
-from core.redis_store import AppealLabels, RedisStore
+from core.redis_store import AppealLabels, RedisStore, StuckVersions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("main")
@@ -87,7 +87,7 @@ logger = logging.getLogger("main")
 
 async def run_cycle(
     config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run,
-    prescorer=None, shadow_scorer=None, appeal_tagger=None, appeal_labels=None,
+    prescorer=None, shadow_scorer=None, appeal_tagger=None, appeal_labels=None, stuck_versions=None,
 ) -> None:
     sources = await load_rss_sources(config)
     if not sources:
@@ -548,7 +548,7 @@ async def run_cycle(
         preview_first_seen_dt = datetime.fromtimestamp(preview_first_seen, tz=timezone.utc)
 
         for c, embedding in members:
-            best_score, matched_content = await qdrant_store.most_similar_recent(embedding)
+            best_score, matched_content, matched_hash = await qdrant_store.most_similar_recent(embedding)
             # 2026-09-07: was a bare `best_score >= threshold` cutoff — see
             # core/event_identity.py's cross_cycle_dedup_verdict() docstring
             # for the real China_Breaks incident (and AM1ST's own confirmed
@@ -569,6 +569,15 @@ async def run_cycle(
                     "candidate_text": candidate_text,
                     "matched_text": matched_content,
                 })
+            if is_dup and stuck_versions is not None and matched_hash:
+                stuck = await stuck_versions.reason(matched_hash)
+                if stuck:
+                    # The earlier version can no longer go out (see
+                    # core/redis_store.StuckVersions), so this one is not its
+                    # duplicate: it is the story's next chance.
+                    logger.info("run_cycle: %s kept — duplicates an earlier version that cannot be published (%s, %.3f)",
+                                c.url, stuck, best_score)
+                    is_dup = False
             if is_dup:
                 logger.info("run_cycle: %s dropped — cross-cycle semantic duplicate (%.3f)", c.url, best_score)
                 continue
@@ -796,6 +805,7 @@ async def main() -> None:
     topic_tagger = TopicTagger(config)
     appeal_tagger = AppealTagger(config)
     appeal_labels = AppealLabels(config)
+    stuck_versions = StuckVersions(config)
     prescorer = PreScorer(config)
 
     if dry_run:
@@ -807,7 +817,7 @@ async def main() -> None:
             try:
                 await asyncio.wait_for(
                     run_cycle(config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run, prescorer, shadow_scorer,
-                              appeal_tagger, appeal_labels),
+                              appeal_tagger, appeal_labels, stuck_versions),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:
@@ -828,6 +838,7 @@ async def main() -> None:
         await event_store.close()
         await hub_index.close()
         await appeal_labels.close()
+        await stuck_versions.close()
 
 
 if __name__ == "__main__":
