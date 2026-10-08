@@ -346,6 +346,41 @@ async def mark_writer_rejected(config: AppConfig, page_id: str) -> bool:
     return await mark_extraction_failed(config, page_id)
 
 
+async def mark_stance_blocked(config: AppConfig, page_id: str, rule: str) -> bool:
+    """A stance check refused this candidate (2026-10-08). Writes the rule and the
+    date into the stance_blocked column, so the block is visible in Notion, and
+    sets extraction_failed, so the candidate leaves the pool: it was being picked
+    into batch after batch and refused again each time -- three stories, thirteen
+    refusals in a day -- because the headline it is judged on never changes.
+
+    If the stance_blocked column cannot be written, the candidate is still
+    retired the usual way (mark_writer_rejected), so a missing column costs the
+    note, never the retirement."""
+    notion = config.notion
+    if not notion.candidate_key:
+        logger.warning("mark_stance_blocked: NOTION_CANDIDATE_API_KEY not set — skipping")
+        return False
+    props = notion.candidate_props
+    note = "%s %s" % (rule, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"))
+    body = {"properties": {
+        props.stance_blocked: {"rich_text": [{"type": "text", "text": {"content": note[:200]}}]},
+        props.extraction_failed: {"checkbox": True},
+    }}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.patch(
+                f"https://api.notion.com/v1/pages/{page_id}",
+                headers={"Authorization": f"Bearer {notion.candidate_key}", "Notion-Version": NOTION_VERSION,
+                         "Content-Type": "application/json"},
+                json=body,
+            )
+            resp.raise_for_status()
+        return True
+    except Exception:
+        logger.exception("mark_stance_blocked: Notion write failed for %s — retiring without the note", page_id)
+        return await mark_writer_rejected(config, page_id)
+
+
 async def topic_publication_debt(config: AppConfig) -> dict[str, float]:
     """Hours since this channel last published each subject.
 

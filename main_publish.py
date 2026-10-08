@@ -102,7 +102,7 @@ from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex
 from core.caption_guard import former_president_violation
 from core.language import is_english
-from core.notion_candidates import has_unpublished_hot_candidate, mark_dedup_rejected, mark_extraction_failed, mark_send_status, mark_writer_rejected, query_eligible_candidates, recent_published_topic_counts, record_extraction_failure
+from core.notion_candidates import has_unpublished_hot_candidate, mark_dedup_rejected, mark_extraction_failed, mark_send_status, mark_stance_blocked, mark_writer_rejected, query_eligible_candidates, recent_published_topic_counts, record_extraction_failure
 from core.notion_candidates import topic_publication_debt
 from core.topic_mix import compute_adjustments
 from core.publish_cadence import compute_dynamic_interval
@@ -327,8 +327,10 @@ async def run_cycle(
                 rule = await stance_vec.violation(getattr(c, "title", "") or "")
                 if rule:
                     logger.warning("run_cycle: %s — blocked by stance_guard rule %s, dropped from batch", c.url, rule)
-                    if stuck_versions is not None and not dry_run:
-                        await stuck_versions.mark(c.url_hash, "stance")
+                    if not dry_run:
+                        await mark_stance_blocked(config, c.page_id, rule)
+                        if stuck_versions is not None:
+                            await stuck_versions.mark(c.url_hash, "stance")
                     continue
                 kept.append(c)
             batch = kept
@@ -491,8 +493,10 @@ async def run_cycle(
                     "run_cycle: %s — blocked by stance_guard rule %s, dropped from batch",
                     c.url, stance_rule,
                 )
-                if stuck_versions is not None and not dry_run:
-                    await stuck_versions.mark(c.url_hash, "stance")
+                if not dry_run:
+                    await mark_stance_blocked(config, c.page_id, stance_rule)
+                    if stuck_versions is not None:
+                        await stuck_versions.mark(c.url_hash, "stance")
                 continue
 
             if not cached and not Writer.is_no_comment(post_content):
@@ -584,7 +588,7 @@ async def run_cycle(
             "run_cycle: %s — card title blocked by stance_guard rule %s, "
             "nothing published this cycle", winner.url, card_rule,
         )
-        if not dry_run and await mark_writer_rejected(config, winner.page_id):
+        if not dry_run and await mark_stance_blocked(config, winner.page_id, card_rule):
             logger.info("run_cycle: %s retired from the pool — its card title will never pass", winner.url)
         if stuck_versions is not None and not dry_run:
             await stuck_versions.mark(winner.url_hash, "stance")
