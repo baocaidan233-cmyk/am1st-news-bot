@@ -80,6 +80,26 @@ _ZH_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 # (former attaches to someone else).
 _ZH_ALLOW = re.compile(rf"时任(?:美国)?总统{_ZH_NAME}")
 
+# Same kind of error for two of Trump's own people (2026-10-08, owner: "AI会幻觉他们还是议员",
+# and keep it with this check because code is stable where the writer is not).
+# JD Vance is the Vice President and Marco Rubio the Secretary of State; both
+# left the Senate, and a model's training data still knows them as senators.
+# Measured the same day over the channel's last 400 posts: zero occurrences --
+# insurance, like the Trump rule. Correct historical forms stay allowed:
+# "former Sen. Rubio", "then-Senator Vance", 前参议员卢比奥, 时任参议员万斯.
+_SEN = r"(?:sen\.?|senator)"
+_EX_SENATORS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("vance-called-senator", re.compile(
+        rf"\b(?:ohio\s+)?{_SEN}\s+(?:j\.?\s?d\.?\s+)?vance\b"
+        rf"|\bvance\s*,\s*(?:the|a|an)\s+(?:ohio\s+|republican\s+)?senator\b", re.I)),
+    ("rubio-called-senator", re.compile(
+        rf"\b(?:florida\s+)?{_SEN}\s+(?:marco\s+)?rubio\b"
+        rf"|\brubio\s*,\s*(?:the|a|an)\s+(?:florida\s+|republican\s+)?senator\b", re.I)),
+    ("zh-vance-called-senator", re.compile(r"(?:俄亥俄州?)?参议员万斯|万斯参议员")),
+    ("zh-rubio-called-senator", re.compile(r"(?:佛罗里达州?|佛州)?参议员(?:卢比奥|鲁比奥)|(?:卢比奥|鲁比奥)参议员")),
+)
+_HISTORICAL = re.compile(r"(?:former|then|ex)[-\s]*$|(?:前|时任|曾任|昔日)$", re.I)
+
 _TRUMP = re.compile(r"\btrump\b", re.I)
 _OTHER_EX = re.compile(r"\b(biden|obama|bush|clinton|carter|reagan|nixon)\b", re.I)
 
@@ -115,4 +135,9 @@ def former_president_violation(caption: str) -> str | None:
         m = pattern.search(caption)
         if m and not _ZH_ALLOW.search(caption[max(0, m.start() - 6):m.end() + 6]):
             return _report(name, m)
+
+    for name, pattern in _EX_SENATORS:
+        for m in pattern.finditer(caption):
+            if not _HISTORICAL.search(caption[max(0, m.start() - 12):m.start()]):
+                return _report(name, m)
     return None
