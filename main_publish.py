@@ -560,15 +560,21 @@ async def run_cycle(
     # The card title is the publisher's own og:title, which the loop above
     # could not see -- it is fetched once, for the winner only. It is also
     # the first thing a reader sees, so an epithet here cannot be published
-    # even though the caption already passed. Nothing goes out this cycle;
-    # the candidate stays in the pool and will be refused here again for
-    # free, which is cheaper than deciding on its behalf that it is dead.
+    # even though the caption already passed. Nothing goes out this cycle.
+    #
+    # The candidate is retired from the pool (2026-10-08). It used to stay,
+    # on the reasoning that being refused again was free -- but the og:title
+    # does not change, so the verdict never does, and the same candidate could
+    # win the ranking again next cycle and the next, publishing nothing each
+    # time until it aged out of the pool, up to 24 hours later.
     card_rule = epithet_violation("", og.get("prev_ttl") or winner.title or "")
     if card_rule:
         logger.warning(
             "run_cycle: %s — card title blocked by stance_guard rule %s, "
             "nothing published this cycle", winner.url, card_rule,
         )
+        if not dry_run and await mark_writer_rejected(config, winner.page_id):
+            logger.info("run_cycle: %s retired from the pool — its card title will never pass", winner.url)
         return False
     # 2026-09-22 — when the preview image Gettr would render is missing or
     # broken, attach our own headline card instead (agents/poster.py). Returns

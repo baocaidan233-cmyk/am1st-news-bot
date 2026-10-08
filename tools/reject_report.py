@@ -67,11 +67,29 @@ def _lines(path: str):
         return
 
 
+def _titles_by_url() -> dict[str, str]:
+    """url -> the headline as the pre-score logged it. The v2.3 scoring prompt
+    (2026-10-07) writes comments without the old "field=value" pair that the
+    split below keys on, so without this every v2.3 refusal came back as one
+    string of comment-plus-title. Same fix as tools/train_prescore.py."""
+    out: dict[str, str] = {}
+    for path in sorted(glob.glob("logs/prescore_decisions.jsonl*")):
+        for line in _lines(path):
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            if d.get("url") and d.get("title"):
+                out.setdefault(d["url"], d["title"].strip())
+    return out
+
+
 def refused(days: int) -> list[dict]:
     """Most recent refusal per URL. Keyed by URL because the same candidate is
     re-offered across cycles and counting it twice would invent a cluster."""
     cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
     out: dict[str, dict] = {}
+    by_url = _titles_by_url()
     for path in sorted(glob.glob("logs/main.log*")):
         for line in _lines(path):
             m = LINE.match(line)
@@ -81,7 +99,10 @@ def refused(days: int) -> list[dict]:
             # The reasons field, when present, is the scorer's own llm_comment
             # and is separated from the title by the same " — " it uses.
             reasons, title = ("", tail)
-            if " — " in tail:
+            known = by_url.get(url)
+            if known and tail.endswith(known):
+                reasons, title = tail[: -len(known)].rstrip(" —"), known
+            elif " — " in tail:
                 head, rest = tail.split(" — ", 1)
                 if "=" in head:
                     reasons, title = head, rest
