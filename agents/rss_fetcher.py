@@ -125,9 +125,28 @@ def _parse_published_utc(entry) -> datetime:
     return datetime.now(timezone.utc)
 
 
+async def _get_with_retry(client: httpx.AsyncClient, url: str) -> httpx.Response:
+    """One GET, retried twice when the connection itself fails.
+
+    Every source is fetched at once, and a large feed loses its connection under
+    that load: on 2026-10-08 whitehouse.gov/news/feed/ (about 490 KB) failed 40 of
+    48 cycles with ConnectError / ReadError / RemoteProtocolError, while the same
+    URL fetched alone returned 200 every time and the White House's smaller
+    presidential-actions feed failed only twice. A retry a few seconds later,
+    when the burst is over, is what gets it through. Only transport errors are
+    retried; an HTTP error status is an answer and goes straight back."""
+    for wait in (3.0, 8.0, None):
+        try:
+            return await client.get(url)
+        except httpx.TransportError:
+            if wait is None:
+                raise
+            await asyncio.sleep(wait)
+
+
 async def fetch_source(client: httpx.AsyncClient, source: RssSource) -> list[Candidate]:
     try:
-        resp = await client.get(source.feed_url)
+        resp = await _get_with_retry(client, source.feed_url)
         resp.raise_for_status()
         content = resp.content
     except Exception:
