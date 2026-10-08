@@ -100,15 +100,35 @@ def _lines(path: str):
             yield line.rstrip("\n")
 
 
+def _titles_by_url() -> dict[str, str]:
+    """url -> the headline exactly as the pre-score saw it. Preferred over
+    reading the title back out of the rejection line: the v2.3 scoring prompt
+    (2026-10-07) writes an llm_comment without the "field=value" pair
+    _title_from_tail relies on, so the comment and the title came back glued
+    together, every rejected "title" began "The story ...", and a first retrain
+    scored a perfect out-of-fold AUC of 1.0 while skipping 56% of candidates."""
+    out: dict[str, str] = {}
+    for path in sorted(glob.glob("logs/prescore_decisions.jsonl*")):
+        for line in _lines(path):
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            if d.get("url") and d.get("title"):
+                out.setdefault(d["url"], d["title"].strip())
+    return out
+
+
 def rejected_rows() -> list[dict]:
     rows, seen = [], set()
+    by_url = _titles_by_url()
     for path in sorted(glob.glob("logs/main.log*")):
         for line in _lines(path):
             m = _REJECTED.match(line)
             if not m:
                 continue
             stamp, url, score, tail = m.groups()
-            title = _title_from_tail(tail)
+            title = by_url.get(url) or _title_from_tail(tail)
             if url in seen or not title:
                 continue
             seen.add(url)
@@ -223,6 +243,9 @@ def main() -> None:
                          "(default: config openai.score_threshold)")
     # Required on purpose — see the module docstring. A default here is how a
     # later retrain would silently go back to the source with the blind spot.
+    ap.add_argument("--since", default=None,
+                    help="only rows at or after this UTC time, e.g. 2026-10-07T14:46 -- when the scoring "
+                         "prompt changes, earlier rows were labelled by a different scorer")
     ap.add_argument("--labels-from", choices=("log", "offline"), required=True,
                     help="log: Scorer rejection lines + Notion. "
                          "offline: --labels file covering every candidate, skipped included.")
@@ -259,6 +282,11 @@ def main() -> None:
         seen = {r["url"] for r in rejected}
         rows = rejected + [r for r in accepted if r["ts"] >= first_negative and r["url"] not in seen]
         rows.sort(key=lambda r: r["ts"])
+    if args.since:
+        since_ts = datetime.datetime.fromisoformat(args.since).replace(tzinfo=datetime.timezone.utc).timestamp()
+        rows = [r for r in rows if r["ts"] >= since_ts]
+        first_negative = max(first_negative, since_ts)
+        print(f"--since {args.since}: {len(rows)} rows kept")
     if len(rows) < 500:
         sys.exit(f"only {len(rows)} labelled rows — not enough to train")
     print(f"{len(rows)} rows from {datetime.datetime.utcfromtimestamp(first_negative):%Y-%m-%d %H:%M} UTC "
