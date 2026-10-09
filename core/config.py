@@ -570,6 +570,14 @@ class PublishConfig(BaseModel):
     # than a new Notion property: no schema change, and the key self-expires
     # with the candidate's own eligibility window.
     posted_dedup_strikes_before_retire: int = 2
+    # 2026-10-09, ported from China Breaks (0ce2df3, owner: "把CB的查重先移植给几个频道").
+    # When the judge, reading our two captions, calls a cosine-flagged pair
+    # DIFFERENT, ask it once more on the two source articles' title + lead.
+    # Only a "different" is re-asked, so nothing already caught can be lost.
+    # Measured on this channel the same day (93 caption-judged "kept" pairs,
+    # labelled by Claude, not the owner): of 28 real duplicates the source
+    # text caught 14, at the cost of 9 of 52 different stories.
+    posted_dedup_source_second_opinion: bool = True
     max_widen_attempts: int = 3  # 2026-09-05 — how many batch_max-sized chunks of the eligible pool to try before accepting "nothing to publish this cycle" as real, not just "the first batch_max happened to all be duplicates"; each attempt costs a real extraction+content-gen pass, so this isn't unbounded search over the whole pool (which real cycles have seen run into the hundreds)
     # 2026-09-17 — overnight quality gate (user request). Window is in
     # US/Eastern, the same calendar reference weekday_min_score already uses.

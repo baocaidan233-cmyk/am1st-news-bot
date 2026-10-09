@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 
 from agents.embedder import Embedder
 from core.config import AppConfig
-from core.event_identity import EventVerifier, HubIndex, entity_tokens, has_date_conflict, log_decision, posted_dedup_rule_verdict
+from core.event_identity import EventVerifier, HubIndex, entity_tokens, event_identity_text, has_date_conflict, log_decision, posted_dedup_rule_verdict
 from core.models import PublishCandidate
 from core.qdrant_store import PostedHistoryStore
 
@@ -130,21 +130,53 @@ async def find_publishable(
     than a return value so this module keeps knowing nothing about Notion;
     it is not called for the Fallback path above, because a dedup check that
     itself errored is explicitly not a verdict. A failing callback must never
-    cost this cycle its publish, so it is wrapped."""
+    cost this cycle its publish, so it is wrapped.
+
+    2026-10-09, two changes ported from China Breaks (c127fee, 0ce2df3), owner:
+    "把CB的查重先移植给几个频道". Published duplicates scanned the same day:
+    about four stories posted two or three times in 3.8 days (a shipyard, a
+    diesel order three times, Vance and Microsoft, the FBI memos).
+
+    1. Every one of the top-5 posted matches above `threshold` is checked,
+       most similar first, not just the best one; the first confirmed
+       duplicate ends the walk. This channel's own threshold applies to every
+       rank -- China Breaks' 0.75 floor for ranks 2-5 was measured on its own
+       corpus and is not copied.
+
+    2. When the judge, reading our two captions, says DIFFERENT, it is asked
+       once more on the two source articles' title + lead
+       (event_identity_text(); publish.posted_dedup_source_second_opinion).
+       Captions carry the writer's own slips and different figures, and the
+       judge reads "$3.7B" vs "$6.6B" as two shipyards. Only a "different" is
+       re-asked. On 93 caption-judged "kept" pairs from this channel's log
+       (labelled by Claude): 14 of 28 real duplicates caught, 9 of 52
+       different stories killed. A posted point without stored source text
+       (written before 2026-10-09 and not backfilled) is judged on captions
+       only, as before.
+
+    China Breaks' 0.60-0.80 gray zone is NOT ported: this channel never
+    judged pairs below 0.70, so there is no labelled data to set a floor
+    with."""
     threshold = config.publish.posted_dedup_threshold
+    second_opinion = config.publish.posted_dedup_source_second_opinion
 
     for candidate in ranked_batch:
+        comparisons: list[dict] = []
+        deciding: dict | None = None
+        top: dict | None = None
         try:
             candidate_content = content_for_embedding(candidate.post_content, candidate.url)
+            candidate_source = event_identity_text(candidate.title, candidate.description)
             embedding = await embedder.embed(candidate_content)
-            similarity, matched_url, matched_content_raw = await posted_store.most_similar_recent(embedding)
+            matches = await posted_store.similar_recent(embedding)
+            top = matches[0] if matches else None
+            candidate_entities = entity_tokens(candidate_content) if matches else set()
 
-            looks_similar = similarity > threshold
-            is_duplicate = False
-            same_event_raw = ""
-            resolved_by = ""
-            if looks_similar:
-                matched_content = content_for_embedding(matched_content_raw, matched_url)
+            for m in matches:
+                similarity = m["score"]
+                if not m["url"] or similarity <= threshold:
+                    continue
+                matched_content = content_for_embedding(m["content"], m["url"])
                 if has_date_conflict(candidate_content, matched_content):
                     is_duplicate = False
                     same_event_raw = "RULE: has_date_conflict() — explicit conflicting dates, skipped LLM call"
@@ -158,6 +190,32 @@ async def find_publishable(
                     else:
                         is_duplicate, same_event_raw = await event_verifier.same_event(candidate_content, matched_content)
                         resolved_by = "llm"
+                        if not is_duplicate and second_opinion and m["title"] and candidate.title:
+                            second, second_raw = await event_verifier.same_event(
+                                candidate_source, event_identity_text(m["title"], m["description"]))
+                            same_event_raw = f"{same_event_raw}\n[source second opinion] {second_raw}"
+                            if second:
+                                is_duplicate = True
+                                resolved_by = "llm_source_second_opinion"
+                matched_entities = entity_tokens(matched_content)
+                comparison = {
+                    "matched_url": m["url"],
+                    "cosine_score": similarity,
+                    "resolved_by": resolved_by,
+                    "same_event_raw": same_event_raw,
+                    "verdict": "duplicate" if is_duplicate else "kept",
+                    "matched_entities": sorted(matched_entities),
+                    "entity_overlap": sorted(candidate_entities & matched_entities),
+                    # the texts exactly as the judge saw them, so a verdict can be replayed offline
+                    "candidate_text": candidate_content,
+                    "matched_text": matched_content,
+                    "candidate_source": candidate_source,
+                    "matched_source": event_identity_text(m["title"], m["description"]) if m["title"] else "",
+                }
+                comparisons.append(comparison)
+                if is_duplicate:
+                    deciding = comparison
+                    break
         except Exception:
             logger.exception(
                 "find_publishable: dedup check failed for %s — skipping this candidate (not a confirmed verdict), trying next",
@@ -166,49 +224,47 @@ async def find_publishable(
             log_decision(config, {"check_type": "posted_dedup_error", "candidate_url": candidate.url})
             continue
 
-        if matched_url:
+        is_duplicate = deciding is not None
+        if top is not None:
+            # Top-level fields describe the comparison that decided the verdict
+            # (the duplicate hit, else the first one asked, else the top match),
+            # so older replay scripts keep reading the same shape; `comparisons`
+            # holds every match that was actually asked about.
+            shown = deciding or (comparisons[0] if comparisons else None)
             log_record = {
                 "check_type": "posted_dedup",
                 "candidate_url": candidate.url,
-                "matched_url": matched_url,
-                "cosine_score": similarity,
+                "matched_url": shown["matched_url"] if shown else top["url"],
+                "cosine_score": shown["cosine_score"] if shown else top["score"],
                 "threshold": threshold,
-                "cosine_flagged": looks_similar,
+                "cosine_flagged": shown is not None,
                 "final_verdict": "duplicate" if is_duplicate else "kept",
+                "matches_seen": len(matches),
+                "comparisons_asked": len(comparisons),
             }
-            if looks_similar:
-                candidate_entities = entity_tokens(candidate_content)
-                matched_entities = entity_tokens(matched_content_raw)
+            if shown:
                 log_record.update({
-                    "resolved_by": resolved_by,
-                    "same_event_raw": same_event_raw,
+                    "resolved_by": shown["resolved_by"],
+                    "same_event_raw": shown["same_event_raw"],
                     "candidate_entities": sorted(candidate_entities),
-                    "matched_entities": sorted(matched_entities),
-                    "entity_overlap": sorted(candidate_entities & matched_entities),
-                    # 2026-09-22 — the two texts EXACTLY as same_event()/the rule
-                    # tier saw them (URL-stripped via content_for_embedding), so a
-                    # verdict can be replayed offline against a changed prompt.
-                    # Without these, the only replayable pairs available were
-                    # synthetic ones at cosine 0.50-0.67, well below the 0.70-0.85
-                    # gray zone where this check actually decides anything. Logged
-                    # only inside the looks_similar branch: that is the subset a
-                    # rule/LLM verdict was actually computed for. Not truncated —
-                    # a truncated text cannot be replayed faithfully, and this
-                    # branch fires ~75 times/day, so the volume is negligible
-                    # against logrotate's existing 30-day window.
-                    "candidate_text": candidate_content,
-                    "matched_text": matched_content,
+                    "matched_entities": shown["matched_entities"],
+                    "entity_overlap": shown["entity_overlap"],
+                    "candidate_text": shown["candidate_text"],
+                    "matched_text": shown["matched_text"],
+                    "comparisons": comparisons,
                 })
             log_decision(config, log_record)
 
         if is_duplicate:
             logger.info(
-                "find_publishable: %s dropped — %s confirmed duplicate of already-posted content (cosine=%.3f > %.2f, matched %s)",
+                "find_publishable: %s dropped — confirmed duplicate of already-posted content by %s (cosine=%.3f > %.2f, match %d of %d, matched %s)",
                 candidate.url,
-                "posted_dedup_rule_verdict()" if resolved_by == "entity_rule" else "same_event()",
-                similarity,
+                deciding["resolved_by"],
+                deciding["cosine_score"],
                 threshold,
-                matched_url,
+                len(comparisons),
+                len(matches),
+                deciding["matched_url"],
             )
             if on_duplicate is not None:
                 try:
@@ -216,14 +272,13 @@ async def find_publishable(
                 except Exception:
                     logger.exception("find_publishable: on_duplicate callback failed for %s — continuing", candidate.url)
             continue
-        if looks_similar:
+        if comparisons:
             logger.info(
-                "find_publishable: %s cosine-flagged (%.3f > %.2f) but %s said DIFFERENT — not treating as duplicate, matched %s",
+                "find_publishable: %s flagged against %d posted match(es) but every one was judged DIFFERENT — not treating as duplicate (closest %s, cosine=%.3f)",
                 candidate.url,
-                similarity,
-                threshold,
-                "has_date_conflict()" if resolved_by == "date_conflict_rule" else "same_event()",
-                matched_url,
+                len(comparisons),
+                comparisons[0]["matched_url"],
+                comparisons[0]["cosine_score"],
             )
 
         logger.info("find_publishable: %s selected (priority_score=%.1f)", candidate.url, candidate.priority_score)

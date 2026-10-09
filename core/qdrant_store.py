@@ -842,16 +842,21 @@ class PostedHistoryStore:
         return out
 
 
-    async def most_similar_recent(self, embedding: list[float]) -> tuple[float, str, str]:
-        """Highest cosine similarity against post_content embeddings whose
-        source article was published in the last window, plus that match's
-        url and its own stored content (2026-09-02, for agents/
-        posted_dedup_checker.py's observational entity-overlap logging — see
-        that module's docstring) for logging. Returns (0.0, "", "") if
-        Qdrant isn't configured, the collection is empty, or the query
-        fails — fail open, same as QdrantStore.most_similar_recent."""
+    async def similar_recent(self, embedding: list[float]) -> list[dict]:
+        """Up to 5 posted points whose source article was published in the
+        last window, most similar first, each as {score, url, content,
+        title, description}. title/description are the source article's own,
+        written since 2026-10-09 (see write() below) and backfilled for the
+        window that existed then (backfill_posted_source_text.py); a point
+        without them comes back with "".
+
+        2026-10-09, ported from China Breaks (c127fee): returns every hit
+        instead of only the best one, so a real duplicate that ranks second
+        behind an unrelated post with closer caption wording is still looked
+        at. Returns [] if Qdrant isn't configured, nothing matches, or the
+        query fails -- fail open, same as QdrantStore.most_similar_recent."""
         if self._client is None:
-            return 0.0, "", ""
+            return []
         cutoff = time.time() - self._window_seconds
         try:
             result = await self._client.query_points(
@@ -863,16 +868,21 @@ class PostedHistoryStore:
             )
         except Exception:
             logger.exception("PostedHistoryStore: query failed, treating as no match")
-            return 0.0, "", ""
-        points = result.points
-        if not points:
-            return 0.0, "", ""
-        best = max(points, key=lambda p: p.score)
-        payload = best.payload or {}
-        return best.score, payload.get("url", ""), payload.get("content", "")
+            return []
+        matches = []
+        for pt in sorted(result.points, key=lambda pt: pt.score, reverse=True):
+            payload = pt.payload or {}
+            matches.append({
+                "score": pt.score,
+                "url": payload.get("url", ""),
+                "content": payload.get("content", ""),
+                "title": payload.get("title", ""),
+                "description": payload.get("description", ""),
+            })
+        return matches
 
     async def write(self, url: str, url_hash: str, content: str, published_at_unix: int,
-                    embedding: list[float], arm: str = "") -> None:
+                    embedding: list[float], arm: str = "", title: str = "", description: str = "") -> None:
         """Called once, right after the publish cycle's winner is chosen —
         never for a rejected/duplicate candidate. `content` should be the
         post_content the embedding was computed from. `published_at_unix`
@@ -880,7 +890,9 @@ class PostedHistoryStore:
         unrelated to `sentAt` below (2026-09-07) — the real wall-clock
         moment THIS call runs, i.e. when we actually sent it to Gettr. See
         most_recent_publish_ts()'s docstring for why the two must stay
-        separate."""
+        separate. title/description (2026-10-09) are the source article's
+        own, kept so agents/posted_dedup_checker.py can put two source
+        articles to the judge instead of two of our own captions."""
         if self._client is None:
             return
         await self._client.upsert(
@@ -899,6 +911,7 @@ class PostedHistoryStore:
                         # A/B cannot be told apart afterwards, and an A/B whose
                         # result cannot be split is not an A/B.
                         "arm": arm,
+                        "title": title, "description": description,
                     },
                 )
             ],

@@ -627,7 +627,7 @@ async def run_cycle(
         winner_embedding = await embedder.embed(content_for_embedding(winner.post_content, winner.url))
         await posted_store.write(
             winner.url, winner.url_hash, winner.post_content, int(winner.published_at.timestamp()),
-            winner_embedding, arm=arm,
+            winner_embedding, arm=arm, title=winner.title, description=winner.description,
         )
 
         # Flag the underlying event as published (2026-08-07) — so a later
