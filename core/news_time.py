@@ -48,6 +48,14 @@ def latest_moment(phrase: Optional[str], anchor: Optional[date]) -> Optional[dat
     if not phrase or not anchor:
         return None
     p = phrase.lower()
+    # A data cut-off is not when the data came out: "Nigeria's external debt
+    # stood at $54.5bn as of June 30" was the Debt Office's release of 10/08.
+    if re.search(r"\b(as of|as at|at the end of|by the end of|through the end of)\b|截至|截止|по состоянию на|станом на|към края", p):
+        return None
+    # Nor is a point of comparison: gold "above $4,200 for the first time
+    # since Oct. 2" (现货黄金…为10月2日以来首次) is today's move.
+    if re.search(r"\bsince\b|以来|以後|以后|с начала|начиная с|від початку|откакто", p):
+        return None
     if re.search(r"\b(will|next|beginning|starting|later this|due to|scheduled|upcoming|until)\b", p):
         return None
     # Month-day, taking the latest when the phrase names several or a range:
@@ -210,6 +218,9 @@ def decide(developments: list[dict], title: str, body: str, url: str, published_
         when = d.get("when")
         if not isinstance(when, str) or _norm(when) not in source:
             when = None
+        elif re.search(r"(?:since|as of|as at)\s+(?:the\s+)?" + re.escape(_norm(when)) + "|" + re.escape(_norm(when)) + r"\s*(?:以来|以後|以后)",
+                       _norm(d.get("what") or "")):
+            when = None   # the model copied only the date out of "since Oct. 2" / "10月2日以来"
         times.append(latest_moment(when, anchor))
     relay = times[0] is not None and head.get("cited_outlet") and not names_this_outlet(head["cited_outlet"], url)
     if not relay and _LATE.search(body[:4000]):

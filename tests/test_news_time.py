@@ -122,3 +122,13 @@ def test_month_year_ranges_and_closed_doors():
     d = [dev(body, "Sept. 29", cited="Bloomberg")]
     r = decide(d, "F-35 parts", body, "https://www.zerohedge.com/technology/x", utc(2026, 10, 8, 1, 0), utc(2026, 10, 8, 1, 50))
     assert r["verdict"] == "fresh", r
+
+
+def test_data_cutoffs_and_points_of_comparison_are_not_news_times():
+    oct10 = date(2026, 10, 10)
+    assert latest_moment("as of June 30, 2026", oct10) is None
+    assert latest_moment("since Oct. 2", oct10) is None
+    body = "Gold rose above $4,200 for the first time since Oct. 2, up 1.6% on the day."
+    d = [dev(body, "Oct. 2", kind="happened")]
+    r = decide(d, "Gold tops $4,200", body, "https://www.example.com/x", utc(2026, 10, 9, 5, 0), utc(2026, 10, 9, 6, 8))
+    assert r["verdict"] == "fresh", r
