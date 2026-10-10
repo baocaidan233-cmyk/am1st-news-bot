@@ -93,7 +93,7 @@ from agents.poster import card_for_broken_preview
 from agents.posted_dedup_checker import content_for_embedding, find_publishable
 from agents.priority_ranker import PriorityRanker, log_publish_outcome
 from agents.trending import fetch_trending_headlines
-from agents.staleness_checker import StalenessChecker
+from agents.timeliness_check import TimelinessCheck
 from agents.writer import Writer
 from agents.editor import EditorPicker
 from core.selection_trace import SelectionTrace
@@ -150,7 +150,7 @@ async def run_cycle(
     publisher: GettrPublisher,
     extractor: Extractor,
     writer: Writer,
-    staleness_checker: StalenessChecker,
+    timeliness: TimelinessCheck,
     caption_cache: CaptionCache,
     dup_strikes: PostedDupStrikes,
     hub_index: HubIndex,
@@ -370,44 +370,25 @@ async def run_cycle(
                 logger.info("run_cycle: %s dropped — non-English article content", c.url)
                 continue
 
-            # Staleness classification (2026-09-05) — a separate, single-
-            # purpose call BEFORE the writer runs; see agents/
-            # staleness_checker.py's docstring for why this isn't folded
-            # into content_gen_prompt.txt (three attempts to make Writer
-            # self-police this in one call all failed on real test
-            # articles). Three-way, not binary — per the user's explicit
-            # "两种处理方法，要么...发观点，要么...不发": a genuine analysis
-            # piece with real argument/expert input (OPINION) still gets
-            # written, just framed as opinion rather than dropped outright;
-            # only a pure rehash with no new angle (STALE) gets dropped.
-            #
-            # Gated behind a free pre-filter, not run unconditionally on
-            # every candidate — per the user's explicit cost concern: this
-            # would otherwise double the LLM calls for every article that
-            # reaches extraction, when only a minority (ones about an
-            # already-old underlying event) are actually at risk. Reuses
-            # event_first_seen_at — already computed at ingestion time,
-            # zero extra cost — the same field agents/scorer.py already
-            # uses for this exact "how old is the underlying event"
-            # question. Only when that gap clears staleness_check_hours_floor
-            # is there real ambiguity worth spending the LLM call on; a
-            # freshly-first-seen event skips the check entirely (treated
-            # as FRESH for free).
-            first_seen = c.event_first_seen_at or c.published_at
-            hours_since_first_seen = (datetime.now(timezone.utc) - first_seen).total_seconds() / 3600
-            is_opinion = False
-            if hours_since_first_seen >= config.publish.staleness_check_hours_floor:
-                try:
-                    verdict, verdict_raw = await staleness_checker.classify(c.title, c.content)
-                except Exception:
-                    logger.exception("run_cycle: staleness check failed for %s — failing open, treating as fresh", c.url)
-                    verdict = "FRESH"
-                if verdict == "STALE":
-                    logger.info("run_cycle: %s dropped — stale rehash of an old event (%s)", c.url, verdict_raw.replace("\n", " "))
+            # Timeliness (2026-10-10, agents/timeliness_check.py), before the
+            # writer is paid for. User: a story first reported 48 hours or
+            # more ago with nothing new is not published, and an old event
+            # revealed for the first time always is. Replaces the 09-05
+            # FRESH / OPINION / STALE call, which ran only when the event
+            # store had seen the story 72 hours earlier and so stopped none of
+            # the 9 stale posts of 10/06-10/09; OPINION went with it ("this is
+            # a news channel"). A stale verdict only gets older, so the
+            # candidate leaves the pool rather than being re-checked every
+            # cycle until its 24h window closes.
+            if config.publish.timeliness_check:
+                fresh = await timeliness.check(c.url, c.url_hash, c.title or "", c.content, c.published_at)
+                if fresh["verdict"] == "stale":
+                    logger.info("run_cycle: %s dropped — not news any more: %s", c.url, fresh["reason"])
+                    if not dry_run:
+                        await mark_writer_rejected(config, c.page_id)
+                        if stuck_versions is not None:
+                            await stuck_versions.mark(c.url_hash, "stale")
                     continue
-                is_opinion = verdict == "OPINION"
-                if is_opinion:
-                    logger.info("run_cycle: %s classified OPINION — will write framed as analysis, not breaking news (%s)", c.url, verdict_raw.replace("\n", " "))
 
             # Background for the writer (2026-08-31) — peek() against the same
             # title+description embedding space main.py already uses, so this
@@ -432,7 +413,7 @@ async def run_cycle(
             post_content = await caption_cache.get(c.url_hash)
             cached = post_content is not None
             if post_content is None:
-                post_content = await writer.write(c.title, c.content, context=background, is_opinion=is_opinion, published_at=c.published_at)
+                post_content = await writer.write(c.title, c.content, context=background, published_at=c.published_at)
 
             # Last gate on the text we are about to publish under our own name.
             # Donald Trump is the sitting president, so a caption calling him a
@@ -665,7 +646,7 @@ async def main() -> None:
     alerts = AlertNotifier(config)
     extractor = Extractor(config, alerts)
     writer = Writer(config)
-    staleness_checker = StalenessChecker(config)
+    timeliness = TimelinessCheck(config)
     caption_cache = CaptionCache(config)
     dup_strikes = PostedDupStrikes(config)
     editor = EditorPicker(config)
@@ -710,7 +691,7 @@ async def main() -> None:
             published_this_cycle = False
             try:
                 published_this_cycle = await asyncio.wait_for(
-                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, staleness_checker, caption_cache, dup_strikes, hub_index, editor, batch_seen, cycle_counter, dry_run,
+                    run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, timeliness, caption_cache, dup_strikes, hub_index, editor, batch_seen, cycle_counter, dry_run,
                               appeal_labels, stance_vec, stuck_versions),
                     timeout=config.cycle_timeout_seconds,
                 )

@@ -1,0 +1,20 @@
+You read one news article and copy out, word for word, what it reports and when that became news. You do not judge whether the news is fresh and you do not work out any dates: code does that from what you copy.
+
+List the developments the article reports, up to three. The first one is the development the headline is about. Background the article recalls to explain the news is not a development; leave it out.
+
+A development is one of two kinds:
+- "said": someone said, announced, confirmed, reported, revealed, released, published or filed something — a statement, an interview, a report, data, documents, images, an indictment, a lawsuit. The news is that it was said or made public.
+- "happened": something took place — a meeting, a strike, an arrest, a vote, a launch, a signing — and the article reports it directly, not as something someone said.
+
+For each development give:
+
+- "what": the one sentence of the article that states it, copied exactly as written.
+- "kind": "said" or "happened".
+- "when": the article's own words for WHEN THIS WAS SAID OR MADE PUBLIC (for "said") or WHEN IT TOOK PLACE (for "happened") — "on Tuesday", "Sept. 29", "this morning", "7日", "昨天" — copied exactly. null if the article does not say. Not the date of the past events the statement or report is about: "Micron said Tuesday that YMTC copied its designs in 2021" -> when is "Tuesday". Not a future date: "the curfew begins Friday", "the exercise later this month" are plans; for a plan, kind is "said" and when is when the plan was announced.
+- "about_when": for "said", the article's words for when the thing being talked about happened, if it gives them ("in 2021", "last month", "on Sept. 30"); otherwise null.
+- "cited_outlet": when the article relays another news outlet's reporting ("according to The New York Times", "citing Axios", "— media", "据路透社报道"), that outlet's name as written; null otherwise.
+
+Copy; never paraphrase, translate or complete. If the article does not say it, write null.
+
+Answer with JSON only:
+{"developments": [{"what": "...", "kind": "said", "when": null, "about_when": null, "cited_outlet": null}]}

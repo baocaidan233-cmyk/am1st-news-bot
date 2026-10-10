@@ -125,7 +125,8 @@ class OpenAIConfig(BaseModel):
     embedding_model: str = "text-embedding-3-small"
     scoring_prompt_file: str = "prompts/scoring_prompt.txt"
     content_gen_prompt_file: str = "prompts/content_gen_prompt.txt"
-    staleness_check_prompt_file: str = "prompts/staleness_check_prompt.txt"  # agents/staleness_checker.py — deliberately a separate call from Writer, not folded into content_gen_prompt.txt (see StalenessChecker's docstring for why three attempts at doing this inside one Writer call all failed)
+    staleness_check_prompt_file: str = "prompts/staleness_check_prompt.txt"  # agents/staleness_checker.py — retired 2026-10-10 by agents/timeliness_check.py, kept for its history
+    timeliness_extract_prompt_file: str = "prompts/timeliness_extract_prompt.txt"  # agents/timeliness_check.py — copies developments and time words; DailyNews' 10-09 extraction prompt, unchanged. Its 10-10 revision ("when" = first public) made gpt-4o-mini blank the time of every relay: 8 of 13 stale posts stopped instead of 13
     score_threshold: float = 5.0
     # Shadow scoring. Observes only — agents/scorer_shadow.py is called after
     # the production Scorer has already decided and its answer is written to a
@@ -671,6 +672,13 @@ class PublishConfig(BaseModel):
     # nothing reads it automatically.
     selection_trace: bool = True
     selection_trace_path: str = "logs/selection_trace.jsonl"
+
+    # 2026-10-10, user: a story first reported this many hours before we
+    # publish, with nothing new in the article, is not published. See
+    # core/news_time.py. Replaces staleness_check_hours_floor below, which
+    # only ran the old check once the event store had seen the story 72h ago.
+    timeliness_window_hours: float = 48
+    timeliness_check: bool = True
 
     staleness_check_hours_floor: int = 72  # 2026-09-05 — agents/staleness_checker.py's LLM call only runs when event_first_seen_at is at least this old; reuses dedup.cross_cycle_window_hours' existing 72h convention rather than picking a new number, per the user's explicit cost concern (this would otherwise double the LLM calls made for every candidate, not just the minority whose underlying event is genuinely old)
 
