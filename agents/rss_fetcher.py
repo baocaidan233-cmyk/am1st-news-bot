@@ -70,6 +70,18 @@ _BLOCKED_PATH_SEGMENTS = frozenset({
     "odd_news", "gallery",
 })
 
+# 2026-10-10 — path segments blocked for one domain only. Added with the WPXI
+# (Pittsburgh) feed, a local TV station whose feed is mostly local sports and
+# weather; its /sports/ items are already covered by _BLOCKED_PATH_SEGMENTS.
+# "weather" is not added there because on the other sources it is not filler:
+# 72 scored /weather/ items in the logs to date, 3 of them reached the pool
+# (ZeroHedge on Gulf oil output shut by Isaias, DeSantis declaring an
+# emergency). Much of WPXI's weather copy sits under /news/local/ instead and
+# is left to the pre-score and the Scorer.
+_BLOCKED_DOMAIN_PATH_SEGMENTS = {
+    "wpxi.com": frozenset({"weather"}),
+}
+
 
 def _domain_matches(netloc: str, domain: str) -> bool:
     netloc = netloc[4:] if netloc.startswith("www.") else netloc
@@ -87,8 +99,14 @@ def _is_blocked_domain(url: str) -> bool:
 
 
 def _has_blocked_path_segment(url: str) -> bool:
-    segments = urlparse(url).path.lower().split("/")
-    return any(seg in _BLOCKED_PATH_SEGMENTS for seg in segments)
+    parsed = urlparse(url)
+    segments = parsed.path.lower().split("/")
+    if any(seg in _BLOCKED_PATH_SEGMENTS for seg in segments):
+        return True
+    for domain, blocked in _BLOCKED_DOMAIN_PATH_SEGMENTS.items():
+        if _domain_matches(parsed.netloc, domain) and any(seg in blocked for seg in segments):
+            return True
+    return False
 
 # Several sources 403'd under httpx's default "python-httpx/x.x" User-Agent
 # (confirmed 2026-08-03 for e.g. Judicial Watch, The Federalist, State Dept,
