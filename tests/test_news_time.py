@@ -109,3 +109,16 @@ def test_first_report_is_fresh_without_a_model():
     r = decide([], "Exclusive | JD Vance's tiny hometown is overrun", "text", "https://nypost.com/x",
                utc(2026, 10, 7, 16, 0), utc(2026, 10, 7, 18, 10))
     assert r["verdict"] == "fresh" and "first report" in r["reason"]
+
+
+def test_month_year_ranges_and_closed_doors():
+    oct10 = date(2026, 10, 10)
+    assert latest_moment("September 2026", oct10).date() == date(2026, 9, 30)   # not Sept. 20
+    assert latest_moment("in August 2023", oct10).date() == date(2023, 8, 31)
+    assert latest_moment("from October 4 to 8", oct10).date() == date(2026, 10, 8)
+    assert latest_moment("Sept. 30 to Oct. 2", oct10).date() == date(2026, 10, 2)
+    body = ("The new details were laid out by Pentagon officials on Sept. 29 in a roughly hour-long closed-door "
+            "meeting with House staff.")
+    d = [dev(body, "Sept. 29", cited="Bloomberg")]
+    r = decide(d, "F-35 parts", body, "https://www.zerohedge.com/technology/x", utc(2026, 10, 8, 1, 0), utc(2026, 10, 8, 1, 50))
+    assert r["verdict"] == "fresh", r

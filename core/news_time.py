@@ -50,18 +50,34 @@ def latest_moment(phrase: Optional[str], anchor: Optional[date]) -> Optional[dat
     p = phrase.lower()
     if re.search(r"\b(will|next|beginning|starting|later this|due to|scheduled|upcoming|until)\b", p):
         return None
-    m = re.search(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(\d{4}))?", p)
-    if m:
+    # Month-day, taking the latest when the phrase names several or a range:
+    # "from October 4 to 8" is the 8th (the SCO exercise ended on the 8th,
+    # and reading the 4th stopped that post). The day must not run into more
+    # digits: "September 2026" is not September 20.
+    found = []
+    for m in re.finditer(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?!\d)(?:st|nd|rd|th)?"
+                         r"(?:\s*(?:-|\u2013|\u2014|to|through|and)\s*(\d{1,2})(?!\d))?(?:,?\s*(\d{4}))?", p):
+        day = int(m.group(3) or m.group(2))
+        y = int(m.group(4)) if m.group(4) else anchor.year
         try:
-            y = int(m.group(3)) if m.group(3) else anchor.year
-            d = date(y, _MON[m.group(1)], int(m.group(2)))
+            d = date(y, _MON[m.group(1)], day)
         except ValueError:
-            return None
+            continue
         # A month-day with no year is last year's only when it is far ahead:
         # "Tuesday, Oct. 13" on Oct. 8 is a rally being planned, and pushing
         # it back a year stopped that post in the first replay.
-        if not m.group(3) and d > anchor + timedelta(days=120):
+        if not m.group(4) and d > anchor + timedelta(days=120):
             d = date(y - 1, d.month, d.day)
+        found.append(d)
+    if found:
+        d = max(found)
+        return None if d > anchor else _day_end(d)
+    # A month with its year ("in August 2023") is the end of that month. A
+    # month alone stays too vague (below).
+    m = re.search(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?\s+(\d{4})\b", p)
+    if m:
+        y, mo = int(m.group(2)), _MON[m.group(1)]
+        d = (date(y + (mo == 12), mo % 12 + 1, 1) - timedelta(days=1))
         return None if d > anchor else _day_end(d)
     m = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", p)
     if m:
@@ -148,6 +164,11 @@ _DISCLOSED = re.compile(
     r"|(?:on )?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.? \d{1,2})\b", re.I)
 
 
+_PRIVATE = re.compile(r"closed[- ]door|behind closed doors|private (?:meeting|briefing|call|dinner|fundraiser)|"
+                      r"according to (?:a |two |three |several )?(?:person|people|sources?|officials?) (?:familiar|with (?:direct )?knowledge)|"
+                      r"leaked|secretly|не для печати|закрыт\w* (?:встреч|заседани)|闭门|閉門|知情人士", re.I)
+
+
 def _norm(t: str) -> str:
     t = (t or "").replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
     return re.sub(r"\s+", " ", t).strip().lower()
@@ -179,6 +200,13 @@ def decide(developments: list[dict], title: str, body: str, url: str, published_
         return out("fresh", "headline sentence not found in the article")
     times = []
     for d in devs:
+        # A closed-door meeting or a source's account has no public moment of
+        # its own: it became public when someone reported it. The F-35 parts
+        # story dated Pentagon officials' closed-door briefing of 09/29, which
+        # Bloomberg reported days later; Emmer's donor remarks were the same.
+        if _PRIVATE.search(d.get("what") or ""):
+            times.append(None)
+            continue
         when = d.get("when")
         if not isinstance(when, str) or _norm(when) not in source:
             when = None
