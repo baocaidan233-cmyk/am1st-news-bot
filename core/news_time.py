@@ -119,6 +119,8 @@ def latest_moment(phrase: Optional[str], anchor: Optional[date]) -> Optional[dat
 # --- this outlet is the first to publish it -------------------------------
 
 _EXCLUSIVE = re.compile(r"\bEXCLUSIVE\b|\bExclusive\s*[|:—-]|\bSCOOP\b|\bScoop\s*[|:—-]")
+_OWN_INTERVIEW = re.compile(r"专访|專訪")  # "VOA专访俞大㵢": the outlet's own interview, first public in this article
+
 _FIRST_ON = re.compile(r"\bfirst on ((?:[A-Z][\w.&'-]*\s?){1,3})", re.I)
 _TOLD = re.compile(r"\b(?:told|provided to|obtained by|shared with|confirmed to|in an interview with)\s+(?:the\s+)?((?:[A-Z][\w.&'-]*\s?){1,4})")
 _WE = re.compile(r"\b(we asked|told us|asked by this outlet|this outlet has learned|reached by)\b", re.I)
@@ -147,7 +149,7 @@ def first_disclosure(title: str, body: str, url: str) -> bool:
     the headline or opening it, FIRST ON <this outlet>, told / obtained by
     <this outlet>, <this outlet> visited / reviewed ..., we asked. User,
     2026-10-10: scoop and "first on Fox" count the same as an exclusive."""
-    if _EXCLUSIVE.search(title or "") or _EXCLUSIVE.match((body or "").lstrip()[:40]):
+    if _EXCLUSIVE.search(title or "") or _EXCLUSIVE.match((body or "").lstrip()[:40]) or _OWN_INTERVIEW.search(title or ""):
         return True
     text = f"{title}\n{(body or '')[:4000]}"
     if _WE.search(text):
@@ -222,7 +224,27 @@ def decide(developments: list[dict], title: str, body: str, url: str, published_
                        _norm(d.get("what") or "")):
             when = None   # the model copied only the date out of "since Oct. 2" / "10月2日以来"
         times.append(latest_moment(when, anchor))
-    relay = times[0] is not None and head.get("cited_outlet") and not names_this_outlet(head["cited_outlet"], url)
+    # A plan in the headline sentence: a bare weekday is the coming one
+    # ("Sefcovic will head to Beijing on Thursday" is next Thursday's talks,
+    # not last Thursday's), so it is no evidence of age. A plan with a full
+    # date that has already passed still counts: "the case will be heard by
+    # the Supreme Court on Oct. 5", published on Oct. 10, is a piece written
+    # before its own event.
+    if times[0] is not None and re.search(r"\b(will|is set to|are set to|is due to|plans to|is scheduled to)\b|将于|将在",
+                                          head.get("what") or "") \
+            and not re.search(r"\d", head.get("when") or ""):
+        times[0] = None
+    relayed = head.get("cited_outlet") and not names_this_outlet(head["cited_outlet"], url)
+    # Something that happened, known only through someone else's report that
+    # the article does not date, became public when that report came out --
+    # not when it happened: Shi Tingfu's death in prison on 09/22, "according
+    # to the Washington-based nonprofit"; the Missouri arrest of a Friday,
+    # which KSDK reported days later. A dated "said" development (the KCRA
+    # report "on Friday night") is that report's time and still counts.
+    if times[0] is not None and head.get("kind") == "happened" and relayed \
+            and not any(x is not None and d.get("kind") == "said" for d, x in list(zip(devs, times))[1:]):
+        times[0] = None
+    relay = times[0] is not None and relayed
     if not relay and _LATE.search(body[:4000]):
         return out("fresh", "the article says it only now came out")
     own = [n for n in {_host_word(url)} if len(n) >= 4]

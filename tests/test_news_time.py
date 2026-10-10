@@ -132,3 +132,23 @@ def test_data_cutoffs_and_points_of_comparison_are_not_news_times():
     d = [dev(body, "Oct. 2", kind="happened")]
     r = decide(d, "Gold tops $4,200", body, "https://www.example.com/x", utc(2026, 10, 9, 5, 0), utc(2026, 10, 9, 6, 8))
     assert r["verdict"] == "fresh", r
+
+
+def test_plans_own_interviews_and_undated_relays():
+    # a plan with a bare weekday is the coming one, not last week's
+    body = "EU trade chief Maros Sefcovic will head to Beijing on Thursday for two days of meetings."
+    d = [dev(body, "Thursday")]
+    assert decide(d, "EU, China to hold talks", body, "https://www.example.com/x",
+                  utc(2026, 10, 5, 1, 0), utc(2026, 10, 5, 2, 40))["verdict"] == "fresh"
+    # a plan whose full date has passed: the piece was written before its event
+    body = "The case will be heard by the Supreme Court on Oct. 5."
+    d = [dev(body, "Oct. 5", kind="happened")]
+    assert decide(d, "SCOTUS", body, "https://www.westernjournal.com/x",
+                  utc(2026, 10, 10, 10, 0), utc(2026, 10, 10, 12, 37))["verdict"] == "stale"
+    # the outlet's own interview
+    assert first_disclosure("VOA专访俞大㵢：美对台政策没有改变", "", "https://www.voachinese.com/a/x")
+    # something that happened, known through someone's undated report
+    body = "Shi Tingfu, 67, died on Sept. 22 in prison, according to the Washington-based nonprofit."
+    d = [dev(body, "Sept. 22", kind="happened", cited="Dui Hua Foundation")]
+    assert decide(d, "Activist dies in prison", body, "https://www.example.com/x",
+                  utc(2026, 10, 6, 10, 0), utc(2026, 10, 6, 13, 26))["verdict"] == "fresh"
