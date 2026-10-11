@@ -514,6 +514,12 @@ class PublishConfig(BaseModel):
     # Vector stance check before extraction (core/stance_guard.StanceVectorGuard,
     # 2026-10-07). Empty = off. The threshold lives in the model file.
     stance_vector_model_file: str = ""
+    # Caption stance check on the finished caption of the story about to be
+    # published (core/stance_guard.CaptionStanceGuard, 2026-10-11, AI-50).
+    # Empty = off. A caption that fails is not published; the next candidate
+    # in the ranked batch is taken instead.
+    caption_stance_model: str = ""
+    caption_stance_reasoning_effort: str = ""
     weekday_min_score: float = 6.0  # weekdays: heavier real news volume, prefer this floor first
     weekend_min_score: float = 5.0  # weekends: lighter volume, use this floor directly (also the weekday fallback if 6+ doesn't fill the batch)
     candidate_max_age_hours: int = 24  # Notion query ceiling — same pattern as candidate_min_score: the WIDER of weekday/weekend_max_age_hours below, so weekend-eligible candidates aren't excluded before select_batch() even sees them; select_batch() applies the actual day-aware ceiling on top

@@ -299,3 +299,120 @@ class StanceVectorGuard:
         if p is not None and p >= self.threshold:
             return "vector:%.2f" % p
         return None
+
+
+# The last check before publishing (2026-10-11, AI-50). Owner: the caption --
+# our own words -- may not attack Trump's side; if the finished caption fails,
+# that story is not published and the next one is taken. Caption only, by the
+# owner's choice: not the card title, not the article.
+#
+# Why a model call when every earlier model attempt was refused. The writer
+# prompt could not be made to refuse hostile-ICE articles (gpt-4o-mini wrote 7
+# of 8, gpt-5.4-mini all 8, with the rules first or last), and the headline
+# vector cannot tell which side an attack points at. Measured on 1,657 real
+# captions (1,456 published plus 201 replayed), 74 hand-labelled as attacking
+# our side, tuned on half and checked on the other half:
+#     first prompt, gpt-5.4-mini      83% caught, 10% of good captions blocked
+#     this prompt,  gpt-5.4-mini      83-86% caught, 2.5-3.0% blocked
+#     this prompt's family, 4o-mini   34-37% caught
+# What cut the false blocks was telling the model whose words count: quoted
+# or attributed words are not the caption's -- except when the point of the
+# caption is enforcement abuse, which the owner put inside the protected side.
+# The model names a side and quotes the words; code decides, and a quote that
+# is not in the caption is not a verdict.
+_CAPTION_PROMPT = """You check a caption that a pro-Trump, America First news channel is about to
+post in its own name. Judge only the caption text.
+
+OUR SIDE: President Trump, his family, his officials and appointees, the White
+House, the MAGA movement, Republicans allied with Trump; and law enforcement
+doing its job: ICE, CBP, the Border Patrol, DHS, police, the military.
+Deportations, the border wall and immigration enforcement are our side's policy.
+
+Answer three things:
+1. "villain": who does the caption, in its OWN narrating words, present as the
+   wrongdoer, the joke or the loser? Words in quotation marks, and claims the
+   caption attributes to a named person, group, poll, court or outlet ("X says",
+   "according to", "critics argue", "a judge ruled"), are THEIR words, not the
+   caption's. If nobody is cast that way, "none".
+   One exception: when the caption's point is enforcement abuse (ICE, CBP, DHS,
+   Border Patrol or police as abusive, intimidating or lawless, or illegal
+   immigrants as their innocent victims), it counts even when attributed.
+2. "side": is that villain "our_side", "opponent" (Democrats, the Left, the
+   media, activists, criminals, illegal-alien criminals, sanctuary officials,
+   a Republican criticized from the right), "foreign", or "none"?
+3. "quote": the caption's words that do it, copied verbatim.
+
+Casting our side as wrongdoer, joke or loser means, in the caption's own words:
+- mocking or belittling our side, or an epithet for it
+- enforcement shown as abusive, intimidating, unlawful or "under fire";
+  illegal immigrants shown as innocent victims of it
+- our side's policy shown hurting people, or our side shown failing
+  (bad polls, "backfires", "panic", "struggles", "humiliation")
+- the Left's labels for our side or its causes: "far-right", "election
+  denier", "undocumented"
+- the caption's own loaded words about our side ("unqualified",
+  "controversial", "tirade", "under fire", "under scrutiny"), or a "however" /
+  "despite" turn in its own voice that undercuts what our side said or did
+- our side shown humbling itself before a foreign rival
+
+It does not mean:
+- reporting what an opponent said or did ("Mamdani demanded...", "Democrats
+  accused DHS of...")
+- a court ruling, vote count or official statement reported plainly, even
+  one that goes against our side
+- good news for our side, or an attack on the opponent
+- criticism of a Republican from the right
+
+Reply with JSON only:
+{"villain": "...", "side": "our_side" | "opponent" | "foreign" | "none", "quote": "..."}"""
+
+
+def _norm(s: str) -> str:
+    s = (s or "").lower().replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
+    return " ".join(s.split())
+
+
+class CaptionStanceGuard:
+    """config.publish.caption_stance_model empty = off. Fails open on an API
+    error or an unreadable reply (logged as a warning), like every other check
+    in front of the only thing this channel produces."""
+
+    def __init__(self, config) -> None:
+        from core.openai_client import create_openai_client
+
+        p = config.publish
+        self.model = p.caption_stance_model or ""
+        self.enabled = bool(self.model)
+        self._extra = ({"reasoning_effort": p.caption_stance_reasoning_effort}
+                       if self.model.startswith("gpt-5") and p.caption_stance_reasoning_effort else {})
+        self._client = create_openai_client(config) if self.enabled else None
+        if self.enabled:
+            logger.info("CaptionStanceGuard: on (%s %s)", self.model, self._extra or "")
+
+    async def violation(self, post_content: str) -> str | None:
+        if not self.enabled:
+            return None
+        caption = "\n".join(l for l in (post_content or "").splitlines()
+                            if not l.strip().startswith("http")).strip()
+        if len(caption) < 40:
+            return None
+        try:
+            kw = {"max_completion_tokens": 2000} if self.model.startswith("gpt-5") else {"temperature": 0, "max_tokens": 200}
+            r = await self._client.chat.completions.create(
+                model=self.model, **kw, **self._extra,
+                response_format={"type": "json_object"},
+                messages=[{"role": "system", "content": _CAPTION_PROMPT},
+                          {"role": "user", "content": caption[:2000]}],
+            )
+            d = json.loads(r.choices[0].message.content or "{}")
+        except Exception:
+            logger.warning("CaptionStanceGuard: check failed, not blocking", exc_info=True)
+            return None
+        if not isinstance(d, dict) or str(d.get("side", "")).strip().lower() != "our_side":
+            return None
+        quote = _norm(str(d.get("quote") or "")).strip('"')
+        if len(quote) < 8 or quote not in _norm(caption):
+            logger.info("CaptionStanceGuard: our_side verdict discarded -- quote %r is not in the caption",
+                        str(d.get("quote"))[:60])
+            return None
+        return "caption-stance:%s" % str(d.get("quote"))[:64]

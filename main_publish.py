@@ -111,7 +111,7 @@ from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
 from core.redis_store import AppealLabels, BatchSeen, CaptionCache, CycleCounter, PostedDupStrikes, StuckVersions
 from core.title_guard import title_violation
-from core.stance_guard import StanceVectorGuard, epithet_violation
+from core.stance_guard import CaptionStanceGuard, StanceVectorGuard, epithet_violation
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("main_publish")
@@ -162,6 +162,7 @@ async def run_cycle(
     appeal_labels: AppealLabels | None = None,
     stance_vec: StanceVectorGuard | None = None,
     stuck_versions: StuckVersions | None = None,
+    caption_stance: CaptionStanceGuard | None = None,
 ) -> bool:
     """Returns True iff this cycle actually published something — main()'s
     loop uses this to track how recently the channel last posted, so the
@@ -554,6 +555,24 @@ async def run_cycle(
                 logger.info("run_cycle: %s retired from the pool — %d consecutive duplicate verdicts", c.url, strikes)
 
         winner = await find_publishable(ranked, embedder, posted_store, event_verifier, hub_index, config, on_duplicate=_retire_if_settled)
+        # Last stance check, on the finished caption of the story about to go
+        # out (2026-10-11, AI-50). Owner: a caption that attacks our side is
+        # not published -- take the next story instead. The walk resumes
+        # after the refused one, so candidates already judged duplicates are
+        # not asked again. See CaptionStanceGuard.
+        while winner is not None and caption_stance is not None and caption_stance.enabled:
+            rule = await caption_stance.violation(winner.post_content or "")
+            if not rule:
+                break
+            logger.warning("run_cycle: %s — caption blocked by stance_guard rule %s, trying the next candidate",
+                           winner.url, rule)
+            if not dry_run:
+                await mark_stance_blocked(config, winner.page_id, rule)
+                if stuck_versions is not None:
+                    await stuck_versions.mark(winner.url_hash, "stance")
+            rest = ranked[ranked.index(winner) + 1:]
+            winner = (await find_publishable(rest, embedder, posted_store, event_verifier, hub_index, config,
+                                             on_duplicate=_retire_if_settled) if rest else None)
         if winner is not None:
             logger.info("run_cycle: widen attempt %d — found a publishable candidate", attempt)
             break
@@ -665,6 +684,7 @@ async def main() -> None:
     batch_seen = BatchSeen(config)
     appeal_labels = AppealLabels(config)
     stance_vec = StanceVectorGuard(config)
+    caption_stance = CaptionStanceGuard(config)
     stuck_versions = StuckVersions(config)
     cycle_counter = CycleCounter(config)
     await ensure_collection_with_retry(posted_store, "am1st_posting_news_embedding")
@@ -704,7 +724,7 @@ async def main() -> None:
             try:
                 published_this_cycle = await asyncio.wait_for(
                     run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, timeliness, caption_cache, dup_strikes, hub_index, editor, batch_seen, cycle_counter, dry_run,
-                              appeal_labels, stance_vec, stuck_versions),
+                              appeal_labels, stance_vec, stuck_versions, caption_stance),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:
