@@ -96,6 +96,7 @@ from agents.trending import fetch_trending_headlines
 from agents.timeliness_check import TimelinessCheck
 from agents.writer import Writer
 from agents.editor import EditorPicker
+from core.time_words import fix_caption_time_words
 from core.selection_trace import SelectionTrace
 from core.alerts import AlertNotifier
 from core.config import load_config
@@ -414,6 +415,17 @@ async def run_cycle(
             cached = post_content is not None
             if post_content is None:
                 post_content = await writer.write(c.title, c.content, context=background, published_at=c.published_at)
+
+            # Time words (2026-10-11, core/time_words.py, from DailyNews; user: 时效性
+            # 不能错). Every weekday or date the caption gives must be one the source
+            # gives, written as that day in US Eastern; one the source does not give
+            # is cut with its preposition. Replayed on 547 published posts of the four
+            # channels: 7 changed, none wrongly. Runs on cached captions too, and does
+            # nothing when there is no source text to check against.
+            post_content, time_fixes = fix_caption_time_words(post_content, c.title or "", getattr(c, "content", "") or "",
+                                                               c.published_at, c.url)
+            if time_fixes:
+                logger.info("run_cycle: %s — time words: %s", c.url, " | ".join(time_fixes))
 
             # Last gate on the text we are about to publish under our own name.
             # Donald Trump is the sitting president, so a caption calling him a
