@@ -122,6 +122,12 @@ class OpenAIConfig(BaseModel):
     # config — nothing in this codebase should reference gpt-5-nano again
     # without a fresh, judgment-quality-focused live test first.
     chat_model: str = "gpt-4o-mini"
+    # The Writer alone may run on its own model (2026-10-11, owner: "写稿换到
+    # 5.4mini，推理最少"; AI-50). Blank = chat_model. Every judgment call above
+    # stays on chat_model. writer_reasoning_effort is sent only to the gpt-5
+    # family; gpt-5.4-mini's lowest accepted value is "none" ("minimal" is a 400).
+    writer_model: str = ""
+    writer_reasoning_effort: str = ""
     embedding_model: str = "text-embedding-3-small"
     scoring_prompt_file: str = "prompts/scoring_prompt.txt"
     content_gen_prompt_file: str = "prompts/content_gen_prompt.txt"

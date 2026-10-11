@@ -33,7 +33,11 @@ class Writer:
 
     def __init__(self, config: AppConfig) -> None:
         self._client = create_openai_client(config)
-        self._model = config.openai.chat_model
+        self._model = config.openai.writer_model or config.openai.chat_model
+        # gpt-5 family only (2026-10-11): reasoning effort, and no temperature
+        # (none is sent today either way).
+        self._extra = ({"reasoning_effort": config.openai.writer_reasoning_effort}
+                       if self._model.startswith("gpt-5") and config.openai.writer_reasoning_effort else {})
         self._system_prompt = Path(config.openai.content_gen_prompt_file).read_text(encoding="utf-8")
 
     async def write(self, title: str, article: str, context: str = "", is_opinion: bool = False, published_at=None) -> str:
@@ -84,6 +88,7 @@ class Writer:
             )
         resp = await self._client.chat.completions.create(
             model=self._model,
+            **self._extra,
             messages=[
                 {"role": "system", "content": self._system_prompt},
                 {"role": "user", "content": user_message},
