@@ -110,8 +110,16 @@ def latest_moment(phrase: Optional[str], anchor: Optional[date]) -> Optional[dat
             if "last " + w in p and back == 0:
                 back = 7
             return _day_end(anchor - timedelta(days=back))
-    # "earlier this month", "in August", a bare year: too vague to stop a
-    # story on. "Signing a contract in August" headed an AP story that was
+    # A past year on its own is the end of that year (DailyNews reads it the
+    # same way): Gateway Pundit's "Walz signed the REPEAL ... back in 2023",
+    # run again before the midterms, went out on 10/11 as "just repealed".
+    # "Last year" likewise. A future or current year says nothing.
+    m = re.search(r"\b(?:in|back in|during|of|from)\s+((?:19|20)\d{2})\b", p) or re.fullmatch(r"\s*((?:19|20)\d{2})\s*", p)
+    if m and int(m.group(1)) < anchor.year:
+        return _day_end(date(int(m.group(1)), 12, 31))
+    if re.search(r"\blast year\b", p):
+        return _day_end(date(anchor.year - 1, 12, 31))
+    # "earlier this month", "in August": too vague to stop a story on. "Signing a contract in August" headed an AP story that was
     # news because AP had just obtained the records.
     return None
 
@@ -240,6 +248,17 @@ def decide(developments: list[dict], title: str, body: str, url: str, published_
                               r"січн|лют|березн|квітн|травн|червн|липн|серпн|вересн|жовтн|листопад|грудн",
                               (head.get("when") or "").lower()):  # a clock time is not a date
         times[0] = None
+    # The model sometimes leaves "when" empty while the headline sentence
+    # itself says the event is past: "signed the REPEAL ... back in 2023". Only
+    # "back in <year>" is read out of the sentence. A plain "in 2023" there is
+    # usually background -- "zenith in 2023", "banknotes issued in 2023",
+    # "investment exceeded $12 billion in 2025" -- and reading it stopped four
+    # fresh posts in the replays.
+    if times[0] is None and not head.get("when"):
+        m = re.search(r"\bback in\s+((?:19|20)\d{2})\b", head.get("what") or "")
+        if m:
+            times[0] = latest_moment("in " + m.group(1), anchor)
+            head = dict(head, when=m.group(0))   # for the reason below
     relayed = head.get("cited_outlet") and not names_this_outlet(head["cited_outlet"], url)
     # Something that happened, known only through someone else's report that
     # the article does not date, became public when that report came out --

@@ -165,3 +165,21 @@ def test_up_to_and_week_ahead():
     body2 = "The case will be heard by the Supreme Court on Oct. 5."
     assert decide([dev(body2, "Oct. 5", kind="happened")], "SCOTUS", body2, "https://www.westernjournal.com/x",
                   utc(2026, 10, 10, 10, 0), utc(2026, 10, 10, 12, 37))["verdict"] == "stale"
+
+
+
+def test_past_year():
+    oct11 = date(2026, 10, 11)
+    assert latest_moment("in 2023", oct11).date() == date(2023, 12, 31)
+    assert latest_moment("last year", oct11).date() == date(2025, 12, 31)
+    assert latest_moment("in 2026", oct11) is None
+    assert latest_moment("since 2020", oct11) is None
+    # the model left "when" empty; the headline sentence says "back in 2023" (Gateway Pundit, 10/11)
+    body = "Minnesota Democratic Governor Tim Walz signed the REPEAL of the Born Alive Infants Protection Act back in 2023."
+    r = decide([dev(body, None)], "Remember This on Election Day", body, "https://www.thegatewaypundit.com/2026/10/x/",
+               utc(2026, 10, 11, 12, 30), utc(2026, 10, 11, 13, 11))
+    assert r["verdict"] == "stale" and "back in 2023" in r["reason"], r
+    # a plain "in 2023" in the sentence is background and does not date the story
+    body2 = "The central bank says it is withdrawing SDG500 banknotes issued in 2023 or earlier."
+    assert decide([dev(body2, None)], "Sudan withdraws notes", body2, "https://allafrica.com/x",
+                  utc(2026, 10, 8, 1, 0), utc(2026, 10, 8, 3, 0))["verdict"] == "fresh"
