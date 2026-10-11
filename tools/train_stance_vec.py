@@ -42,19 +42,19 @@ subagents on one written rubric, not by the owner) -- every non-right-outlet
 title on Trump's side, enforcement, immigration and the right's core causes,
 whatever the outlet -- with border/immigration/ICE as the strictest area. The
 labelled set is no longer restricted to the hostile outlets, and right-outlet
-headlines on all of those topics are negatives, so the model sees both sides
-of the immigration story. Cut 2026-10-06, measured after it:
-                                     @0.6   @0.8   (old model @0.8)
-  labelled hostile                   61%    44%    40%
-  labelled not hostile                9%     3%     1%
-  right outlets                       8%     3%     1%
-  our own posts                       4%     0.4%   0%
-  the ProPublica post                0.85          0.19
-It still cannot tell direction on immigration (a right-outlet "Mamdani's Rage at
-ICE ... Dishonest Grandstanding" scores 0.98; 14% of hostile ICE headlines at
-0.8), which is why that topic is handled by source tier in core/stance_guard.py
-and this model is used at two lines: --threshold for right-wing sources,
---threshold-nonright for the rest.
+headlines on all of those topics are negatives (RIGHT_DOMAINS below picks
+training negatives only; production never looks at the outlet), so the model
+sees both sides of the immigration story. Cut 2026-10-06, measured after it,
+word list included, one threshold for every source:
+                                     @0.7   @0.8   @0.9   (old model @0.8: ~40%)
+  labelled hostile                   54%    47%    35%
+  labelled not hostile                6%     3%     1%
+  unlabelled candidates             1.4%   0.7%   0.3%
+  our own posts (288)                  7      4      3
+  the ProPublica post                       0.91 (held out)
+It still cannot tell direction on immigration: a right-outlet "Mamdani's Rage
+at ICE ... Dishonest Grandstanding" scores 0.97, and only 14% of hostile ICE
+headlines clear 0.8.
 
   ./.venv/bin/python tools/train_stance_vec.py [--cut 2026-10-03] --out models/stance_vec.json
 
@@ -107,6 +107,136 @@ HOLDOUT = {
 }
 
 
+# Right-wing outlets whose headlines are taken as negatives when unlabelled
+# (2026-10-11): the in-use right-wing feeds plus right-wing sites seen in the
+# published history. Training data selection only.
+RIGHT_DOMAINS = (
+    "100percentfedup.com",
+    "aim.org",
+    "alaskawatchman.com",
+    "alphanews.org",
+    "americanaffairsjournal.org",
+    "americancompass.org",
+    "americanmind.org",
+    "amgreatness.com",
+    "arizonadailyindependent.com",
+    "army.mil",
+    "bearingarms.com",
+    "bizpacreview.com",
+    "breitbart.com",
+    "californiaglobe.com",
+    "carolinajournal.com",
+    "city-journal.org",
+    "claremontreviewofbooks.com",
+    "conservativebrief.com",
+    "dailycaller.com",
+    "dailycallernewsfoundation.org",
+    "dailyhaymaker.com",
+    "dailysignal.com",
+    "dailytorch.com",
+    "dailywire.com",
+    "floridianpress.com",
+    "flvoicenews.com",
+    "foxnews.com",
+    "freebeacon.com",
+    "gatewayhispanic.com",
+    "granitegrok.com",
+    "hannity.com",
+    "heartlandernews.com",
+    "heritage.org",
+    "hotair.com",
+    "homeland.house.gov",
+    "hughhewitt.com",
+    "ijr.com",
+    "instapundit.com",
+    "judicialwatch.org",
+    "justice.gov",
+    "justthenews.com",
+    "legalinsurrection.com",
+    "libertynation.com",
+    "lifesitenews.com",
+    "lifezette.com",
+    "louderwithcrowder.com",
+    "nationalfile.com",
+    "newsbusters.org",
+    "nhjournal.com",
+    "nypost.com",
+    "oann.com",
+    "patriotpost.us",
+    "pjmedia.com",
+    "powerlineblog.com",
+    "presentdangerchina.org",
+    "redstate.com",
+    "revolver.news",
+    "rsbnetwork.com",
+    "spectator.org",
+    "state.gov",
+    "taxfoundation.org",
+    "tennesseeconservativenews.com",
+    "tennesseestar.com",
+    "texasscorecard.com",
+    "theamericanconservative.com",
+    "theblaze.com",
+    "thecentersquare.com",
+    "thecollegefix.com",
+    "theconservativetreehouse.com",
+    "theepochtimes.com",
+    "thefederalist.com",
+    "thegatewaypundit.com",
+    "thelibertydaily.com",
+    "themainewire.com",
+    "themidwesterner.news",
+    "thenationalpulse.com",
+    "thenevadaglobe.com",
+    "thenewamerican.com",
+    "theothermccain.com",
+    "therightscoop.com",
+    "thetexan.news",
+    "thethinkingconservative.com",
+    "townhall.com",
+    "trendingpoliticsnews.com",
+    "twitchy.com",
+    "washingtonexaminer.com",
+    "washingtonreporter.news",
+    "washingtontimes.com",
+    "westernjournal.com",
+    "whitehouse.gov",
+    "wisconsinrightnow.com",
+    "wnd.com",
+    "zerohedge.com",
+    "rumble.com",
+    "alexjoneslive.com",
+    "americafirstreport.com",
+    "slaynews.com",
+    "rairfoundation.com",
+    "stonezone.com",
+    "thepostmillennial.com",
+    "nataliegwinters.substack.com",
+    "moonbattery.com",
+    "americanthinker.com",
+    "gatestoneinstitute.org",
+    "notthebee.com",
+    "modernity.news",
+    "issuesinsights.com",
+    "libertysentinel.org",
+    "trevorloudon.com",
+    "acecomments.mu.nu",
+    "patriot.tv",
+    "frontpagemag.com",
+    "clashdaily.com",
+    "rvmnews.com",
+    "jdrucker.com",
+    "liveaction.org",
+    "independentsentinel.com",
+    "newsmax.com",
+    "nationalreview.com",
+    "dhs.gov",
+    "ice.gov",
+    "cbp.gov",
+    "defense.gov",
+    "war.gov",
+)
+
 TOPIC = re.compile(
     r"\b(trump|maga|vance|hegseth|leavitt|ice|dhs|cbp|border|patel|fbi|bondi|doj|noem|miller|white house|"
     r"republicans?|gop|rubio|bessent|lutnick|homan|administration|deport\w*|immigra\w*|migrants?|illegals?|aliens?|"
@@ -115,11 +245,14 @@ TOPIC = re.compile(
     r"musk|rfk|maha|conservatives?|right-wing|far-right|pentagon|troops|military)\b", re.I)
 
 
+def _right(url: str) -> bool:
+    from urllib.parse import urlparse
+    host = (urlparse(url or "").hostname or "").lower().removeprefix("www.")
+    return bool(RIGHT.search(url)) or any(host == d or host.endswith("." + d) for d in RIGHT_DOMAINS)
+
+
 def collect(cut_ts: float) -> list[tuple[str, int]]:
-    from core.config import load_config
-    from core.stance_guard import is_right_source
-    right_domains = load_config().publish.stance_right_source_domains
-    right = lambda u: bool(RIGHT.search(u)) or (bool(right_domains) and is_right_source(u, right_domains))  # noqa: E731
+    right = _right
     hand = json.load(open(LABELS, encoding="utf-8"))
     rows: dict[str, int] = {}
     for line in open("logs/prescore_decisions.jsonl", encoding="utf-8"):
@@ -148,7 +281,6 @@ def main() -> None:
     ap.add_argument("--cut", default="2026-10-03")
     ap.add_argument("--out", default="models/stance_vec.json")
     ap.add_argument("--threshold", type=float, default=0.8)
-    ap.add_argument("--threshold-nonright", type=float, default=0.6)
     a = ap.parse_args()
     cut = dt.datetime.fromisoformat(a.cut).replace(tzinfo=dt.timezone.utc).timestamp()
     data = collect(cut)
@@ -165,13 +297,12 @@ def main() -> None:
         "trained_at": int(dt.datetime.now(dt.timezone.utc).timestamp()),
         "embedding_model": "text-embedding-3-small", "input": "title",
         "n_train": len(data), "n_hostile": sum(y for _, y in data), "cut": a.cut,
-        "threshold": a.threshold, "threshold_nonright": a.threshold_nonright,
+        "threshold": a.threshold,
         "w": clf.coef_[0].tolist(), "b": float(clf.intercept_[0]),
     }
     with open(a.out, "w", encoding="utf-8") as fh:
         json.dump(model, fh)
-    print("wrote %s: %d titles (%d hostile), threshold %.2f / non-right %.2f"
-          % (a.out, len(data), model["n_hostile"], a.threshold, a.threshold_nonright))
+    print("wrote %s: %d titles (%d hostile), threshold %.2f" % (a.out, len(data), model["n_hostile"], a.threshold))
 
 
 if __name__ == "__main__":

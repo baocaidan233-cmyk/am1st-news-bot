@@ -103,51 +103,6 @@ _ENFORCEMENT_VILLAIN = re.compile(
     re.I,
 )
 
-# Source tier, 2026-10-11 (AI-50). Border, immigration and ICE are the topics
-# where one wrong post costs this channel the most, and the one place a
-# headline-only check cannot tell sides: the retrained vector model scored a
-# right-outlet "Mamdani's Rage at ICE Over Shooting Is Pure, Dishonest
-# Grandstanding" 0.98 and caught only 14% of hand-labelled hostile ICE
-# headlines at 0.8, and the writer prompt, told to return No comment on them,
-# still captioned Wired's "ICE Agent ... Has History of Alleged Violence" and
-# NPR's ICE-warehouse piece. Right-wing outlets ran 819 titles on these
-# topics against 336 from everyone else, so an immigration story from a
-# source outside config.publish.stance_right_source_domains is dropped and the
-# same story is left to them. Over the published history this drops 18 posts:
-# about 12 hostile, a handful of usable ones (CNBC's "ICE won't pause
-# enforcement in NY") that right-wing outlets also carried.
-_SENSITIVE_TOPIC = re.compile(
-    r"\b(?:ice|dhs|cbp|border\s+patrol|border\s+agents?|border\s+wall|the\s+border|federal\s+agents?"
-    r"|immigration|immigrants?|deport\w*|migrants?|asylum|illegal\s+aliens?|illegals|noem|homan"
-    r"|sanctuary|detention|detainees?|refugees?)\b",
-    re.I,
-)
-
-
-def _domain(url: str) -> str:
-    from urllib.parse import urlparse
-    host = (urlparse(url or "").hostname or "").lower()
-    return host[4:] if host.startswith("www.") else host
-
-
-def is_right_source(url: str, right_domains) -> bool:
-    """True when the URL's host is, or is a subdomain of, a listed domain. An
-    empty list means the tier is off and every source counts as right-wing."""
-    if not right_domains:
-        return True
-    host = _domain(url)
-    return any(host == d or host.endswith("." + d) for d in right_domains)
-
-
-def source_topic_violation(url: str, title: str, right_domains) -> str | None:
-    """A border/immigration/ICE headline from outside the right-wing tier."""
-    if is_right_source(url, right_domains):
-        return None
-    m = _SENSITIVE_TOPIC.search(title or "")
-    if m:
-        return "sensitive-topic-nonright:%s:%s" % (_domain(url)[:32], m.group(0)[:24])
-    return None
-
 # The model names a target from a closed set and quotes the words. It does
 # NOT decide whether the channel should publish -- that is code, below. The
 # first version asked it the publish question directly and, over 22 real
@@ -314,16 +269,12 @@ class StanceVectorGuard:
             self._w = np.asarray(model["w"], dtype=np.float32)
             self._b = float(model["b"])
             self.threshold = float(model["threshold"])
-            # 2026-10-11 (AI-50): a stricter line for sources outside the
-            # right-wing tier, where nearly all hostile headlines come from.
-            self.threshold_nonright = float(model.get("threshold_nonright", self.threshold))
             self._embed_model = model.get("embedding_model", "text-embedding-3-small")
             self.version = model.get("version", "?")
             self._client = create_openai_client(config)
             self.enabled = True
-            logger.info("StanceVectorGuard: loaded %s (threshold %.2f right-wing / %.2f other sources, "
-                        "%s training titles)", self.version, self.threshold, self.threshold_nonright,
-                        model.get("n_train"))
+            logger.info("StanceVectorGuard: loaded %s (threshold %.2f, %s training titles)",
+                        self.version, self.threshold, model.get("n_train"))
         except Exception:
             logger.exception("StanceVectorGuard: model %s not usable — vector stance check off", path)
 
@@ -343,9 +294,8 @@ class StanceVectorGuard:
         self._cache[title] = p
         return p
 
-    async def violation(self, title: str, right_source: bool = True) -> str | None:
+    async def violation(self, title: str) -> str | None:
         p = await self.score(title)
-        line = self.threshold if right_source else self.threshold_nonright
-        if p is not None and p >= line:
-            return "vector:%.2f%s" % (p, "" if right_source else "-nonright")
+        if p is not None and p >= self.threshold:
+            return "vector:%.2f" % p
         return None
