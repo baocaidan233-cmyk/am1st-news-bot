@@ -31,6 +31,13 @@ _PLAYWRIGHT_FALLBACK_DOMAINS = (
     "newsmax.com",
     "state.gov",
     "justthenews.com",
+    # 2026-10-11: every cycle refused a plain fetch for a day (403 / 429 / 406),
+    # and a browser render through the shared render service brought each feed
+    # back with fresh items whose articles also extract. Dead even in a browser
+    # (Tribune papers, state.gov, middleeasteye, politanalitika, msk-post,
+    # keysnews) were switched off in the Notion source table instead.
+    "newsbusters.org",
+    "independent.co.uk",
 )
 
 # 2026-09-14 — "nypost main" (nypost.com/feed/, the combined NY Post feed)
