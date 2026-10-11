@@ -110,7 +110,7 @@ from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
 from core.redis_store import AppealLabels, BatchSeen, CaptionCache, CycleCounter, PostedDupStrikes, StuckVersions
 from core.title_guard import title_violation
-from core.stance_guard import StanceVectorGuard, epithet_violation
+from core.stance_guard import StanceVectorGuard, epithet_violation, is_right_source, source_topic_violation
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("main_publish")
@@ -320,11 +320,20 @@ async def run_cycle(
 
         # Second stance net, on the headline alone and before anything is paid
         # for: a headline written from the hostile side is dropped here instead
-        # of being extracted and captioned first. See StanceVectorGuard.
-        if stance_vec is not None and stance_vec.enabled:
+        # of being extracted and captioned first. See StanceVectorGuard. The
+        # source tier (2026-10-11, AI-50) runs first and without the model: a
+        # border/immigration/ICE story from outside the right-wing outlets is
+        # dropped, and the rest of their headlines meet a stricter vector line.
+        right_domains = config.publish.stance_right_source_domains
+        vec_on = stance_vec is not None and stance_vec.enabled
+        if right_domains or vec_on:
             kept = []
             for c in batch:
-                rule = await stance_vec.violation(getattr(c, "title", "") or "")
+                title = getattr(c, "title", "") or ""
+                right_source = is_right_source(c.url, right_domains)
+                rule = source_topic_violation(c.url, title, right_domains)
+                if not rule and vec_on:
+                    rule = await stance_vec.violation(title, right_source=right_source)
                 if rule:
                     logger.warning("run_cycle: %s — blocked by stance_guard rule %s, dropped from batch", c.url, rule)
                     if not dry_run:

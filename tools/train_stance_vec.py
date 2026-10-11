@@ -36,6 +36,26 @@ left out. Same cut, same negatives, measured after the cut at 0.8:
   right outlets / wires                  3.4% / 10.6%   0.9% / 0%
   our own posts, 490 MAGA-account posts  0% / 0.2%      0% / 0%
 
+2026-10-11 (AI-50): after the ProPublica "DHS Intimidates a Border Tribe" post
+(scored 0.19), 2,271 more headlines were hand-labelled (by five Claude
+subagents on one written rubric, not by the owner) -- every non-right-outlet
+title on Trump's side, enforcement, immigration and the right's core causes,
+whatever the outlet -- with border/immigration/ICE as the strictest area. The
+labelled set is no longer restricted to the hostile outlets, and right-outlet
+headlines on all of those topics are negatives, so the model sees both sides
+of the immigration story. Cut 2026-10-06, measured after it:
+                                     @0.6   @0.8   (old model @0.8)
+  labelled hostile                   61%    44%    40%
+  labelled not hostile                9%     3%     1%
+  right outlets                       8%     3%     1%
+  our own posts                       4%     0.4%   0%
+  the ProPublica post                0.85          0.19
+It still cannot tell direction on immigration (a right-outlet "Mamdani's Rage at
+ICE ... Dishonest Grandstanding" scores 0.98; 14% of hostile ICE headlines at
+0.8), which is why that topic is handled by source tier in core/stance_guard.py
+and this model is used at two lines: --threshold for right-wing sources,
+--threshold-nonright for the rest.
+
   ./.venv/bin/python tools/train_stance_vec.py [--cut 2026-10-03] --out models/stance_vec.json
 
 Needs scikit-learn (training only; the guard reads the model with numpy)."""
@@ -83,26 +103,42 @@ HOLDOUT = {
     "ICE hides locations of thousands of detainees with final removal orders",
     "Must-Win MAGA Candidate Roasted for Bonkers Debate Answer",
     "Electric-shock gloves ICE plans to use inflicted intense pain in army study",
+    "As Trump’s Wall Closes in, DHS Intimidates a Border Tribe With Surveillance, Masked Agents and Drones",  # AI-50
 }
 
 
+TOPIC = re.compile(
+    r"\b(trump|maga|vance|hegseth|leavitt|ice|dhs|cbp|border|patel|fbi|bondi|doj|noem|miller|white house|"
+    r"republicans?|gop|rubio|bessent|lutnick|homan|administration|deport\w*|immigra\w*|migrants?|illegals?|aliens?|"
+    r"asylum|sanctuary|national guard|detention|detainees?|raids?|police|cops?|guns?|second amendment|abortion|"
+    r"pro-life|trans\w*|gender|election|voter|ballot|christian\w*|israel\w*|jan\. 6|january 6|dei|woke|tariffs?|"
+    r"musk|rfk|maha|conservatives?|right-wing|far-right|pentagon|troops|military)\b", re.I)
+
+
 def collect(cut_ts: float) -> list[tuple[str, int]]:
+    from core.config import load_config
+    from core.stance_guard import is_right_source
+    right_domains = load_config().publish.stance_right_source_domains
+    right = lambda u: bool(RIGHT.search(u)) or (bool(right_domains) and is_right_source(u, right_domains))  # noqa: E731
     hand = json.load(open(LABELS, encoding="utf-8"))
     rows: dict[str, int] = {}
     for line in open("logs/prescore_decisions.jsonl", encoding="utf-8"):
         r = json.loads(line)
         t, u = r["title"].strip(), r["url"]
-        if r["logged_at"] >= cut_ts or t in HOLDOUT or t in rows or len(t) < 20 or not SIDE.search(t):
+        if r["logged_at"] >= cut_ts or t in HOLDOUT or t in rows or len(t) < 20:
             continue
-        if HOSTILE.search(u):
-            if t in hand:
-                rows[t] = hand[t]
-        elif RIGHT.search(u) or WIRE.search(u):
+        if t in hand:
+            rows[t] = hand[t]
+        elif (right(u) or WIRE.search(u)) and TOPIC.search(t):
             rows[t] = 0
     for line in open("logs/engagement_snapshots.jsonl", encoding="utf-8"):
         r = json.loads(line)
         t = (r.get("ttl") or "").strip()
-        if t and t not in rows and t not in HOLDOUT and r["cdate"] / 1000 < cut_ts and not HOSTILE.search(r.get("src") or ""):
+        if not t or t in HOLDOUT or r["cdate"] / 1000 >= cut_ts:
+            continue
+        if t in hand:
+            rows[t] = hand[t]
+        elif t not in rows and right(r.get("src") or ""):
             rows[t] = 0
     return list(rows.items())
 
@@ -112,6 +148,7 @@ def main() -> None:
     ap.add_argument("--cut", default="2026-10-03")
     ap.add_argument("--out", default="models/stance_vec.json")
     ap.add_argument("--threshold", type=float, default=0.8)
+    ap.add_argument("--threshold-nonright", type=float, default=0.6)
     a = ap.parse_args()
     cut = dt.datetime.fromisoformat(a.cut).replace(tzinfo=dt.timezone.utc).timestamp()
     data = collect(cut)
@@ -121,19 +158,20 @@ def main() -> None:
     for i in range(0, len(titles), 500):
         vecs += [e.embedding for e in client.embeddings.create(model="text-embedding-3-small", input=titles[i:i + 500]).data]
     from sklearn.linear_model import LogisticRegression
-    clf = LogisticRegression(C=2.0, max_iter=2000, class_weight="balanced")
+    clf = LogisticRegression(C=2.0, max_iter=3000, class_weight="balanced")
     clf.fit(np.array(vecs), [y for _, y in data])
     model = {
-        "version": "stance-vec-" + a.cut.replace("-", "") + "-hand",
+        "version": "stance-vec-" + a.cut.replace("-", "") + "-hand2",
         "trained_at": int(dt.datetime.now(dt.timezone.utc).timestamp()),
         "embedding_model": "text-embedding-3-small", "input": "title",
         "n_train": len(data), "n_hostile": sum(y for _, y in data), "cut": a.cut,
-        "threshold": a.threshold,
+        "threshold": a.threshold, "threshold_nonright": a.threshold_nonright,
         "w": clf.coef_[0].tolist(), "b": float(clf.intercept_[0]),
     }
     with open(a.out, "w", encoding="utf-8") as fh:
         json.dump(model, fh)
-    print("wrote %s: %d titles (%d hostile), threshold %.2f" % (a.out, len(data), model["n_hostile"], a.threshold))
+    print("wrote %s: %d titles (%d hostile), threshold %.2f / non-right %.2f"
+          % (a.out, len(data), model["n_hostile"], a.threshold, a.threshold_nonright))
 
 
 if __name__ == "__main__":

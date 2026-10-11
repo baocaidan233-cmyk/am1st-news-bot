@@ -508,6 +508,14 @@ class PublishConfig(BaseModel):
     # Vector stance check before extraction (core/stance_guard.StanceVectorGuard,
     # 2026-10-07). Empty = off. The threshold lives in the model file.
     stance_vector_model_file: str = ""
+    # Source tier for the stance checks (2026-10-11, AI-50). A candidate whose
+    # domain is not on this list is held to the stricter rules in
+    # core/stance_guard.py: no border/immigration/ICE story at all, and the
+    # vector check at the model file's threshold_nonright. Fail-safe by
+    # design -- a right-wing source missing here loses its immigration stories
+    # until it is added, it never lets a hostile one through. Empty = every
+    # source is treated as right-wing, i.e. the behaviour before AI-50.
+    stance_right_source_domains: list[str] = Field(default_factory=list)
     weekday_min_score: float = 6.0  # weekdays: heavier real news volume, prefer this floor first
     weekend_min_score: float = 5.0  # weekends: lighter volume, use this floor directly (also the weekday fallback if 6+ doesn't fill the batch)
     candidate_max_age_hours: int = 24  # Notion query ceiling — same pattern as candidate_min_score: the WIDER of weekday/weekend_max_age_hours below, so weekend-eligible candidates aren't excluded before select_batch() even sees them; select_batch() applies the actual day-aware ceiling on top
