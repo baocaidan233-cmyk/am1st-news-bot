@@ -141,3 +141,30 @@ def former_president_violation(caption: str) -> str | None:
             if not _HISTORICAL.search(caption[max(0, m.start() - 12):m.start()]):
                 return _report(name, m)
     return None
+
+
+# Joe Biden, in the scripts this channel's sources are written in. A caption
+# that names him when its source never does got him from the model's memory,
+# not from the article: on 2026-10-11 Market Watcher's writer (gpt-4o-mini,
+# trained on 2023 data) turned TASS's "the US administration" into "the Biden
+# administration". Any mention counts, not a list of phrasings -- "President
+# Biden", "the Biden White House" and "Biden-era" are all invented when the
+# article doesn't name him (Caidan, 2026-10-11: 这个规则好). On AM1ST the same day:
+# "a 94% drop compared to the Biden era" under a ProPublica story that never
+# names him.
+_BIDEN_IN_CAPTION = re.compile(r"\bbiden|拜登", re.I)
+_BIDEN_IN_SOURCE = re.compile(r"biden|拜登|байден|바이든|バイデン|بايدن|بایدن|ביידן|μπάιντεν", re.I)
+
+
+def invented_biden(caption: str, source: str) -> str | None:
+    """"invented-biden" when the caption names Biden and the source never does.
+
+    Fails open (None) when the source is missing or under 400 characters, the
+    same floor as core/title_guard.py: too little text to say what the article
+    leaves out."""
+    if not caption or not source or len(source) < 400:
+        return None
+    if _BIDEN_IN_CAPTION.search(caption) and not _BIDEN_IN_SOURCE.search(source):
+        logger.warning("caption_guard: blocked — caption names Biden, source never does")
+        return "invented-biden"
+    return None

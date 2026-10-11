@@ -101,7 +101,7 @@ from core.selection_trace import SelectionTrace
 from core.alerts import AlertNotifier
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex
-from core.caption_guard import former_president_violation
+from core.caption_guard import former_president_violation, invented_biden
 from core.language import is_english
 from core.notion_candidates import has_unpublished_hot_candidate, mark_dedup_rejected, mark_extraction_failed, mark_send_status, mark_stance_blocked, mark_writer_rejected, query_eligible_candidates, recent_published_topic_counts, record_extraction_failure
 from core.notion_candidates import topic_publication_debt
@@ -461,6 +461,16 @@ async def run_cycle(
                 logger.warning(
                     "run_cycle: %s — caption blocked by title_guard rule %s, dropped from batch",
                     c.url, title_rule,
+                )
+                continue
+
+            # A caption that names Biden when the article never does (2026-10-11,
+            # core/caption_guard.py; same rule as CB, LN, MW). c.content is the
+            # extracted article here, cache hit or not.
+            if invented_biden(post_content, getattr(c, "content", "") or ""):
+                logger.warning(
+                    "run_cycle: %s — caption blocked by caption_guard rule invented-biden, dropped from batch",
+                    c.url,
                 )
                 continue
 
