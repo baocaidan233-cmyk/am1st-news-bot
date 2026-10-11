@@ -152,3 +152,16 @@ def test_plans_own_interviews_and_undated_relays():
     d = [dev(body, "Sept. 22", kind="happened", cited="Dui Hua Foundation")]
     assert decide(d, "Activist dies in prison", body, "https://www.example.com/x",
                   utc(2026, 10, 6, 10, 0), utc(2026, 10, 6, 13, 26))["verdict"] == "fresh"
+
+
+def test_up_to_and_week_ahead():
+    oct10 = date(2026, 10, 10)
+    assert latest_moment("up to September, 2026", oct10) is None
+    body = "The CPI report arrives Wednesday at 8:30 a.m. ET, with economists expecting core inflation to rise 2.4%."
+    d = [dev(body, "Wednesday at 8:30 a.m. ET")]
+    assert decide(d, "Wall Street Week Ahead", body, "https://seekingalpha.com/article/x",
+                  utc(2026, 10, 11, 10, 0), utc(2026, 10, 11, 11, 24))["verdict"] == "fresh"
+    # a plan with a full date that has passed still counts
+    body2 = "The case will be heard by the Supreme Court on Oct. 5."
+    assert decide([dev(body2, "Oct. 5", kind="happened")], "SCOTUS", body2, "https://www.westernjournal.com/x",
+                  utc(2026, 10, 10, 10, 0), utc(2026, 10, 10, 12, 37))["verdict"] == "stale"

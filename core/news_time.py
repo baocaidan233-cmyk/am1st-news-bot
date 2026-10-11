@@ -50,7 +50,7 @@ def latest_moment(phrase: Optional[str], anchor: Optional[date]) -> Optional[dat
     p = phrase.lower()
     # A data cut-off is not when the data came out: "Nigeria's external debt
     # stood at $54.5bn as of June 30" was the Debt Office's release of 10/08.
-    if re.search(r"\b(as of|as at|at the end of|by the end of|through the end of)\b|截至|截止|по состоянию на|станом на|към края", p):
+    if re.search(r"\b(as of|as at|at the end of|by the end of|through the end of|up to|up until)\b|截至|截止|по состоянию на|станом на|към края", p):
         return None
     # Nor is a point of comparison: gold "above $4,200 for the first time
     # since Oct. 2" (现货黄金…为10月2日以来首次) is today's move.
@@ -230,9 +230,15 @@ def decide(developments: list[dict], title: str, body: str, url: str, published_
     # date that has already passed still counts: "the case will be heard by
     # the Supreme Court on Oct. 5", published on Oct. 10, is a piece written
     # before its own event.
-    if times[0] is not None and re.search(r"\b(will|is set to|are set to|is due to|plans to|is scheduled to)\b|将于|将在",
+    # "The CPI report arrives Wednesday at 8:30 a.m. ET" in a Saturday
+    # "Wall Street Week Ahead" is next Wednesday's release.
+    if times[0] is not None and re.search(r"\b(will|is set to|are set to|is due|are due|due out|plans to|is scheduled to|"
+                                          r"arrives?|is expected|are expected)\b|将于|将在",
                                           head.get("what") or "") \
-            and not re.search(r"\d", head.get("when") or ""):
+            and not re.search(r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|\d{4}|\d{1,2}\.\d{1,2}|月|日|"
+                              r"январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр|"
+                              r"січн|лют|березн|квітн|травн|червн|липн|серпн|вересн|жовтн|листопад|грудн",
+                              (head.get("when") or "").lower()):  # a clock time is not a date
         times[0] = None
     relayed = head.get("cited_outlet") and not names_this_outlet(head["cited_outlet"], url)
     # Something that happened, known only through someone else's report that
