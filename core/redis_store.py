@@ -47,6 +47,21 @@ class RedisStore:
             logger.exception("RedisStore: claim_new failed for %s — treating as new (fail open)", url_hash)
             return True
 
+    async def first_seen(self, key: str, value: str) -> str | None:
+        """Stores `value` under `key` if the key is new and returns None;
+        otherwise returns the value stored first (core/reprint.py). Same
+        prefix and TTL as the URL hashes. Fails open: an error is "new"."""
+        if self._client is None:
+            return None
+        k = self._prefix + key
+        try:
+            if await self._client.set(k, value, ex=self._ttl, nx=True):
+                return None
+            return await self._client.get(k)
+        except Exception:
+            logger.exception("RedisStore: first_seen failed for %s — treating as new (fail open)", key)
+            return None
+
     async def close(self) -> None:
         if self._client is not None:
             await self._client.aclose()

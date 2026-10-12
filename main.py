@@ -76,6 +76,7 @@ from core.hot_topics import fetch_active_hot_topics
 from core.language import is_english
 from core.notion_candidates import write_candidate
 from core.prescore import PreScorer, log_prescore_decision
+from core.reprint import reprint_of
 from core.roundup import roundup_rule
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, QdrantStore, ensure_collection_with_retry
@@ -101,6 +102,22 @@ async def run_cycle(
     # --- Layer 1: exact-duplicate URL-hash dedup (Redis) ---
     survivors = [c for c in candidates if await redis_store.claim_new(c.url_hash)]
     logger.info("run_cycle: %d/%d new after URL-hash dedup", len(survivors), len(candidates))
+    if not survivors:
+        return
+
+    # --- Layer 1.1: reprints (2026-10-12, core/reprint.py) — the same article
+    # under another URL, by exact headline (on another site) or description. ---
+    before_reprint = len(survivors)
+    kept = []
+    for c in survivors:
+        why = await reprint_of(redis_store, c.title or "", c.description or "", c.url)
+        if why:
+            logger.info("run_cycle: %s dropped — reprint (%s): %s", c.url, why, (c.title or "")[:120])
+        else:
+            kept.append(c)
+    survivors = kept
+    if len(survivors) != before_reprint:
+        logger.info("run_cycle: %d/%d survive the reprint check", len(survivors), before_reprint)
     if not survivors:
         return
 
