@@ -34,36 +34,20 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # former / ex- [U.S.] president [Donald] [J.] Trump
     ("former-president-trump", re.compile(rf"\b{_FORMER}\s*{_TITLE}\s+{_NAME}\b", re.I)),
     # Trump, the former president  /  Donald J. Trump, a former U.S. president
-    ("trump-the-former-president", re.compile(rf"\b{_NAME}\s*,\s*(?:the|a|an)?\s*{_FORMER}\s*{_TITLE}", re.I)),
-    # the former president, Donald Trump
-    ("the-former-president-trump", re.compile(rf"\b{_FORMER}\s*{_TITLE}\s*,\s*(?:the\s+)?{_NAME}\b", re.I)),
-    # the 45th president Trump -- an ordinal used as if it were his current one
-    ("45th-president-trump", re.compile(rf"\b45th\s+{_TITLE}\s*,?\s*(?:the\s+)?{_NAME}\b", re.I)),
+    # -- not "Trump, former President Obama and ...", a list going on to
+    # somebody else (a name or "of" after the title)
+    ("trump-the-former-president", re.compile(
+        rf"\b{_NAME}\s*,\s*(?:the|a|an)?\s*{_FORMER}\s*{_TITLE}\b(?!\s*(?-i:[A-Z])|\s+of\b)", re.I)),
+    # the former president, Donald Trump[,.] -- an apposition, so the name is
+    # closed off; "after meeting the former president, Trump said" is not one
+    ("the-former-president-trump", re.compile(
+        rf"\b{_FORMER}\s*{_TITLE}\s*,\s*(?:the\s+)?{_NAME}\b(?=\s*(?:[,.;:!?)]|$))", re.I)),
 )
+# 2026-10-12, Caidan: 只拦截 former president trump 这种表述，别的前总统没问题.
+# Gone: the name-less forms ("the former president said" in a post that names
+# Trump), which blocked "the former President of Venezuela", and the "45th
+# president" forms -- neither says Trump is a former president.
 
-# The same error with the name left out: "the former POTUS said", "the 45th
-# president announced". These cannot be judged on the phrase alone, because
-# they are correct about anyone who really is a former president, so they only
-# fire when the caption is about Trump and mentions no other ex-president.
-#
-# They also have to exclude the attributive use, where the title modifies
-# somebody else: "a former POTUS aide" is an aide to some past president, and
-# "the former president's adviser" is that president's adviser. Neither says
-# anything about who holds the office now. The named patterns above need no
-# such guard, because they require Trump's name in the title's own slot.
-_NOT_ATTRIBUTIVE = (
-    r"(?!\s*(?:'s|\u2019s)\b)"
-    r"(?!\s+(?:aide|aides|adviser|advisers|advisor|advisors|official|officials|staffer|staffers"
-    r"|spokes\w+|appointee|appointees|nominee|nominees|attorney|attorneys|lawyer|lawyers"
-    r"|candidate|candidates|hopeful|hopefuls|ally|allies|team|teams|administration|campaign"
-    r"|era|library|museum|memoir|memoirs|son|daughter|family)\b)"
-)
-_UNNAMED: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("unnamed-former-president",
-     re.compile(rf"\b(?:the\s+)?{_FORMER}\s*{_TITLE}\b{_NOT_ATTRIBUTIVE}", re.I)),
-    ("unnamed-45th-president",
-     re.compile(rf"\b(?:the\s+)?45th\s+{_TITLE}\b{_NOT_ATTRIBUTIVE}", re.I)),
-)
 # Chinese-language captions. Several sibling bots publish translated copy, and
 # an English-only pattern would pass their version of the same error straight
 # through. 特朗普 and 川普 are both in use for the surname.
@@ -100,8 +84,6 @@ _EX_SENATORS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 _HISTORICAL = re.compile(r"(?:former|then|ex)[-\s]*$|(?:前|时任|曾任|昔日)$", re.I)
 
-_TRUMP = re.compile(r"\btrump\b", re.I)
-_OTHER_EX = re.compile(r"\b(biden|obama|bush|clinton|carter|reagan|nixon)\b", re.I)
 
 
 def former_president_violation(caption: str) -> str | None:
@@ -123,13 +105,6 @@ def former_president_violation(caption: str) -> str | None:
         m = pattern.search(caption)
         if m:
             return _report(name, m)
-
-    # Name-less forms, only where they can only mean Trump.
-    if _TRUMP.search(caption) and not _OTHER_EX.search(caption):
-        for name, pattern in _UNNAMED:
-            m = pattern.search(caption)
-            if m:
-                return _report(name, m)
 
     for name, pattern in _ZH_PATTERNS:
         m = pattern.search(caption)
