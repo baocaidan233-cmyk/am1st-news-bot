@@ -62,6 +62,24 @@ _LIVE_STREAM_TITLE = re.compile(
     re.IGNORECASE)
 _LIVE_STREAM_URL = re.compile(r"/(?:[^/]*watch-live|[^/]*live-?stream|live-now-)[^/]*(?=/|$)|/video/live-", re.IGNORECASE)
 
+# A whole programme and podcast episodes: owner, 2026-10-12, on "NTD Evening
+# News Full Broadcast (Oct. 10)" -- 拼盘新闻，播客，am1st不需要. Checked before the
+# single-event exemption, like the live pages: "Full Episode" interviews are
+# still a show. Title: "Full Broadcast / Episode / Show", "Podcast:", "Ep. 62",
+# "Episode 12". URL: a /podcast(s)/ or /episode(s)/ section, a full-broadcast
+# slug. Not "podcast" anywhere in a title: "Trump on Theo Von's podcast" is a
+# story about what he said. On this channel's ingestion log since 2026-09-16:
+# 327 items, every one read: programmes and podcast episodes (Epoch TV/NTD full
+# broadcasts, Texas Scorecard and NYT "The Headlines" podcasts, LifeSiteNews
+# episodes, The Spectator's "Ep. N", Liberty Nation "Full Episode", 404 Media
+# and NH Journal podcasts) plus TV-episode recaps (Decider, Page Six), no news
+# story among them; one went out on 2026-10-06 (NTD Evening News Full
+# Broadcast, Oct. 6).
+_PROGRAMME_TITLE = re.compile(
+    r"\bfull\s+(broadcast|episode|show)\b|^\W*(video\s*(&|and)\s*)?podcast\s*[:|–-]|\bep\.?\s*\d+\b|\bepisode\s+\d+\b",
+    re.IGNORECASE)
+_PROGRAMME_URL = re.compile(r"/(podcasts?|episodes?)/|full-(broadcast|episode|show)", re.IGNORECASE)
+
 # One named event covered live or in full is a single subject, whatever the
 # title calls itself. No longer exempts a live stream: _LIVE_STREAM_* runs first.
 _SINGLE_EVENT = re.compile(
@@ -107,6 +125,8 @@ def roundup_rule(title: str, url: str) -> str | None:
         return "live_stream"
     if _LIVE_STREAM_URL.search(urlparse(url or "").path or ""):
         return "live_stream_url"
+    if _PROGRAMME_TITLE.search(text) or _PROGRAMME_URL.search(urlparse(url or "").path or ""):
+        return "programme_or_podcast"
     if any(name in lowered for name in _SINGLE_SUBJECT_COLUMNS):
         return None
     if _SINGLE_EVENT.search(text):
