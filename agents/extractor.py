@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from urllib.parse import urlparse
 
 import httpx
@@ -108,7 +109,6 @@ _PAYWALL_TEASER_SIGNALS = (
     "become a member",
     "complete digital access to quality",
 )
-_TEASER_TAIL_CHARS = 400
 _TEASER_MAX_LENGTH = 2500
 
 
@@ -117,11 +117,56 @@ def _looks_like_paywall_teaser(text: str) -> bool:
 
     The pitch has to sit at the END, where the text was cut off. A full
     article that closes with a subscription footer is still a full article,
-    which is what the length bound is for."""
+    which is what the length bound is for.
+
+    2026-10-12 (port of China Breaks 1e97ae6): "the end" was the last 400
+    characters, and Digitimes puts a paragraph of log-in help after its pitch,
+    so 18 of its teasers reached the China Breaks writer. Under the length
+    bound the whole text is searched."""
     if len(text) >= _TEASER_MAX_LENGTH:
         return False
-    tail = text[-_TEASER_TAIL_CHARS:].lower()
-    return any(signal in tail for signal in _PAYWALL_TEASER_SIGNALS)
+    return any(signal in text.lower() for signal in _PAYWALL_TEASER_SIGNALS)
+
+
+# 2026-10-12 (port of China Breaks 1e97ae6): a site's bot wall is a page of
+# its own, long enough to clear the length floor. On China Breaks, zeit.de's
+# ("Ihre Anfrage wurde blockiert", 3,208 characters) went to the writer as the
+# article. Checked anywhere in a text this short; a real article quoting one
+# of these phrases is longer than this.
+_BLOCK_PAGE_SIGNALS = (
+    "ihre anfrage wurde blockiert",
+    "your request has been blocked",
+    "this request was blocked",
+    "access to this page has been denied",
+    "verify you are a human",
+    "verify you are human",
+    "are you a robot",
+    "unusual traffic from your computer",
+    "enable javascript and cookies to continue",
+    "text- und data-mining",
+)
+_BLOCK_PAGE_MAX_LENGTH = 4000
+
+
+def _looks_like_block_page(text: str) -> bool:
+    if len(text) >= _BLOCK_PAGE_MAX_LENGTH:
+        return False
+    low = text.lower()
+    return any(signal in low for signal in _BLOCK_PAGE_SIGNALS)
+
+
+# 2026-10-12 (port of China Breaks 1e97ae6): Taipei Times article pages end
+# with link cards for other pieces in the same section (<a ... data-desc="...">
+# <div><h1 class="bf2">title</h1> ... first paragraph</a>), and trafilatura
+# keeps them as body text: every Taipei Times page, news included, came back
+# with the next few stories appended.
+_LINK_CARD_RE = re.compile(r"<a\b[^>]*\bdata-desc=[^>]*>.*?</a>", re.S | re.I)
+
+
+def _strip_link_cards(url: str, html: str) -> str:
+    if not _domain_matches(urlparse(url).netloc.lower(), "taipeitimes.com"):
+        return html
+    return _LINK_CARD_RE.sub("", html)
 
 
 def _domain_matches(netloc: str, domain: str) -> bool:
@@ -254,9 +299,11 @@ class Extractor:
             headers["cookie"] = source.cookie
 
         html = await self._fetch_plain(url, headers)
+        if html:
+            html = _strip_link_cards(url, html)
         text = await asyncio.to_thread(_main_text, html) if html else None
 
-        too_thin = not text or len(text) < extraction.min_text_length
+        too_thin = not text or len(text) < extraction.min_text_length or _looks_like_block_page(text)
         # A recognised teaser is its own reason to render, whatever the domain
         # and whatever attempt this is. Nothing else in this function can turn
         # a truncated article back into the article, and the detector above
@@ -273,10 +320,17 @@ class Extractor:
         if (too_thin and browser_worth_trying) or truncated:
             used_browser = True
             html = await self._fetch_browser(url, headers)
+            if html:
+                html = _strip_link_cards(url, html)
             # trafilatura's parsing is CPU-bound, synchronous — offload so
             # it doesn't block the event loop while other candidates are in
             # flight.
             text = await asyncio.to_thread(_main_text, html) if html else None
+
+        if text and _looks_like_block_page(text):
+            await self._fail(url, source, f"extracted text is the site's bot-block page ({len(text)} chars"
+                                          f"{', even after rendering' if used_browser else ''})")
+            return None
 
         if not text or len(text) < extraction.min_text_length:
             reason = f"extracted only {len(text or '')} chars" if html else "fetch failed"
