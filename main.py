@@ -91,6 +91,21 @@ logger = logging.getLogger("main")
 _EVENT_MERGE_COSINE = 0.90
 
 
+def _log_guard_drop(config, guard: str, members, matched: dict, subtype: str, **extra) -> None:
+    """One record per cluster the event-store guards drop (AI-69, 2026-10-12):
+    the cluster's articles and the event they were matched to, so a drop can
+    be judged afterwards. main.log only ever named the cluster's index."""
+    log_decision(config, {
+        "check_type": "event_guard_drop", "guard": guard, "subtype": subtype,
+        "cosine_score": matched.get("_score"), "event_id": matched.get("event_id"),
+        "event_published": bool(matched.get("published")), "event_first_seen_at": matched.get("first_seen_at"),
+        "matched_text": matched.get("text") or matched.get("representative_text", ""),
+        "articles": [{"url": c.url, "source": c.source_name, "text": event_judge_text(c.title, c.description)}
+                     for c, _ in members],
+        **extra,
+    })
+
+
 async def run_cycle(
     config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run,
     prescorer=None, shadow_scorer=None, appeal_tagger=None, appeal_labels=None, stuck_versions=None,
@@ -537,6 +552,7 @@ async def run_cycle(
                 "run_cycle: cluster %d dropped — near-duplicate of an already-published event (score=%.3f, subtype=%s)",
                 cluster_idx, matched.get("_score", 0.0), subtype,
             )
+            _log_guard_drop(config, "published_event", members, matched, subtype)
             continue
 
         # Stale-event guard (2026-09-06, user's explicit rule: stale news
@@ -562,6 +578,8 @@ async def run_cycle(
                     "run_cycle: cluster %d dropped — stale event (%.1fh old, ceiling %.0fh) with no new information (subtype=%s)",
                     cluster_idx, event_age_hours, max_age_hours, subtype,
                 )
+                _log_guard_drop(config, "stale_event", members, matched, subtype,
+                                event_age_hours=round(event_age_hours, 1), max_age_hours=max_age_hours)
                 continue
 
         cluster = clusters[cluster_idx]
