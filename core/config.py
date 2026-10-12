@@ -248,6 +248,12 @@ class EntityVerifierConfig(BaseModel):
     # of 2028 Democrats on AI. Neither cosine nor entity overlap can see
     # that; naming each side's action before judging can.
     same_event_ingest_prompt_file: str = "prompts/same_event_ingest_prompt.txt"
+    # 2026-10-12 (AI-69): which event an article belongs to. 4o-mini with this
+    # prompt said SAME on 253 of 370 blind-labelled AM1ST pairs and was right on
+    # 246 (97%), 38/39 on held-out days; a names/outlet/time rule was right on
+    # 59/68 of its own merges there. Used by main.py's event assignment for
+    # every candidate event from 0.60 to 0.90; 0.90 and above merges without it.
+    same_event_store_prompt_file: str = "prompts/same_event_store_prompt.txt"
     update_subtype_prompt_file: str = "prompts/update_subtype_prompt.txt"
     related_event_prompt_file: str = "prompts/related_event_prompt.txt"  # EventVerifier.related_event() — see core/event_identity.py
     log_path: str = "logs/event_identity_decisions.jsonl"

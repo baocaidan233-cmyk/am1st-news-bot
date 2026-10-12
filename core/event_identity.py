@@ -289,6 +289,16 @@ def _first_sentence(text: str) -> str:
     return _SENTENCE_SPLIT_RE.split(cleaned, maxsplit=1)[0].strip()
 
 
+def event_judge_text(title: str, description: str) -> str:
+    """One article as the event judge reads it (AI-69): its headline and up to
+    400 characters of its description, tags stripped -- the form the 370
+    labelled pairs were judged in. Also stored on each event-store point
+    ("text"), so a later article is compared with the matching article itself,
+    not only with the event's latest representative."""
+    desc = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html.unescape(description or ""))).strip()
+    return f"{(title or '').strip()}\n{desc[:400]}".strip()
+
+
 def event_identity_text(title: str, description: str) -> str:
     """Title + only the description's FIRST SENTENCE — the text every
     event-identity judgment (entity_tokens(), extract_event_frame(),
@@ -1028,6 +1038,7 @@ class EventVerifier:
         self._client = create_openai_client(config)
         self._model = config.openai.chat_model
         self._same_event_prompt = Path(config.entity_verifier.same_event_prompt_file).read_text(encoding="utf-8")
+        self._same_event_store_prompt = Path(config.entity_verifier.same_event_store_prompt_file).read_text(encoding="utf-8")
         self._same_event_ingest_prompt = Path(config.entity_verifier.same_event_ingest_prompt_file).read_text(encoding="utf-8")
         self._subtype_prompt = Path(config.entity_verifier.update_subtype_prompt_file).read_text(encoding="utf-8")
         self._related_event_prompt = Path(config.entity_verifier.related_event_prompt_file).read_text(encoding="utf-8")
@@ -1054,6 +1065,30 @@ class EventVerifier:
         raw = await self._ask(self._same_event_prompt.format(a=text_a, b=text_b), max_tokens=80)
         verdict = self._extract_field(raw, "VERDICT").upper()
         return verdict.startswith("SAME"), raw
+
+    _EVENT_SCHEMA = {"type": "json_schema", "json_schema": {"name": "event", "strict": True, "schema": {
+        "type": "object", "additionalProperties": False, "required": ["a", "b", "verdict"],
+        "properties": {"a": {"type": "string"}, "b": {"type": "string"},
+                       "verdict": {"type": "string", "enum": ["SAME", "DIFFERENT", "UNCERTAIN"]}}}}}
+
+    async def same_event_store(self, text_a: str, text_b: str) -> tuple[str, str]:
+        """Does B belong to A's event? ("SAME" | "DIFFERENT" | "UNCERTAIN", raw).
+        Event = one real-world happening, its follow-ups and responses included
+        (prompts/same_event_store_prompt.txt, AI-69). Raises on an unreadable
+        reply; the caller treats that as "not merged"."""
+        kwargs = dict(model=self._model, response_format=self._EVENT_SCHEMA, messages=[
+            {"role": "system", "content": self._same_event_store_prompt},
+            {"role": "user", "content": f"A:\n{text_a}\n\nB:\n{text_b}"},
+        ])
+        if self._model.startswith("gpt-5"):
+            kwargs["max_completion_tokens"] = 300
+            kwargs["reasoning_effort"] = "minimal"
+        else:
+            kwargs["temperature"] = 0
+            kwargs["max_tokens"] = 200
+        resp = await self._client.chat.completions.create(**kwargs)
+        raw = (resp.choices[0].message.content or "").strip()
+        return json.loads(raw)["verdict"], raw
 
     async def same_event_ingest(self, text_a: str, text_b: str) -> tuple[bool, str]:
         """Same question as same_event(), asked with the ingestion side's own

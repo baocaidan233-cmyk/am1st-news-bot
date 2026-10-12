@@ -436,8 +436,8 @@ class EventStore:
         sources: set[str],
         earliest_source: str,
         earliest_published_at_unix: int,
-        representative: tuple[list[float], str, int, str, set[str], str],
-        extra_points: list[tuple[list[float], str, int, str, set[str], str]],
+        representative: tuple[list[float], str, int, str, set[str], str, str],
+        extra_points: list[tuple[list[float], str, int, str, set[str], str, str]],
         related_links: list[dict] | None = None,
         seed_frame: dict | None = None,
         heat_multiplier: float = 1.0,
@@ -448,6 +448,10 @@ class EventStore:
         cluster where at least one member cleared the score gate (see
         main.py). `representative` and each of `extra_points` are now
         (embedding, source, published_at_unix, text, entity_tokens, url) —
+        The 7th element (2026-10-12, AI-69) is the article's own judge text
+        (core/event_identity.event_judge_text), stored per point as "text":
+        until then a point carried only its event's shared payload, so a later
+        article could only be compared with the event's latest representative.
         `text` and `entity_tokens` added 2026-08-09 (core/event_identity.py)
         so this event's identity fingerprint (seed_entities/entity_doc_freq)
         and its rolling LLM-comparison anchor (representative_text) can be
@@ -520,7 +524,7 @@ class EventStore:
         all_points = [representative] + list(extra_points)
         seed_entities = set(matched.get("seed_entities", [])) if matched is not None else all_points[0][4]
         entity_doc_freq = dict(matched.get("entity_doc_freq", {})) if matched is not None else {}
-        for _, _, _, _, entities, _ in all_points:
+        for _, _, _, _, entities, _, _ in all_points:
             for tok in entities:
                 entity_doc_freq[tok] = entity_doc_freq.get(tok, 0) + 1
         representative_text = representative[3]
@@ -588,9 +592,10 @@ class EventStore:
                     PointStruct(
                         id=str(uuid.uuid4()),
                         vector=emb,
-                        payload={"event_id": event_id, "source": src, "published_at": pub, "url": url, **shared_payload},
+                        payload={"event_id": event_id, "source": src, "published_at": pub, "url": url,
+                                 "text": own_text, **shared_payload},
                     )
-                    for emb, src, pub, _, _, url in all_points
+                    for emb, src, pub, _, _, url, own_text in all_points
                 ],
             )
         except Exception:

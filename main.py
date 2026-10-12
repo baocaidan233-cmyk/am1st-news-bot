@@ -70,8 +70,8 @@ from agents.appeal_tagger import AppealTagger
 from agents.topic_tagger import TopicTagger
 from agents.trending import fetch_trending_headlines
 from core.config import load_config
-from core.event_identity import EventVerifier, HubIndex, core_entities_of, cross_cycle_dedup_verdict, entity_tokens, event_identity_text, extract_event_frame, log_decision, no_conflicting_specifics, verify_compatibility
-from core.hashing import cosine_similarity, tokenize
+from core.event_identity import EventVerifier, HubIndex, core_entities_of, cross_cycle_dedup_verdict, entity_tokens, event_identity_text, event_judge_text, extract_event_frame, log_decision, no_conflicting_specifics
+from core.hashing import cosine_similarity
 from core.hot_topics import fetch_active_hot_topics
 from core.language import is_english
 from core.notion_candidates import write_candidate
@@ -84,6 +84,11 @@ from core.redis_store import AppealLabels, RedisStore, StuckVersions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("main")
+
+# At or above this cosine an article joins the candidate event without the
+# event judge (AI-69, 2026-10-12); below it, down to heat.related_threshold, the
+# judge decides. The two such pairs in 302 labelled ones were both one event.
+_EVENT_MERGE_COSINE = 0.90
 
 
 async def run_cycle(
@@ -213,21 +218,6 @@ async def run_cycle(
             backfilled += 1
     if empty_before:
         logger.info("run_cycle: backfilled og:description for %d/%d description-less candidate(s)", backfilled, empty_before)
-
-    # 2026-08-20: this cycle's own batch, tokenized, as an in-memory IDF
-    # corpus for core/event_identity.py's verify_compatibility() lexical
-    # fallback (see that function's docstring) — no new database, just a
-    # Counter built from data already fetched this cycle. Deliberately a
-    # per-cycle snapshot, not a persisted rolling window like
-    # North_Korea_News's 10-day store: this cycle's ~100+ source batch is
-    # already a reasonable sample of "what generic, expected vocabulary
-    # looks like in this domain right now" without needing to query/persist
-    # anything extra.
-    doc_freq: Counter = Counter()
-    batch_tokens = [tokenize(event_identity_text(c.title, c.description)) for c in survivors]
-    for toks in batch_tokens:
-        doc_freq.update(toks)
-    doc_count = len(survivors)
 
     # Manual breaking-news override (2026-08-31, core/hot_topics.py) — every
     # currently-live flag for this bot's own channel, embedded once per
@@ -421,12 +411,26 @@ async def run_cycle(
         # with more entity-rarity rules; every rule-tier/LLM verdict gets
         # logged so misses become future training data instead of
         # recurring silently forever.
+        #
+        # 2026-10-12 (Caidan, AI-69): the rule tier no longer decides here. On
+        # 302 blind-labelled pairs from this store, 105 of the 146 it had kept
+        # apart were one event (it called them NO_OVERLAP and never asked), and
+        # a names/outlet/time rule tuned on those pairs was right on only 59/68
+        # of its own merges on held-out days. 4o-mini with
+        # prompts/same_event_store_prompt.txt was right on 97% of its SAME
+        # verdicts (38/39 held out), so from the related floor up to 0.90 every
+        # candidate goes to it, compared article to article: the matched
+        # point's own text where stored, else the event's representative.
+        # A merge needs SAME; DIFFERENT, UNCERTAIN or an error keeps it apart
+        # (a wrong merge costs more downstream than a split, user 10-12).
         matched = None
         heat_multiplier = 1.0
         subtype = ""
         related_links: list[dict] = []
+        cluster_judge_text = event_judge_text(members[0][0].title, members[0][0].description)
         for candidate in event_candidates:
-            rule_verdict = await verify_compatibility(config, candidate, new_tokens, hub_index, cluster_text, doc_freq, doc_count, candidate.get("_score", 0.0))
+            score = candidate.get("_score", 0.0)
+            rule_verdict = "cosine>=0.90" if score >= _EVENT_MERGE_COSINE else "judge"
             # Shared entity tokens + their HubIndex historical scores (2026-09-06)
             # — observational only, never fed back into rule_verdict/final_verdict
             # above. Added purely so future distillation-model training has a
@@ -446,20 +450,22 @@ async def run_cycle(
                 "shared_entity_tokens": shared_tokens,
                 "shared_entity_hub_scores": {tok: await hub_index.token_score(tok) for tok in shared_tokens},
             }
-            if rule_verdict == "NO_OVERLAP":
-                logger.info("run_cycle: cluster %d — candidate event %s is UNRELATED (rule tier), trying next candidate", cluster_idx, candidate.get("event_id"))
-                log_decision(config, {**log_record, "final_verdict": "UNRELATED"})
-                continue
-            if rule_verdict == "AMBIGUOUS":
-                same, llm_raw = await event_verifier.same_event(candidate.get("representative_text", ""), cluster_text)
-                log_decision(config, {**log_record, "llm_same_event_raw": llm_raw, "final_verdict": "SAME_OCCURRENCE" if same else "RELATED_DIFFERENT_EVENT"})
-                if not same:
-                    logger.info("run_cycle: cluster %d — candidate event %s is RELATED_DIFFERENT_EVENT (LLM tier), trying next candidate", cluster_idx, candidate.get("event_id"))
-                    related_links.append({"event_id": candidate.get("event_id"), "cosine_score": candidate.get("_score"), "source": "seed_cosine_reject"})
+            if rule_verdict == "judge":
+                matched_text = candidate.get("text") or candidate.get("representative_text", "")
+                try:
+                    verdict, llm_raw = await event_verifier.same_event_store(matched_text, cluster_judge_text)
+                except Exception as e:
+                    verdict, llm_raw = "ERROR", repr(e)
+                log_decision(config, {**log_record, "judge_text_a": matched_text, "judge_text_b": cluster_judge_text,
+                                      "llm_same_event_raw": llm_raw,
+                                      "final_verdict": "SAME_OCCURRENCE" if verdict == "SAME" else "RELATED_DIFFERENT_EVENT"})
+                if verdict != "SAME":
+                    logger.info("run_cycle: cluster %d — candidate event %s is not the same event (%s, %.3f), trying next candidate",
+                                cluster_idx, candidate.get("event_id"), verdict, score)
+                    related_links.append({"event_id": candidate.get("event_id"), "cosine_score": score, "source": "seed_cosine_reject"})
                     continue
                 matched = candidate
             else:
-                # COMPATIBLE / FAIL_OPEN: trust the cosine match as-is — a confident rule-tier outcome isn't worth an LLM call just to log it too
                 log_decision(config, {**log_record, "final_verdict": "SAME_OCCURRENCE"})
                 matched = candidate
 
@@ -674,6 +680,7 @@ async def run_cycle(
             (
                 emb, c.source_name, int(c.published_at.timestamp()),
                 event_identity_text(c.title, c.description), entity_tokens(event_identity_text(c.title, c.description)), c.url,
+                event_judge_text(c.title, c.description),
             )
             for c, emb in survivors_in_cluster[1:]
         ]
@@ -707,7 +714,8 @@ async def run_cycle(
             cluster["sources"],
             cluster["earliest_source"],
             cluster["earliest_unix"],
-            representative=(rep_embedding, rep_c.source_name, int(rep_c.published_at.timestamp()), rep_text, entity_tokens(rep_text), rep_c.url),
+            representative=(rep_embedding, rep_c.source_name, int(rep_c.published_at.timestamp()), rep_text, entity_tokens(rep_text), rep_c.url,
+                            event_judge_text(rep_c.title, rep_c.description)),
             extra_points=extra_points,
             related_links=cluster_related_links[cluster_idx],
             seed_frame=seed_frame,
