@@ -187,6 +187,19 @@ _PRIVATE = re.compile(r"closed[- ]door|behind closed doors|private (?:meeting|br
                       r"leaked|secretly|не для печати|закрыт\w* (?:встреч|заседани)|闭门|閉門|知情人士", re.I)
 
 
+_PAST_CLAUSE = r"(?:after|following|over|since|when|who|which|that|said|says|was|were|had|has|have)"
+
+
+def _progressive_before(head: dict) -> bool:
+    what, when = _norm(head.get("what") or ""), _norm(head.get("when") or "")
+    if not when:
+        return False
+    return bool(re.search(r"\b(?:is|are)\s+(?!being\b)\w+ing\b(?:(?!\b" + _PAST_CLAUSE + r"\b)[^.;])*?" + re.escape(when), what))
+
+# Time words in a headline, read only to clear a story, never to stop one.
+_TITLE_TIME = re.compile(r"\b(today|tonight|this (?:morning|afternoon|evening)|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
+
+
 def _norm(t: str) -> str:
     t = (t or "").replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
     return re.sub(r"\s+", " ", t).strip().lower()
@@ -240,9 +253,13 @@ def decide(developments: list[dict], title: str, body: str, url: str, published_
     # before its own event.
     # "The CPI report arrives Wednesday at 8:30 a.m. ET" in a Saturday
     # "Wall Street Week Ahead" is next Wednesday's release.
-    if times[0] is not None and re.search(r"\b(will|is set to|are set to|is due|are due|due out|plans to|is scheduled to|"
-                                          r"arrives?|is expected|are expected)\b|将于|将在",
-                                          head.get("what") or "") \
+    # So is the present progressive in front of the day: "Mamdani is
+    # skipping the Christopher Columbus Day parade up Fifth Avenue on Monday",
+    # posted on Sunday, was read as last Monday. Not when a past clause comes
+    # between ("is facing backlash after remarks on Tuesday").
+    if times[0] is not None and (re.search(r"\b(will|is set to|are set to|is due|are due|due out|plans to|is scheduled to|"
+                                           r"arrives?|is expected|are expected)\b|将于|将在",
+                                           head.get("what") or "") or _progressive_before(head)) \
             and not re.search(r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|\d{4}|\d{1,2}\.\d{1,2}|月|日|"
                               r"январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр|"
                               r"січн|лют|березн|квітн|травн|червн|липн|серпн|вересн|жовтн|листопад|грудн",
@@ -284,6 +301,13 @@ def decide(developments: list[dict], title: str, body: str, url: str, published_
     if t is None:
         return out("fresh", "no readable time for the headline's development")
     if now - t >= timedelta(hours=window_hours):
+        # The headline dates its own news: "Corn Seeing a Slight Monday AM
+        # Bounce", published that Monday, was headed by the model with
+        # Friday's crop report.
+        for m in _TITLE_TIME.finditer(title or ""):
+            e = latest_moment(m.group(0), anchor)
+            if e and now - e < timedelta(hours=window_hours):
+                return out("fresh", "the headline says %r" % m.group(0), e)
         # Something said in the window is a new development, so not "nothing
         # new": Joe Abraham's remarks of 10/09 under a story the model headed
         # with the January 2025 crash. Said, not happened: the Tillis post was

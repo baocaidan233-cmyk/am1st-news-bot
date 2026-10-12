@@ -183,3 +183,21 @@ def test_past_year():
     body2 = "The central bank says it is withdrawing SDG500 banknotes issued in 2023 or earlier."
     assert decide([dev(body2, None)], "Sudan withdraws notes", body2, "https://allafrica.com/x",
                   utc(2026, 10, 8, 1, 0), utc(2026, 10, 8, 3, 0))["verdict"] == "fresh"
+
+
+def test_progressive_weekday_is_coming_and_headline_time_clears():
+    # NYP, posted Sunday 10/11: "is skipping ... on Monday" is tomorrow's parade
+    body = "Mamdani is skipping the Christopher Columbus Day parade up Fifth Avenue on Monday, The Post has learned."
+    assert decide([dev(body, "Monday", cited="The Post")], "Mamdani to skip Manhattan Columbus parade", body,
+                  "https://nypost.com/2026/10/11/us-news/x", utc(2026, 10, 11, 23, 56), utc(2026, 10, 12, 0, 58))["verdict"] == "fresh"
+    # a past clause in between still dates the remarks
+    body2 = "Smith is facing backlash after remarks he made on Tuesday."
+    assert decide([dev(body2, "on Tuesday")], "Smith backlash", body2, "https://www.example.com/x",
+                  utc(2026, 10, 11, 12, 0), utc(2026, 10, 11, 13, 0))["verdict"] == "stale"
+    # Barchart, Monday 10/12: the headline's Monday, not Friday's crop report the model picked
+    body3 = "Crop Production data from Friday showed US corn yield at 181.2 bpa, up 2.7 bpa from the September report."
+    assert decide([dev(body3, "Friday")], "Corn Seeing a Slight Monday AM Bounce", body3, "https://www.barchart.com/story/x",
+                  utc(2026, 10, 12, 12, 36), utc(2026, 10, 12, 13, 21))["verdict"] == "fresh"
+    # a headline weekday that is itself old clears nothing
+    assert decide([dev(body3, "Friday")], "Corn Slips After Friday Report", body3, "https://www.barchart.com/story/x",
+                  utc(2026, 10, 12, 12, 36), utc(2026, 10, 12, 13, 21))["verdict"] == "stale"
