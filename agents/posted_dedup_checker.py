@@ -5,8 +5,8 @@ from collections.abc import Awaitable, Callable
 
 from agents.embedder import Embedder
 from core.config import AppConfig
-from core.event_identity import (EventVerifier, HubIndex, entity_tokens, has_date_conflict, judge_source_text,
-                                 lead_paragraph, log_decision, posted_dedup_rule_verdict)
+from core.event_identity import EventVerifier, HubIndex, entity_tokens, log_decision, posted_dedup_rule_verdict
+from core.same_news import get_judge, lead_paragraph, news_record
 from core.models import PublishCandidate
 from core.qdrant_store import PostedHistoryStore
 
@@ -157,14 +157,14 @@ async def find_publishable(
        only, as before.
 
     2026-10-12, owner: the judge reads the two sources' headline + first
-    paragraph of the extracted article (core/event_identity.judge_source_text),
-    once, instead of our two captions first and the RSS descriptions second.
-    "一般信息量最大都在第一段。这时候已经抓到全文了。" A Gettr scan the same day
-    (AI-60): of 103 repeats across the four channels, 88 were pairs the judge
-    was asked about and called DIFFERENT, mostly over figures and details the
-    captions or descriptions put differently. A posted point written before
-    this change has no stored paragraph and falls back to its title + RSS
-    description; one with no source title at all is judged on captions.
+    paragraph of the extracted article, once, instead of our two captions
+    first and the RSS descriptions second. Same day, after a replay on 562
+    labelled pairs (core/same_news.py): each side is our post plus its
+    source's headline and first paragraph, judged with a new prompt
+    (prompts/same_news_prompt.txt) -- the old one called follow-ups to an
+    event the event itself. The date-conflict release is gone: an
+    announcement date and an approval date of one act were letting repeats
+    out without the judge being asked. UNCERTAIN counts as a duplicate.
 
     China Breaks' 0.60-0.80 gray zone is NOT ported: this channel never
     judged pairs below 0.70, so there is no labelled data to set a floor
@@ -177,8 +177,8 @@ async def find_publishable(
         top: dict | None = None
         try:
             candidate_content = content_for_embedding(candidate.post_content, candidate.url)
-            candidate_source = judge_source_text(candidate.title, lead_paragraph(candidate.content),
-                                                 candidate.description)
+            candidate_record = news_record(candidate_content, candidate.title, lead_paragraph(candidate.content),
+                                           candidate.description)
             embedding = await embedder.embed(candidate_content)
             matches = await posted_store.similar_recent(embedding)
             top = matches[0] if matches else None
@@ -189,26 +189,18 @@ async def find_publishable(
                 if not m["url"] or similarity <= threshold:
                     continue
                 matched_content = content_for_embedding(m["content"], m["url"])
-                matched_source = judge_source_text(m["title"], m["lead"], m["description"]) if m["title"] else ""
+                matched_record = news_record(matched_content, m["title"], m["lead"], m["description"])
                 judged_on = ""
-                if has_date_conflict(candidate_content, matched_content):
-                    is_duplicate = False
-                    same_event_raw = "RULE: has_date_conflict() — explicit conflicting dates, skipped LLM call"
-                    resolved_by = "date_conflict_rule"
+                rule_verdict = await posted_dedup_rule_verdict(config, hub_index, candidate_content, matched_content, similarity)
+                if rule_verdict == "COMPATIBLE":
+                    is_duplicate = True
+                    same_event_raw = "RULE: posted_dedup_rule_verdict() — non-hub entity overlap, no actor conflict, skipped LLM call"
+                    resolved_by = "entity_rule"
                 else:
-                    rule_verdict = await posted_dedup_rule_verdict(config, hub_index, candidate_content, matched_content, similarity)
-                    if rule_verdict == "COMPATIBLE":
-                        is_duplicate = True
-                        same_event_raw = "RULE: posted_dedup_rule_verdict() — non-hub entity overlap, no actor conflict, skipped LLM call"
-                        resolved_by = "entity_rule"
-                    else:
-                        if matched_source and candidate.title:
-                            is_duplicate, same_event_raw = await event_verifier.same_event(candidate_source, matched_source)
-                            judged_on = "title_lead" if m["lead"] else "title_description"
-                        else:
-                            is_duplicate, same_event_raw = await event_verifier.same_event(candidate_content, matched_content)
-                            judged_on = "caption"
-                        resolved_by = "llm"
+                    verdict, same_event_raw = await get_judge(config).judge(matched_record, candidate_record)
+                    is_duplicate = verdict != "DIFFERENT"
+                    judged_on = "post_title_lead" if m["lead"] else "post_title_description"
+                    resolved_by = "llm" if verdict != "UNCERTAIN" else "llm_uncertain"
                 matched_entities = entity_tokens(matched_content)
                 comparison = {
                     "matched_url": m["url"],
@@ -222,8 +214,8 @@ async def find_publishable(
                     # the texts exactly as the judge saw them, so a verdict can be replayed offline
                     "candidate_text": candidate_content,
                     "matched_text": matched_content,
-                    "candidate_source": candidate_source,
-                    "matched_source": matched_source,
+                    "candidate_record": candidate_record,
+                    "matched_record": matched_record,
                 }
                 comparisons.append(comparison)
                 if is_duplicate:

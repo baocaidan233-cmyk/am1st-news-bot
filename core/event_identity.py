@@ -318,32 +318,6 @@ def event_identity_text(title: str, description: str) -> str:
     return f"{title}\n{_first_sentence(description)}"
 
 
-# A first "paragraph" shorter than this is a byline, a dateline, a photo
-# credit or an "Advertisement" line, not the lead.
-_LEAD_MIN_CHARS = 80
-_LEAD_MAX_CHARS = 600
-
-
-def lead_paragraph(body: str) -> str:
-    """The article's first real paragraph, from the extracted full text.
-    "" if the body has none."""
-    for para in (body or "").split("\n"):
-        p = " ".join(para.split())
-        if len(p) >= _LEAD_MIN_CHARS:
-            return p[:_LEAD_MAX_CHARS]
-    return ""
-
-
-def judge_source_text(title: str, lead: str, description: str = "") -> str:
-    """What the posted-dedup judge reads for one side: the source's headline
-    and its first paragraph (Caidan, 2026-10-12: 一般信息量最大都在第一段).
-    Falls back to event_identity_text() when no paragraph was kept -- posts
-    written before 2026-10-12 have only the RSS description."""
-    if lead:
-        return f"{title}\n{lead}"
-    return event_identity_text(title, description)
-
-
 _LOCATION_LABELS = {"GPE", "LOC", "FAC"}
 _NUMERIC_LABELS = {"CARDINAL", "QUANTITY", "PERCENT", "MONEY"}
 

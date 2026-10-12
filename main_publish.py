@@ -91,7 +91,7 @@ from agents.gettr_publisher import GettrPublisher
 from agents.og_metadata import fetch_link_preview
 from agents.poster import card_for_broken_preview
 from agents.posted_dedup_checker import content_for_embedding, find_publishable
-from core.event_identity import lead_paragraph
+from core.same_news import lead_paragraph
 from agents.priority_ranker import PriorityRanker, log_publish_outcome
 from agents.trending import fetch_trending_headlines
 from agents.timeliness_check import TimelinessCheck
