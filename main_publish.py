@@ -91,6 +91,7 @@ from agents.gettr_publisher import GettrPublisher
 from agents.og_metadata import fetch_link_preview
 from agents.poster import card_for_broken_preview
 from agents.posted_dedup_checker import content_for_embedding, find_publishable
+from core.event_identity import lead_paragraph
 from agents.priority_ranker import PriorityRanker, log_publish_outcome
 from agents.trending import fetch_trending_headlines
 from agents.timeliness_check import TimelinessCheck
@@ -650,6 +651,7 @@ async def run_cycle(
         await posted_store.write(
             winner.url, winner.url_hash, winner.post_content, int(winner.published_at.timestamp()),
             winner_embedding, arm=arm, title=winner.title, description=winner.description,
+            lead=lead_paragraph(winner.content),
         )
 
         # Flag the underlying event as published (2026-08-07) — so a later

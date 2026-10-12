@@ -878,11 +878,13 @@ class PostedHistoryStore:
                 "content": payload.get("content", ""),
                 "title": payload.get("title", ""),
                 "description": payload.get("description", ""),
+                "lead": payload.get("lead", ""),
             })
         return matches
 
     async def write(self, url: str, url_hash: str, content: str, published_at_unix: int,
-                    embedding: list[float], arm: str = "", title: str = "", description: str = "") -> None:
+                    embedding: list[float], arm: str = "", title: str = "", description: str = "",
+                    lead: str = "") -> None:
         """Called once, right after the publish cycle's winner is chosen —
         never for a rejected/duplicate candidate. `content` should be the
         post_content the embedding was computed from. `published_at_unix`
@@ -892,7 +894,10 @@ class PostedHistoryStore:
         most_recent_publish_ts()'s docstring for why the two must stay
         separate. title/description (2026-10-09) are the source article's
         own, kept so agents/posted_dedup_checker.py can put two source
-        articles to the judge instead of two of our own captions."""
+        articles to the judge instead of two of our own captions. lead
+        (2026-10-12) is the source's first paragraph from the extracted full
+        text, what the judge reads beside the headline
+        (core/event_identity.judge_source_text)."""
         if self._client is None:
             return
         await self._client.upsert(
@@ -911,7 +916,7 @@ class PostedHistoryStore:
                         # A/B cannot be told apart afterwards, and an A/B whose
                         # result cannot be split is not an A/B.
                         "arm": arm,
-                        "title": title, "description": description,
+                        "title": title, "description": description, "lead": lead,
                     },
                 )
             ],

@@ -5,7 +5,8 @@ from collections.abc import Awaitable, Callable
 
 from agents.embedder import Embedder
 from core.config import AppConfig
-from core.event_identity import EventVerifier, HubIndex, entity_tokens, event_identity_text, has_date_conflict, log_decision, posted_dedup_rule_verdict
+from core.event_identity import (EventVerifier, HubIndex, entity_tokens, has_date_conflict, judge_source_text,
+                                 lead_paragraph, log_decision, posted_dedup_rule_verdict)
 from core.models import PublishCandidate
 from core.qdrant_store import PostedHistoryStore
 
@@ -145,7 +146,8 @@ async def find_publishable(
 
     2. When the judge, reading our two captions, says DIFFERENT, it is asked
        once more on the two source articles' title + lead
-       (event_identity_text(); publish.posted_dedup_source_second_opinion).
+       (event_identity_text(); publish.posted_dedup_source_second_opinion;
+       replaced 2026-10-12, below).
        Captions carry the writer's own slips and different figures, and the
        judge reads "$3.7B" vs "$6.6B" as two shipyards. Only a "different" is
        re-asked. On 93 caption-judged "kept" pairs from this channel's log
@@ -154,11 +156,20 @@ async def find_publishable(
        (written before 2026-10-09 and not backfilled) is judged on captions
        only, as before.
 
+    2026-10-12, owner: the judge reads the two sources' headline + first
+    paragraph of the extracted article (core/event_identity.judge_source_text),
+    once, instead of our two captions first and the RSS descriptions second.
+    "一般信息量最大都在第一段。这时候已经抓到全文了。" A Gettr scan the same day
+    (AI-60): of 103 repeats across the four channels, 88 were pairs the judge
+    was asked about and called DIFFERENT, mostly over figures and details the
+    captions or descriptions put differently. A posted point written before
+    this change has no stored paragraph and falls back to its title + RSS
+    description; one with no source title at all is judged on captions.
+
     China Breaks' 0.60-0.80 gray zone is NOT ported: this channel never
     judged pairs below 0.70, so there is no labelled data to set a floor
     with."""
     threshold = config.publish.posted_dedup_threshold
-    second_opinion = config.publish.posted_dedup_source_second_opinion
 
     for candidate in ranked_batch:
         comparisons: list[dict] = []
@@ -166,7 +177,8 @@ async def find_publishable(
         top: dict | None = None
         try:
             candidate_content = content_for_embedding(candidate.post_content, candidate.url)
-            candidate_source = event_identity_text(candidate.title, candidate.description)
+            candidate_source = judge_source_text(candidate.title, lead_paragraph(candidate.content),
+                                                 candidate.description)
             embedding = await embedder.embed(candidate_content)
             matches = await posted_store.similar_recent(embedding)
             top = matches[0] if matches else None
@@ -177,6 +189,8 @@ async def find_publishable(
                 if not m["url"] or similarity <= threshold:
                     continue
                 matched_content = content_for_embedding(m["content"], m["url"])
+                matched_source = judge_source_text(m["title"], m["lead"], m["description"]) if m["title"] else ""
+                judged_on = ""
                 if has_date_conflict(candidate_content, matched_content):
                     is_duplicate = False
                     same_event_raw = "RULE: has_date_conflict() — explicit conflicting dates, skipped LLM call"
@@ -188,20 +202,19 @@ async def find_publishable(
                         same_event_raw = "RULE: posted_dedup_rule_verdict() — non-hub entity overlap, no actor conflict, skipped LLM call"
                         resolved_by = "entity_rule"
                     else:
-                        is_duplicate, same_event_raw = await event_verifier.same_event(candidate_content, matched_content)
+                        if matched_source and candidate.title:
+                            is_duplicate, same_event_raw = await event_verifier.same_event(candidate_source, matched_source)
+                            judged_on = "title_lead" if m["lead"] else "title_description"
+                        else:
+                            is_duplicate, same_event_raw = await event_verifier.same_event(candidate_content, matched_content)
+                            judged_on = "caption"
                         resolved_by = "llm"
-                        if not is_duplicate and second_opinion and m["title"] and candidate.title:
-                            second, second_raw = await event_verifier.same_event(
-                                candidate_source, event_identity_text(m["title"], m["description"]))
-                            same_event_raw = f"{same_event_raw}\n[source second opinion] {second_raw}"
-                            if second:
-                                is_duplicate = True
-                                resolved_by = "llm_source_second_opinion"
                 matched_entities = entity_tokens(matched_content)
                 comparison = {
                     "matched_url": m["url"],
                     "cosine_score": similarity,
                     "resolved_by": resolved_by,
+                    "judged_on": judged_on,
                     "same_event_raw": same_event_raw,
                     "verdict": "duplicate" if is_duplicate else "kept",
                     "matched_entities": sorted(matched_entities),
@@ -210,7 +223,7 @@ async def find_publishable(
                     "candidate_text": candidate_content,
                     "matched_text": matched_content,
                     "candidate_source": candidate_source,
-                    "matched_source": event_identity_text(m["title"], m["description"]) if m["title"] else "",
+                    "matched_source": matched_source,
                 }
                 comparisons.append(comparison)
                 if is_duplicate:

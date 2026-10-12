@@ -590,6 +590,8 @@ class PublishConfig(BaseModel):
     # Measured on this channel the same day (93 caption-judged "kept" pairs,
     # labelled by Claude, not the owner): of 28 real duplicates the source
     # text caught 14, at the cost of 9 of 52 different stories.
+    # Unused since 2026-10-12: the judge reads the two sources' headline +
+    # first paragraph once (agents/posted_dedup_checker.py).
     posted_dedup_source_second_opinion: bool = True
     max_widen_attempts: int = 3  # 2026-09-05 — how many batch_max-sized chunks of the eligible pool to try before accepting "nothing to publish this cycle" as real, not just "the first batch_max happened to all be duplicates"; each attempt costs a real extraction+content-gen pass, so this isn't unbounded search over the whole pool (which real cycles have seen run into the hundreds)
     # 2026-09-17 — overnight quality gate (user request). Window is in
