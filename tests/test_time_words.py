@@ -50,3 +50,36 @@ def test_no_source_no_change():
     post = "The S&P rose 0.6% on October 9."
     assert fix_caption_time_words(post, "T", "", dt.datetime(2026, 10, 9, 8, 5, tzinfo=UTC), "u") == (post, [])
     assert fix_caption_time_words("No comment", "T", LONG, None, "u") == ("No comment", [])
+
+
+def test_dailynews_20261012_editor_cases():
+    # Ported with DailyNews 3c3f0dd. TASS, North Korea: the Eastern Sunday drops Seoul's clock.
+    post, ch = fix_time_words(
+        "North Korea fired several ballistic missiles on Monday, launching them at about 9:20 a.m. local time "
+        "from near Pyongyang.",
+        "T\nSEOUL, October 12. /TASS/. The DPRK fired several ballistic missiles toward the Sea of Japan on "
+        "Monday at about 9:20 a.m. local time (0:20 a.m. GMT).",
+        dt.datetime(2026, 10, 12, 1, 30, tzinfo=UTC), "https://tass.com/world/2200633")
+    assert post == "North Korea fired several ballistic missiles on Sunday, launching them from near Pyongyang.", (post, ch)
+    # CNA: 今天 is the dateline's day, so the Eastern Sunday stays.
+    post, ch = fix_time_words(
+        "Beijing on Sunday imposed sanctions on two ministers.",
+        "T\n（中央社記者馮昭上海12日電）中國外交部今天上午一連發出兩份外交部令。",
+        dt.datetime(2026, 10, 12, 3, 50, tzinfo=UTC), "https://www.cna.com.tw/news/acn/202610120065.aspx")
+    assert post == "Beijing on Sunday imposed sanctions on two ministers.", (post, ch)
+    # 财联社: the dateline behind 【】 is not the event's day (近日).
+    post, ch = fix_time_words(
+        "China Mobile completed the expansion of its Hohhot data center on Sunday.",
+        "T\n【智算中心扩容项目竣工】财联社10月12日电，近日，中国移动呼和浩特数据中心扩容工程顺利竣工。",
+        dt.datetime(2026, 10, 12, 1, 10, tzinfo=UTC), "https://api3.cls.cn/share/article/2501729")
+    assert post == "China Mobile completed the expansion of its Hohhot data center.", (post, ch)
+    # A clock marked ET stays; English "today" in a quote dates nothing.
+    post, ch = fix_time_words("North Korea fired missiles on Sunday at 8:20 p.m. ET.",
+                              "T\nThe DPRK fired missiles on Monday.",
+                              dt.datetime(2026, 10, 12, 1, 30, tzinfo=UTC), "https://tass.com/world/x")
+    assert post == "North Korea fired missiles on Sunday at 8:20 p.m. ET.", (post, ch)
+    post, ch = fix_time_words("Aliyev declared on October 3 that the US and China are superpowers.",
+                              "T\nBAKU, Azerbaijan, October 3. Aliyev spoke at the congress held yesterday. "
+                              "\"We face it today,\" he said.",
+                              dt.datetime(2026, 10, 3, 8, 57, tzinfo=UTC), "https://www.trend.az/x")
+    assert post == "Aliyev declared that the US and China are superpowers.", (post, ch)

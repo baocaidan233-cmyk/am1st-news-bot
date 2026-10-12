@@ -33,6 +33,22 @@ Also: a wire dateline is when the agency filed, not when anything happened
 (core/dateline.py); a day the source gives only there does not count. A
 bare 日 (财联社 "古特雷斯9日") is a date in the month it was written in.
 
+2026-10-12, three DailyNews posts an editor corrected (ported from DailyNews
+the same day):
+
+- A day moved to Eastern takes its local clock with it. TASS: missiles
+  fired "on Monday ... at about 9:20 a.m. local time"; the post said
+  Sunday (right: 20:20 Eastern) and kept "9:20 a.m. local time" -- a
+  Sunday morning in Seoul that never happened. When a day in the post is
+  the Eastern day of a later local one, every clock not marked Eastern is
+  cut, and so are the local "early", "morning", "local time" around it.
+- 今天 in a dated Chinese wire story is the dateline's day. 中央社
+  "（…上海12日電）中國外交部今天上午…": the post's Sunday was cut as a
+  day the source never gives, and the post went out with no day at all.
+- 财联社 writes "【headline】财联社10月12日电，近日…". The 【】 in front
+  hid the dateline, so its 12日 licensed "completed on October 11" for a
+  data centre the source said was finished 近日 (recently).
+
 Not covered: the right day on the wrong person. 2026-10-11 Axios had "Trump
 said Friday"; the post gave Friday to Fitzpatrick, whose day the source
 never gives. It is a day the source names, so it stands.
@@ -231,21 +247,116 @@ def _cut(post: str, token: str) -> str:
     return re.sub(r" {2,}", " ", joined).strip()
 
 
-def _without_dateline(source: str) -> str:
-    """The source with its wire dateline taken out. "WASHINGTON, October 6.
-    /TASS/." is when the agency filed, not when anything happened: Trump's
-    Nebraska rally was the evening of October 5 in Eastern, TASS filed it on
-    the 6th, and the draft said "a Nebraska rally on October 6" -- a date the
-    source did carry, so step 1 let it stand. A date the source gives only in
-    its dateline does not license a date in the post."""
+# "【headline】财联社10月12日电，近日…" / "新华社北京10月12日电（记者…）". 日电 followed
+# by 话 is a phone call (10月12日电话会谈), hence the lookahead.
+_CN_WIRE = re.compile(r"[\u4e00-\u9fff]{2,12}?(?P<mo>\d{1,2})月(?P<day>\d{1,2})日[电電](?=[，,：:（(\s]|$)")
+
+# The day a dated Chinese wire story calls 今天 is its dateline's; 昨天 the one
+# before. Only with a dateline: without one there is nothing to count from.
+# Not quoted words, and not English "today": replayed 2026-10-12, Trend's
+# Aliyev story has "today" only in his speech, and the speech was "held
+# yesterday"; "the ministry announced today" dates the announcement, not the
+# signing the post is about. CNA's 今天 was the news day in every case.
+_REL_DAYS = (
+    (0, re.compile(r"今天|今日(?!头条|頭條)")),
+    (-1, re.compile(r"昨天|昨日")),
+)
+_QUOTED = re.compile(r"「[^」]*」|『[^』]*』|“[^”]*”|\"[^\"\n]*\"")
+
+
+def _without_dateline(source: str) -> tuple[str, Optional[tuple[Optional[int], int]]]:
+    """The source with its wire dateline taken out, and the (month, day) the
+    dateline carried (month None for 中央社's day-only one). "WASHINGTON,
+    October 6. /TASS/." is when the agency filed, not when anything happened:
+    Trump's Nebraska rally was the evening of October 5 in Eastern, TASS filed
+    it on the 6th, and the draft said "a Nebraska rally on October 6" -- a date
+    the source did carry, so step 1 let it stand. A date the source gives only
+    in its dateline does not license a date in the post; the dateline only
+    says which day the story's own 今天 is."""
     title, sep, body = (source or "").partition("\n")
     if not sep:
         title, body = "", title
     head = body[:200]
-    m = wire_dateline(head) or _CNA.search(head)
+    filed = None
+    m = wire_dateline(head)
+    if m:
+        filed = (_month(m.group("mon")), int(m.group("day")))
+    else:
+        m = _CNA.search(head)
+        if m:
+            filed = (None, int(m.group("day")))
+        else:
+            m = _CN_WIRE.search(head)
+            if m:
+                filed = (int(m.group("mo")), int(m.group("day")))
     if m:
         body = body[:m.start()] + body[m.end():]
-    return f"{title}{sep}{body}"
+    return f"{title}{sep}{body}", filed
+
+
+def _filed_date(filed: tuple[Optional[int], int], ref: dt.date) -> Optional[dt.date]:
+    """The dateline's day as a date: a day alone is this month's, or last
+    month's when this month has not reached it yet."""
+    mo, d = filed
+    if mo:
+        return _year_for(mo, d, ref)
+    for back in (0, 1):
+        y, m = (ref.year, ref.month - back) if ref.month - back else (ref.year - 1, 12)
+        try:
+            day = dt.date(y, m, d)
+        except ValueError:
+            continue
+        if day <= ref + dt.timedelta(days=1):
+            return day
+    return None
+
+
+# A clock in the post, with what hangs on it: "at about 9:20 a.m. local time
+# (0020 GMT)". A 24-hour clock counts only with a zone or "hours" after it --
+# "3:10" alone may be a ratio or a score.
+_ZONE = (r"(?:local time|(?:[A-Z][a-z]+(?: [A-Z][a-z]+)?) time|GMT|UTC|KST|JST|MSK|HKT|CST|BST|CET|CEST"
+         r"|AEST|AEDT|SGT|PHT)")
+_CLOCK = re.compile(
+    r"(?:\b(?:at|around|about|by|from|until|after|before|shortly after|shortly before|just after|just before)\s+)?"
+    r"(?:(?:about|around|approximately|roughly|nearly|some)\s+)?"
+    r"(?:\b\d{1,2}(?:[:.]\d{2})?\s*(?:a\.m\.|p\.m\.|am\b|pm\b|AM\b|PM\b)(?:\s+" + _ZONE + r")?"
+    r"|\b\d{1,2}:?\d{2}\s*(?:hours|hrs|h)?\s+" + _ZONE + r")"
+    r"(?:\s*\([^()]{0,40}\))?")
+_EASTERN_MARK = re.compile(r"\b(?:ET|EST|EDT|Eastern|Washington time|New York time)\b")
+
+
+def _remove_span(post: str, start: int, end: int) -> str:
+    """The post without post[start:end], its sentence and commas closed up."""
+    before, after = post[:start], post[end:]
+    if not before.strip() or re.search(r"[.!?]\s*$", before):
+        after = after.lstrip(" ,")
+        after = after[:1].upper() + after[1:]
+        joined = before.rstrip() + (" " if before.strip() else "") + after
+    else:
+        joined = before.rstrip() + ("" if re.match(r"\s*[.,;:!?]", after) else " ") + after.lstrip()
+    joined = re.sub(r",\s*,", ",", joined)
+    joined = re.sub(r",(\s*[.;:!?])", r"\1", joined)
+    return re.sub(r" {2,}", " ", joined).strip()
+
+
+def _drop_local_clock(post: str, shifted: list[str], changes: list) -> str:
+    """A day in the post is the Eastern day of a later local one: the local
+    morning, "local time" and clock that came with it are no longer true of
+    it, so they go. A clock marked Eastern stays."""
+    for s in shifted:
+        m = re.search(r"(?:\b(?:early|late)\s+)?%s(?:\s+(?:morning|afternoon|evening|night))?"
+                      r"(?:\s*\(?\s*%s\s*\)?)?" % (re.escape(s), _ZONE), post)
+        if m and m.group(0) != s:
+            post = post[:m.start()] + s + post[m.end():]
+            changes.append(f"{m.group(0)!r} -> {s!r} (a local part of day, on an Eastern day)")
+    while True:
+        for m in _CLOCK.finditer(post):
+            if not _EASTERN_MARK.search(m.group(0) + post[m.end():m.end() + 12]):
+                break
+        else:
+            return post
+        changes.append(f"cut {m.group(0).strip()!r} (a local clock, on an Eastern day)")
+        post = _remove_span(post, m.start(), m.end())
 
 
 # "Guterres on 9 condemned" -- 财联社's 9日 copied as a bare number, live on
@@ -428,7 +539,7 @@ def fix_time_words(post: str, source: str, published_at=None, url: str = "") -> 
     if not post:
         return post, []
     changes: list[str] = []
-    source = _without_dateline(source or "")
+    source, filed = _without_dateline(source or "")
     inst = _instant(published_at)
     tz = _outlet_tz(url) or EASTERN
     if inst is None:
@@ -445,6 +556,14 @@ def fix_time_words(post: str, source: str, published_at=None, url: str = "") -> 
     days_of = _bare_dates(bare, local_ref)
     post = _bare_day_in_post(post, days_of, changes)
     src = _source_days(source, local_ref)
+    anchor = _filed_date(filed, local_ref) if filed else None
+    if anchor:
+        unquoted = _QUOTED.sub("", source)
+        for shift, rel in _REL_DAYS:
+            if rel.search(unquoted):
+                day = anchor + dt.timedelta(days=shift)
+                src.setdefault(day, Day(day, set())).forms.update(("wd", "md"))
+    shifted: list[str] = []
 
     # A span across months ("From February 28 to August 22, 2026") is kept or
     # cut whole (added 2026-10-11): cutting each end on its own left "To , the
@@ -506,12 +625,18 @@ def fix_time_words(post: str, source: str, published_at=None, url: str = "") -> 
         target = _eastern(day.local, local_ref, east_ref, future)
         meant = as_date(local_ref) if as_date(local_ref) == day.local else as_date(east_ref)
         form = kind if kind in day.forms else sorted(day.forms)[0]
+        if target != day.local:
+            shifted.append(text)        # whoever moved it, the writer or this
         if target == meant and form == kind:
             continue
         new = _written(target, form, text)
         post = post.replace(text, new, 1)
+        if target != day.local:
+            shifted[-1] = new
         why = "the source's day, in Eastern" if target != day.local else "the source's day, in its form"
         changes.append(f"{text!r} -> {new!r} ({why})")
+    if shifted:
+        post = _drop_local_clock(post, shifted, changes)
     return post, changes
 
 
