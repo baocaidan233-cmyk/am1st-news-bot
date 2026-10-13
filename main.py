@@ -60,7 +60,6 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
-from agents.candidate_selector import _is_weekday
 from agents.embedder import Embedder
 from agents.og_metadata import fetch_link_preview
 from agents.rss_fetcher import fetch_all
@@ -567,12 +566,13 @@ async def run_cycle(
         # same-day rehash article with nothing new to say, just because
         # that particular article itself was freshly crawled. A genuine
         # CORE_UPDATE on an old event still gets through — that's real news.
+        # 2026-10-13 (AI-69, user): the ceiling is the timeliness rule's 48h,
+        # not the candidate query's 12h/24h. An event nobody has posted is old
+        # news only once it was first seen 48h ago; at 12h, 41 of the 136
+        # drops in the 10-12/13 audit were events under 48h old.
         if matched is not None and subtype in ("RESTATEMENT", "CORROBORATION"):
             event_age_hours = (int(time.time()) - matched.get("first_seen_at", int(time.time()))) / 3600
-            max_age_hours = (
-                config.publish.weekday_max_age_hours if _is_weekday(datetime.now(timezone.utc))
-                else config.publish.weekend_max_age_hours
-            )
+            max_age_hours = config.publish.timeliness_window_hours
             if event_age_hours > max_age_hours:
                 logger.info(
                     "run_cycle: cluster %d dropped — stale event (%.1fh old, ceiling %.0fh) with no new information (subtype=%s)",
