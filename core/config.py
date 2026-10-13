@@ -703,8 +703,10 @@ class PublishConfig(BaseModel):
     # 2026-10-13 (AI-23): an article that gives no time for its headline's
     # news is checked for an earlier report of the same fact, in our stores and
     # then Google News, judged by Claude Haiku. agents/first_report_check.py.
-    # Uses fact_check.api_key (ANTHROPIC_API_KEY).
+    # Its own key, FIRST_REPORT_ANTHROPIC_API_KEY in .env; the fact check's
+    # ANTHROPIC_API_KEY is a separate key (user, 10-13).
     first_report_check: bool = True
+    first_report_api_key: str = ""
     first_report_model: str = "claude-haiku-5-5"
     first_report_prompt_file: str = "prompts/first_report_prompt.txt"
 
@@ -1007,6 +1009,7 @@ _ENV_OVERRIDES = {
     ("redis", "url"): "REDIS_URL",
     ("openai", "api_key"): "OPENAI_API_KEY",
     ("fact_check", "api_key"): "ANTHROPIC_API_KEY",
+    ("publish", "first_report_api_key"): "FIRST_REPORT_ANTHROPIC_API_KEY",
     ("openai", "fallback_api_key"): "OPENAI_API_KEY_FALLBACK",
     ("qdrant", "url"): "QDRANT_URL",
     ("qdrant", "api_key"): "QDRANT_API_KEY",

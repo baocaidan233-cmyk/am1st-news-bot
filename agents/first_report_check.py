@@ -101,7 +101,7 @@ def _keywords(title: str) -> str:
 
 class FirstReportCheck:
     def __init__(self, config: AppConfig, cache_size: int = 2000) -> None:
-        key = config.fact_check.api_key
+        key = config.publish.first_report_api_key
         self.enabled = config.publish.first_report_check and bool(key) and bool(config.qdrant.url)
         self._window = config.publish.timeliness_window_hours
         self._model = config.publish.first_report_model
@@ -113,7 +113,7 @@ class FirstReportCheck:
         self._cache: OrderedDict[str, dict] = OrderedDict()
         self._cache_size = cache_size
         if config.publish.first_report_check and not key:
-            logger.warning("FirstReportCheck: ANTHROPIC_API_KEY not set -- first-report check off")
+            logger.warning("FirstReportCheck: FIRST_REPORT_ANTHROPIC_API_KEY not set -- first-report check off")
 
     async def _store_candidates(self, title: str, lead: str, url: str, cutoff: float) -> list[dict]:
         vec = await self._embedder.embed(f"{title}\n{lead}")
