@@ -75,10 +75,17 @@ _LIVE_STREAM_URL = re.compile(r"/(?:[^/]*watch-live|[^/]*live-?stream|live-now-)
 # and NH Journal podcasts) plus TV-episode recaps (Decider, Page Six), no news
 # story among them; one went out on 2026-10-06 (NTD Evening News Full
 # Broadcast, Oct. 6).
+# 2026-10-13: NTD's daily shows also run without "Full Broadcast", as the day's
+# headlines strung together and the show's name ("JD Vance to host campaign
+# rally in Texas; federal agents search Rep. Omar's home…: NTD Good Morning
+# (Oct. 13)"), which reached the candidate pool. Named shows only: an NTD clip
+# of one story carries no show name.
 _PROGRAMME_TITLE = re.compile(
-    r"\bfull\s+(broadcast|episode|show)\b|^\W*(video\s*(&|and)\s*)?podcast\s*[:|–-]|\bep\.?\s*\d+\b|\bepisode\s+\d+\b",
+    r"\bfull\s+(broadcast|episode|show)\b|^\W*(video\s*(&|and)\s*)?podcast\s*[:|–-]|\bep\.?\s*\d+\b|\bepisode\s+\d+\b|"
+    r"\bNTD\s+(Good\s+Morning|Evening\s+News|Newsroom|News\s+Today)\b",
     re.IGNORECASE)
-_PROGRAMME_URL = re.compile(r"/(podcasts?|episodes?)/|full-(broadcast|episode|show)", re.IGNORECASE)
+_PROGRAMME_URL = re.compile(r"/(podcasts?|episodes?)/|full-(broadcast|episode|show)|"
+                            r"\bntd-(good-morning|evening-news|newsroom|news-today)\b", re.IGNORECASE)
 
 # One named event covered live or in full is a single subject, whatever the
 # title calls itself. No longer exempts a live stream: _LIVE_STREAM_* runs first.
