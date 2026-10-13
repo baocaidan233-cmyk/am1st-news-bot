@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 
 import httpx
@@ -103,7 +104,11 @@ class GettrPublisher:
         # Reads `text`, the caption itself: payload.get("txt") was always ""
         # (the caption is at payload["data"]["txt"]), so until 2026-10-13 this
         # gate never saw a caption.
-        violation = former_president_violation(text or "")
+        # The link is not the caption: main_publish.py checks the caption
+        # without it, and this gate must refuse nothing that one passed -- a
+        # refusal here comes after the winner is picked and empties the round.
+        caption = re.sub(r"https?://\S+", "", text or "")
+        violation = former_president_violation(caption)
         if violation:
             logger.error(
                 "GettrPublisher: caption blocked by caption_guard rule %s — not publishing",
@@ -111,10 +116,10 @@ class GettrPublisher:
             )
             return None
         # AI-73: every letter English.
-        if not is_english_caption(text or ""):
+        if not is_english_caption(caption):
             logger.error("GettrPublisher: caption is not English — not publishing %s", log_ref)
             return None
-        headers ={"x-app-auth": json.dumps({"user": gettr.user_id, "token": gettr.user_token})}
+        headers = {"x-app-auth": json.dumps({"user": gettr.user_id, "token": gettr.user_token})}
         files = {"content": (None, json.dumps(payload))}
 
         try:
