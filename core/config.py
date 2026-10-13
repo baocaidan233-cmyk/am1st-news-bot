@@ -255,6 +255,13 @@ class EntityVerifierConfig(BaseModel):
     # every candidate event from 0.60 to 0.90; 0.90 and above merges without it.
     same_event_store_prompt_file: str = "prompts/same_event_store_prompt.txt"
     update_subtype_prompt_file: str = "prompts/update_subtype_prompt.txt"
+    # 2026-10-13 (AI-69): Claude Haiku's second opinion before an event-store
+    # guard drops an article (core/guard_judge.py). Same key as the
+    # first-report check, FIRST_REPORT_ANTHROPIC_API_KEY.
+    guard_judge_enabled: bool = True
+    guard_judge_model: str = "claude-haiku-5-5"
+    guard_judge_prompt_file: str = "prompts/guard_judge_prompt.txt"
+    guard_judge_api_key: str = ""
     related_event_prompt_file: str = "prompts/related_event_prompt.txt"  # EventVerifier.related_event() — see core/event_identity.py
     log_path: str = "logs/event_identity_decisions.jsonl"
 
@@ -1010,6 +1017,7 @@ _ENV_OVERRIDES = {
     ("openai", "api_key"): "OPENAI_API_KEY",
     ("fact_check", "api_key"): "ANTHROPIC_API_KEY",
     ("publish", "first_report_api_key"): "FIRST_REPORT_ANTHROPIC_API_KEY",
+    ("entity_verifier", "guard_judge_api_key"): "FIRST_REPORT_ANTHROPIC_API_KEY",
     ("openai", "fallback_api_key"): "OPENAI_API_KEY_FALLBACK",
     ("qdrant", "url"): "QDRANT_URL",
     ("qdrant", "api_key"): "QDRANT_API_KEY",

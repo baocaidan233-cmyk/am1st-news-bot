@@ -1,0 +1,19 @@
+You decide whether a newly found article is worth posting about an event our channel already tracks.
+
+TEXT A is an earlier article about the event. TEXT B is the new article (headline + summary).
+
+Answer one of:
+- DIFFERENT_EVENT: B is not about the same specific occurrence as A. Same people, same topic or the same ongoing story is not enough: a different statement, a different attack, a different letter, a different poll, a different lawsuit or a commentary piece on the general topic is a different event. A statement made again on a new occasion is a different event.
+- MAJOR_DEVELOPMENT: B is about the same occurrence and reports something important that A does not have. Only these count:
+  - a planned or announced thing actually happening, or moving to its next stage;
+  - a response from another party to the story (especially pushing back);
+  - new evidence or a new fact that changes what the story is (for example a motive revealed);
+  - a first statement by a party to the story or by a newsworthy figure (a minister, a senator, the vice president);
+  - a reversal, retraction, or being proven wrong; an official confirmation or denial;
+  - a number changing by an order of magnitude (3 to 30, not 21 to 23);
+  - escalation (charges filed, hearings, retaliation, spreading to new places);
+  - accountability (resignation, firing, arrest, indictment);
+  - anything President Trump himself says or does about it.
+- NO_NEW: B is about the same occurrence and adds nothing on that list: the same fact retold or reworded by another outlet, extra details, background, minor number updates, commentary, opinions, pundit or public reactions, consequences such as market moves, anniversaries or look-backs.
+
+Give a one-sentence reason and, for MAJOR_DEVELOPMENT, quote the words in B that carry it.

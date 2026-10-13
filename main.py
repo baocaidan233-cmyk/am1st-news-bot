@@ -70,6 +70,7 @@ from agents.topic_tagger import TopicTagger
 from agents.trending import fetch_trending_headlines
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex, core_entities_of, cross_cycle_dedup_verdict, entity_tokens, event_identity_text, event_judge_text, extract_event_frame, log_decision, no_conflicting_specifics
+from core.guard_judge import get_guard_judge
 from core.hashing import cosine_similarity
 from core.hot_topics import fetch_active_hot_topics
 from core.language import is_english
@@ -103,6 +104,14 @@ def _log_guard_drop(config, guard: str, members, matched: dict, subtype: str, **
                      for c, _ in members],
         **extra,
     })
+
+
+async def _guard_judge(config, members, matched: dict) -> tuple[str, dict]:
+    """core/guard_judge.py on the matched event's article and the cluster's
+    first article, the same two texts _log_guard_drop() records."""
+    event_text = matched.get("text") or matched.get("representative_text", "")
+    new_text = event_judge_text(members[0][0].title, members[0][0].description)
+    return await get_guard_judge(config).judge(event_text, new_text)
 
 
 async def run_cycle(
@@ -544,15 +553,29 @@ async def run_cycle(
         # had already correctly called it RESTATEMENT. Cosine alone was a
         # cruder signal than the entity+LLM verdict this same code path
         # already computes; this just puts that verdict to use here too.
+        # 2026-10-13 (AI-69): both guards ask core/guard_judge.py (Claude
+        # Haiku) before dropping and drop only on NO_NEW -- 49 of 220 drops
+        # on the subtype alone were wrong (a major development, or not the
+        # same event). A judge failure drops as before. Released by the first
+        # guard, the cluster is not judged again by the second.
+        guard_released = False
         if matched is not None and matched.get("published") and (
             matched.get("_score", 0.0) >= threshold or subtype in ("RESTATEMENT", "CORROBORATION")
         ):
-            logger.info(
-                "run_cycle: cluster %d dropped — near-duplicate of an already-published event (score=%.3f, subtype=%s)",
-                cluster_idx, matched.get("_score", 0.0), subtype,
-            )
-            _log_guard_drop(config, "published_event", members, matched, subtype)
-            continue
+            verdict, raw = await _guard_judge(config, members, matched)
+            if verdict in ("MAJOR_DEVELOPMENT", "DIFFERENT_EVENT"):
+                guard_released = True
+                logger.info("run_cycle: cluster %d kept — already-published event, but the guard judge says %s (%s)",
+                            cluster_idx, verdict, (raw.get("reason") or "")[:160])
+                _log_guard_drop(config, "published_event", members, matched, subtype, check_type="event_guard_release",
+                                guard_judge=verdict, guard_judge_raw=raw)
+            else:
+                logger.info(
+                    "run_cycle: cluster %d dropped — near-duplicate of an already-published event (score=%.3f, subtype=%s, judge=%s)",
+                    cluster_idx, matched.get("_score", 0.0), subtype, verdict,
+                )
+                _log_guard_drop(config, "published_event", members, matched, subtype, guard_judge=verdict, guard_judge_raw=raw)
+                continue
 
         # Stale-event guard (2026-09-06, user's explicit rule: stale news
         # should only ever be posted as a genuine event update) — distinct
@@ -570,17 +593,26 @@ async def run_cycle(
         # not the candidate query's 12h/24h. An event nobody has posted is old
         # news only once it was first seen 48h ago; at 12h, 41 of the 136
         # drops in the 10-12/13 audit were events under 48h old.
-        if matched is not None and subtype in ("RESTATEMENT", "CORROBORATION"):
+        if matched is not None and subtype in ("RESTATEMENT", "CORROBORATION") and not guard_released:
             event_age_hours = (int(time.time()) - matched.get("first_seen_at", int(time.time()))) / 3600
             max_age_hours = config.publish.timeliness_window_hours
             if event_age_hours > max_age_hours:
-                logger.info(
-                    "run_cycle: cluster %d dropped — stale event (%.1fh old, ceiling %.0fh) with no new information (subtype=%s)",
-                    cluster_idx, event_age_hours, max_age_hours, subtype,
-                )
-                _log_guard_drop(config, "stale_event", members, matched, subtype,
-                                event_age_hours=round(event_age_hours, 1), max_age_hours=max_age_hours)
-                continue
+                verdict, raw = await _guard_judge(config, members, matched)
+                if verdict in ("MAJOR_DEVELOPMENT", "DIFFERENT_EVENT"):
+                    logger.info("run_cycle: cluster %d kept — stale event (%.1fh old), but the guard judge says %s (%s)",
+                                cluster_idx, event_age_hours, verdict, (raw.get("reason") or "")[:160])
+                    _log_guard_drop(config, "stale_event", members, matched, subtype, check_type="event_guard_release",
+                                    event_age_hours=round(event_age_hours, 1), max_age_hours=max_age_hours,
+                                    guard_judge=verdict, guard_judge_raw=raw)
+                else:
+                    logger.info(
+                        "run_cycle: cluster %d dropped — stale event (%.1fh old, ceiling %.0fh) with no new information (subtype=%s, judge=%s)",
+                        cluster_idx, event_age_hours, max_age_hours, subtype, verdict,
+                    )
+                    _log_guard_drop(config, "stale_event", members, matched, subtype,
+                                    event_age_hours=round(event_age_hours, 1), max_age_hours=max_age_hours,
+                                    guard_judge=verdict, guard_judge_raw=raw)
+                    continue
 
         cluster = clusters[cluster_idx]
         preview_heat, preview_first_seen = event_store.preview_heat(
