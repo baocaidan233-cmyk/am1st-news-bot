@@ -90,8 +90,11 @@ def is_english(text: str) -> bool:
 def _non_latin_letters(text: str) -> str:
     """The letters in `text` written in a non-Latin script (Cyrillic, Greek,
     Arabic, Hebrew, Georgian, CJK...). Accented Latin letters (é, ł, ş) are
-    Latin: a Polish or Turkish name in an English sentence is still English."""
-    return "".join(ch for ch in text if ch.isalpha() and ord(ch) > 0x024F)
+    Latin: a Polish or Turkish name in an English sentence is still English.
+    So is Vietnamese (U+1E00-U+1EFF, Latin Extended Additional): "Trần Thanh
+    Mẫn" and "Việt Nam" went out on China Breaks 10-12 and are not a slip."""
+    return "".join(ch for ch in text
+                   if ch.isalpha() and ord(ch) > 0x024F and not 0x1E00 <= ord(ch) <= 0x1EFF)
 
 
 def is_english_caption(text: str) -> bool:
