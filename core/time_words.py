@@ -1,5 +1,14 @@
 """Every day a post names is a day in US Eastern, and one the source gives.
 
+Caidan, 2026-10-13: 写美国的事情，全部美东时间。非美国的事情，原文写几号，周几，
+就用原文信息. This supersedes the all-Eastern rule described below: a day is
+moved to the Eastern publication date only for a US event (_us_event: a US
+person, office or place before the day or in the eight words after it) or
+beside an Eastern clock the writer put there; any other event keeps the
+source's own day and its local clock. Same as DailyNews f235a63, where the
+editor had put "Tuesday" back on the People's Bank of China's approval of
+Visa that the Eastern rule made Monday.
+
 Ported unchanged from DailyNews core/time_words.py (7efe07d, read-only, 2026-10-11)
 at the user's request: 时效性不能错 -- learn DailyNews' time handling. Its
 notes below are DailyNews' own and are kept as written; this channel's replay
@@ -486,6 +495,33 @@ def _eastern(day: dt.date, local_ref: dt.date, east_ref: dt.date, future: bool) 
     return day
 
 
+# A US person, office or place. "House" only as the White House or the
+# chamber: Diaoyutai State Guesthouse and Seoul's Blue House are not.
+_US_MARK = re.compile(
+    r"\b(?:U\.S\.|US|USA|United States|Americans?|Washington|White House|the House|House Speaker"
+    r"|House of Representatives|Pentagon|Congress|congressional|Senate|senators?|congressman|congresswoman"
+    r"|lawmakers|Capitol|State Department|Treasury|Justice Department|DOJ|FBI|CIA|DHS|ICE|Federal Reserve"
+    r"|the Fed|Centcom|CENTCOM|Trump|Vance|Rubio|Hegseth|Bessent|Leavitt|Lutnick|Greer|Witkoff|Pigott"
+    r"|Bondi|Noem|New York|California|Texas|Florida)\b")
+
+
+def _us_event(post: str, start: int, end: int) -> bool:
+    """Whether the day at post[start:end] belongs to a US event: a US mark
+    in its sentence before the day -- the subject, normally. Only when the
+    day opens the sentence ("On Monday, President Trump said") is the subject
+    after it, and then the eight words after it count. Not the rest of the
+    sentence: "The People's Bank of China on Monday approved Visa, giving the
+    US payments giant a year" is a Chinese event."""
+    left = max(post.rfind(". ", 0, start), post.rfind("! ", 0, start), post.rfind("? ", 0, start))
+    before = post[left + 1:start]
+    if _US_MARK.search(before):
+        return True
+    if len(before.split()) > 3:
+        return False
+    after = " ".join(re.split(r"\s+", post[end:end + 120].strip())[:8])
+    return bool(_US_MARK.search(after))
+
+
 def _written(day: dt.date, form: str, token: str) -> str:
     if form == "wd":
         return WEEKDAYS[day.weekday()]
@@ -622,7 +658,15 @@ def fix_time_words(post: str, source: str, published_at=None, url: str = "") -> 
             post = _cut(post, text)
             changes.append(f"cut {text!r} (not a day the source gives)")
             continue
-        target = _eastern(day.local, local_ref, east_ref, future)
+        # A non-US day is the source's own -- unless the writer put an Eastern
+        # clock beside it ("Sunday at 8:20 p.m. ET"), which only the Eastern
+        # day agrees with. A window, not _sentence_around: "8:20 p.m. ET" has
+        # a ". " inside it.
+        near = post[max(0, i - 80):i + len(text) + 80]
+        eastern_clock = any(_EASTERN_MARK.search(m.group(0) + near[m.end():m.end() + 12])
+                            for m in _CLOCK.finditer(near))
+        target = (_eastern(day.local, local_ref, east_ref, future)
+                  if eastern_clock or _us_event(post, i, i + len(text)) else day.local)
         meant = as_date(local_ref) if as_date(local_ref) == day.local else as_date(east_ref)
         form = kind if kind in day.forms else sorted(day.forms)[0]
         if target != day.local:
@@ -633,7 +677,8 @@ def fix_time_words(post: str, source: str, published_at=None, url: str = "") -> 
         post = post.replace(text, new, 1)
         if target != day.local:
             shifted[-1] = new
-        why = "the source's day, in Eastern" if target != day.local else "the source's day, in its form"
+        why = ("the source's day, in Eastern (a US event)" if target != day.local
+               else "the source's day, as the source writes it")
         changes.append(f"{text!r} -> {new!r} ({why})")
     if shifted:
         post = _drop_local_clock(post, shifted, changes)

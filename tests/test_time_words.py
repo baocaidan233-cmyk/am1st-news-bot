@@ -53,27 +53,39 @@ def test_no_source_no_change():
 
 
 def test_dailynews_20261012_editor_cases():
-    # Ported with DailyNews 3c3f0dd. TASS, North Korea: the Eastern Sunday drops Seoul's clock.
+    # Ported with DailyNews 3c3f0dd; 2026-10-13 rule (DailyNews f235a63): a non-US event keeps
+    # the source's day. TASS, North Korea: Monday and Seoul's clock stay.
     post, ch = fix_time_words(
         "North Korea fired several ballistic missiles on Monday, launching them at about 9:20 a.m. local time "
         "from near Pyongyang.",
         "T\nSEOUL, October 12. /TASS/. The DPRK fired several ballistic missiles toward the Sea of Japan on "
         "Monday at about 9:20 a.m. local time (0:20 a.m. GMT).",
         dt.datetime(2026, 10, 12, 1, 30, tzinfo=UTC), "https://tass.com/world/2200633")
-    assert post == "North Korea fired several ballistic missiles on Sunday, launching them from near Pyongyang.", (post, ch)
-    # CNA: 今天 is the dateline's day, so the Eastern Sunday stays.
+    assert post == ("North Korea fired several ballistic missiles on Monday, launching them at about 9:20 a.m. "
+                    "local time from near Pyongyang."), (post, ch)
+    # CNA: 今天 is the dateline's day, and a Beijing event keeps it: Monday.
     post, ch = fix_time_words(
         "Beijing on Sunday imposed sanctions on two ministers.",
         "T\n（中央社記者馮昭上海12日電）中國外交部今天上午一連發出兩份外交部令。",
         dt.datetime(2026, 10, 12, 3, 50, tzinfo=UTC), "https://www.cna.com.tw/news/acn/202610120065.aspx")
-    assert post == "Beijing on Sunday imposed sanctions on two ministers.", (post, ch)
+    assert post == "Beijing on Monday imposed sanctions on two ministers.", (post, ch)
     # 财联社: the dateline behind 【】 is not the event's day (近日).
     post, ch = fix_time_words(
         "China Mobile completed the expansion of its Hohhot data center on Sunday.",
         "T\n【智算中心扩容项目竣工】财联社10月12日电，近日，中国移动呼和浩特数据中心扩容工程顺利竣工。",
         dt.datetime(2026, 10, 12, 1, 10, tzinfo=UTC), "https://api3.cls.cn/share/article/2501729")
     assert post == "China Mobile completed the expansion of its Hohhot data center.", (post, ch)
-    # A clock marked ET stays; English "today" in a quote dates nothing.
+    # A US event still moves to Eastern (Korea Times, Seoul's Tuesday morning); the PBoC's
+    # Tuesday stays though the post names "the US payments giant" (SCMP, editor 10-13).
+    post, ch = fix_time_words("President Trump said Tuesday he may meet Kim Jong-un.",
+                              "T\nU.S. President Donald Trump said Tuesday that he may meet Kim Jong-un.",
+                              dt.datetime(2026, 10, 13, 0, 30, tzinfo=UTC), "https://www.koreatimes.co.kr/world/x")
+    assert post == "President Trump said Monday he may meet Kim Jong-un.", (post, ch)
+    post, ch = fix_time_words("The People's Bank of China on Monday approved Visa, giving the US payments giant a year.",
+                              "T\nThe People's Bank of China on Tuesday gave its approval to Visa.",
+                              dt.datetime(2026, 10, 13, 3, 30, tzinfo=UTC), "https://www.scmp.com/economy/x")
+    assert post == "The People's Bank of China on Tuesday approved Visa, giving the US payments giant a year.", (post, ch)
+    # A clock marked ET stays with its Eastern day; English "today" in a quote dates nothing.
     post, ch = fix_time_words("North Korea fired missiles on Sunday at 8:20 p.m. ET.",
                               "T\nThe DPRK fired missiles on Monday.",
                               dt.datetime(2026, 10, 12, 1, 30, tzinfo=UTC), "https://tass.com/world/x")
