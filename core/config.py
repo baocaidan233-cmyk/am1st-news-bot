@@ -700,6 +700,13 @@ class PublishConfig(BaseModel):
     # only ran the old check once the event store had seen the story 72h ago.
     timeliness_window_hours: float = 48
     timeliness_check: bool = True
+    # 2026-10-13 (AI-23): an article that gives no time for its headline's
+    # news is checked for an earlier report of the same fact, in our stores and
+    # then Google News, judged by Claude Haiku. agents/first_report_check.py.
+    # Uses fact_check.api_key (ANTHROPIC_API_KEY).
+    first_report_check: bool = True
+    first_report_model: str = "claude-haiku-5-5"
+    first_report_prompt_file: str = "prompts/first_report_prompt.txt"
 
     staleness_check_hours_floor: int = 72  # 2026-09-05 — agents/staleness_checker.py's LLM call only runs when event_first_seen_at is at least this old; reuses dedup.cross_cycle_window_hours' existing 72h convention rather than picking a new number, per the user's explicit cost concern (this would otherwise double the LLM calls made for every candidate, not just the minority whose underlying event is genuinely old)
 

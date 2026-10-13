@@ -19,6 +19,10 @@ already clear as a first report. The copied developments are cached per
 url_hash for the life of the process, so a candidate that waits in the pool
 is re-judged every cycle -- its age keeps growing -- without a second call.
 Logged to logs/timeliness.jsonl. Any failure leaves the story fresh.
+
+2026-10-13 (AI-23): an article that gives no time for its headline's news
+(news_at None) used to stop here as fresh; agents/first_report_check.py now
+looks for an earlier report of the same fact first.
 """
 from __future__ import annotations
 
@@ -32,6 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from agents.first_report_check import FirstReportCheck
 from core.config import AppConfig
 from core.news_time import decide, first_disclosure
 from core.openai_client import create_openai_client
@@ -61,6 +66,7 @@ class TimelinessCheck:
         self._window = config.publish.timeliness_window_hours
         self._cache: OrderedDict[str, list] = OrderedDict()
         self._cache_size = cache_size
+        self._first_report = FirstReportCheck(config)
 
     async def _developments(self, url_hash: str, title: str, body: str) -> Optional[list]:
         if url_hash in self._cache:
@@ -93,5 +99,12 @@ class TimelinessCheck:
         except Exception as e:
             logger.warning("timeliness: check failed for %s (%s) — treating as fresh", url, e)
             result = {"verdict": "fresh", "reason": "check failed: %s" % str(e)[:200], "news_at": None, "age_hours": None}
-        _log({"url": url, "title": title[:200], "published": published_at.isoformat(), **result, "developments": devs})
+        first_report = None
+        if result["verdict"] == "fresh" and result.get("news_at") is None:
+            first_report = await self._first_report.check(url, url_hash, title, body, now)
+            if first_report["verdict"] == "stale":
+                result = {"verdict": "stale", "reason": "no time in the article; " + first_report["reason"],
+                          "news_at": None, "age_hours": (first_report.get("evidence") or {}).get("age_hours")}
+        _log({"url": url, "title": title[:200], "published": published_at.isoformat(), **result, "developments": devs,
+              "first_report": first_report})
         return result
