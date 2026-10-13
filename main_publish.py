@@ -103,7 +103,7 @@ from core.alerts import AlertNotifier
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex
 from core.caption_guard import former_president_violation, invented_biden
-from core.language import is_english
+from core.language import is_english, is_english_caption
 from core.notion_candidates import has_unpublished_hot_candidate, mark_dedup_rejected, mark_extraction_failed, mark_send_status, mark_stance_blocked, mark_writer_rejected, query_eligible_candidates, recent_published_topic_counts, record_extraction_failure
 from core.notion_candidates import topic_publication_debt
 from core.topic_mix import compute_adjustments
@@ -415,8 +415,23 @@ async def run_cycle(
             # docstring for the real duplicate this caused in production.
             post_content = await caption_cache.get(c.url_hash)
             cached = post_content is not None
+            # A cached caption from before the English rule existed is not
+            # trusted: it is rewritten like a miss.
+            if cached and not Writer.is_no_comment(post_content) and not is_english_caption(post_content):
+                post_content, cached = None, False
             if post_content is None:
                 post_content = await writer.write(c.title, c.content, context=background, published_at=c.published_at)
+
+            # Every letter of the caption has to be English (AI-73, the Leading
+            # News rule): a single foreign word is a writer slip. One retry
+            # with the rule restated, then the candidate is dropped.
+            if not Writer.is_no_comment(post_content) and not is_english_caption(post_content):
+                logger.warning("run_cycle: %s — caption not English, retrying once: %r", c.url, post_content[-120:])
+                post_content = await writer.write(c.title, c.content, context=background, published_at=c.published_at,
+                                                  english_retry=True)
+                if not Writer.is_no_comment(post_content) and not is_english_caption(post_content):
+                    logger.warning("run_cycle: %s — caption still not English, dropped from batch", c.url)
+                    continue
 
             # Time words (2026-10-11, core/time_words.py, from DailyNews; user: 时效性
             # 不能错). Every weekday or date the caption gives must be one the source

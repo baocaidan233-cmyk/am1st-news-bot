@@ -8,6 +8,7 @@ import httpx
 
 from core.config import AppConfig
 from core.caption_guard import former_president_violation
+from core.language import is_english_caption
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,13 @@ class GettrPublisher:
                 violation,
             )
             return None
-        headers = {"x-app-auth": json.dumps({"user": gettr.user_id, "token": gettr.user_token})}
+        # AI-73: every letter English. Reads `text`, the caption itself --
+        # payload.get("txt") above is always "" (the caption is at
+        # payload["data"]["txt"]).
+        if not is_english_caption(text or ""):
+            logger.error("GettrPublisher: caption is not English — not publishing %s", log_ref)
+            return None
+        headers ={"x-app-auth": json.dumps({"user": gettr.user_id, "token": gettr.user_token})}
         files = {"content": (None, json.dumps(payload))}
 
         try:
