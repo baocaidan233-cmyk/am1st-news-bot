@@ -951,6 +951,20 @@ class PreScoreConfig(BaseModel):
     min_title_words: int = 4
 
 
+class FactCheckConfig(BaseModel):
+    """Pre-publish fact check (2026-10-13, Linear AI-74, core/fact_check.py;
+    port of China Breaks). Claude Haiku says whether every fact in the
+    caption is in the article. A FAIL gets one rewrite by the writer with the
+    checker's reasons, then a second check; a second FAIL drops the candidate.
+    UNSURE and any API error let the caption through."""
+    enabled: bool = True
+    api_key: str = ""  # ANTHROPIC_API_KEY in .env
+    model: str = "claude-haiku-5-5"
+    effort: str = "low"  # same catch rate as medium on China Breaks' 250 hand-checked posts, ~15% cheaper
+    prompt_file: str = "prompts/fact_check_prompt.txt"
+    timeout_seconds: float = 60.0
+
+
 class AppConfig(BaseModel):
     notion: NotionConfig = Field(default_factory=NotionConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
@@ -968,6 +982,7 @@ class AppConfig(BaseModel):
     topic_mix: TopicMixConfig = Field(default_factory=TopicMixConfig)
     editor: EditorConfig = Field(default_factory=EditorConfig)
     prescore: PreScoreConfig = Field(default_factory=PreScoreConfig)
+    fact_check: FactCheckConfig = Field(default_factory=FactCheckConfig)
     max_publish_age_hours: int = 3
     poll_interval_seconds: int = 600
     cycle_timeout_seconds: int = 540  # 9 min — per the user's real n8n experience, a healthy cycle runs ~5min and almost never past 7min; this hard-cuts a stuck cycle so the next one always starts on schedule (main.py and main_publish.py loops both apply this, independently — see 2026-08-12 waterfall/no-external-retrigger discussion)
@@ -984,6 +999,7 @@ _ENV_OVERRIDES = {
     ("notion", "alert_user_id"): "NOTION_ALERT_USER_ID",
     ("redis", "url"): "REDIS_URL",
     ("openai", "api_key"): "OPENAI_API_KEY",
+    ("fact_check", "api_key"): "ANTHROPIC_API_KEY",
     ("openai", "fallback_api_key"): "OPENAI_API_KEY_FALLBACK",
     ("qdrant", "url"): "QDRANT_URL",
     ("qdrant", "api_key"): "QDRANT_API_KEY",

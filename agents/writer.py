@@ -73,6 +73,43 @@ class Writer:
         the model sees them. Optional and fails open: without it the message
         carries today's date alone, which is what it carried before.
         """
+        user_message = self._user_message(title, article, context, is_opinion, published_at, english_retry)
+        resp = await self._client.chat.completions.create(
+            model=self._model,
+            **self._extra,
+            messages=[
+                {"role": "system", "content": self._system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+    async def rewrite(self, title: str, article: str, draft: str, problems: list[str], context: str = "",
+                      is_opinion: bool = False, published_at=None) -> str:
+        """One rewrite of a caption the fact check failed (2026-10-13, Linear
+        AI-74, core/fact_check.py; port of China Breaks 5ea76b1): the same
+        request as write(), the failed draft as the model's own answer, then
+        the checker's reasons. Offline on China Breaks, 12 of 13 wrong drafts
+        came back right this way. The caller checks the result again."""
+        user_message = self._user_message(title, article, context, is_opinion, published_at, False)
+        fix = ("A fact-checker compared your post with the article and found these problems:\n"
+               + "\n".join(f"- {p}" for p in problems)
+               + "\n\nRewrite the post so that every fact matches the article. Fix these problems and "
+                 "nothing else; keep the rest, the format and the word limit. Output only the post.")
+        resp = await self._client.chat.completions.create(
+            model=self._model,
+            **self._extra,
+            messages=[
+                {"role": "system", "content": self._system_prompt},
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": draft},
+                {"role": "user", "content": fix},
+            ],
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+    @staticmethod
+    def _user_message(title, article, context, is_opinion, published_at, english_retry) -> str:
         user_message = (f"{date_block(article, published_at)}\n\n"
                         f"Title:  {title}\n\nArticle: {article}")
         if context:
@@ -97,15 +134,7 @@ class Writer:
                 "whatever language the article is in. Translate every name and word; "
                 "do not copy any of the original script."
             )
-        resp = await self._client.chat.completions.create(
-            model=self._model,
-            **self._extra,
-            messages=[
-                {"role": "system", "content": self._system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-        )
-        return (resp.choices[0].message.content or "").strip()
+        return user_message
 
     @staticmethod
     def is_no_comment(text: str) -> bool:
