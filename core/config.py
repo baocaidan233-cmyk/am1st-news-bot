@@ -258,6 +258,9 @@ class EntityVerifierConfig(BaseModel):
     # 2026-10-13 (AI-69): Claude Haiku's second opinion before an event-store
     # guard drops an article (core/guard_judge.py). Same key as the
     # first-report check, FIRST_REPORT_ANTHROPIC_API_KEY.
+    # 2026-10-13: the event judge (same_event_store) asks Claude Haiku first,
+    # gpt-4o-mini when Haiku cannot answer (core/haiku.py). Same key.
+    event_judge_haiku: bool = True
     guard_judge_enabled: bool = True
     guard_judge_model: str = "claude-haiku-5-5"
     guard_judge_prompt_file: str = "prompts/guard_judge_prompt.txt"
@@ -534,6 +537,9 @@ class PublishConfig(BaseModel):
     # in the ranked batch is taken instead.
     caption_stance_model: str = ""
     caption_stance_reasoning_effort: str = ""
+    # 2026-10-13: asked of Claude Haiku first (FIRST_REPORT_ANTHROPIC_API_KEY);
+    # caption_stance_model answers when Haiku cannot (core/haiku.py).
+    caption_stance_haiku: bool = True
     weekday_min_score: float = 6.0  # weekdays: heavier real news volume, prefer this floor first
     weekend_min_score: float = 5.0  # weekends: lighter volume, use this floor directly (also the weekday fallback if 6+ doesn't fill the batch)
     candidate_max_age_hours: int = 24  # Notion query ceiling — same pattern as candidate_min_score: the WIDER of weekday/weekend_max_age_hours below, so weekend-eligible candidates aren't excluded before select_batch() even sees them; select_batch() applies the actual day-aware ceiling on top

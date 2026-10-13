@@ -44,6 +44,7 @@ import trafilatura
 from qdrant_client import AsyncQdrantClient
 
 from agents.embedder import Embedder
+from core import haiku
 from core.config import AppConfig
 from core.same_news import lead_paragraph
 
@@ -215,6 +216,8 @@ class FirstReportCheck:
         """{"verdict": "stale" | "fresh", "reason": str, "evidence": {...} | None, ...}. Fails open."""
         if not self.enabled:
             return {"verdict": "fresh", "reason": "first-report check off"}
+        if not haiku.available():  # out of credit: cleared as before this check existed, not cached
+            return {"verdict": "fresh", "reason": "Haiku out of credit"}
         if url_hash in self._cache:
             self._cache.move_to_end(url_hash)
             return self._cache[url_hash]
@@ -242,6 +245,7 @@ class FirstReportCheck:
                     result["reason"] = "same fact reported earlier, but this article adds a major development"
                     break
         except Exception as e:
+            haiku.note_error(e)
             logger.warning("FirstReportCheck: %s for %s -- treating as fresh", type(e).__name__, url)
             result = {"verdict": "fresh", "reason": "first-report check failed: %s" % type(e).__name__,
                       "evidence": None, "stages": result.get("stages", [])}

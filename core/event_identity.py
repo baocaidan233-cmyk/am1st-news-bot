@@ -28,6 +28,7 @@ import spacy
 
 from collections import Counter
 
+from core import haiku
 from core.config import AppConfig
 from core.hashing import tokenize, weighted_overlap
 from core.language import is_english
@@ -1042,6 +1043,8 @@ class EventVerifier:
         self._same_event_ingest_prompt = Path(config.entity_verifier.same_event_ingest_prompt_file).read_text(encoding="utf-8")
         self._subtype_prompt = Path(config.entity_verifier.update_subtype_prompt_file).read_text(encoding="utf-8")
         self._related_event_prompt = Path(config.entity_verifier.related_event_prompt_file).read_text(encoding="utf-8")
+        ev = config.entity_verifier
+        self._haiku_key = ev.guard_judge_api_key if ev.event_judge_haiku else ""
 
     async def _ask(self, prompt: str, max_tokens: int) -> str:
         kwargs = dict(model=self._model, messages=[{"role": "user", "content": prompt}])
@@ -1075,7 +1078,17 @@ class EventVerifier:
         """Does B belong to A's event? ("SAME" | "DIFFERENT" | "UNCERTAIN", raw).
         Event = one real-world happening, its follow-ups and responses included
         (prompts/same_event_store_prompt.txt, AI-69). Raises on an unreadable
-        reply; the caller treats that as "not merged"."""
+        reply; the caller treats that as "not merged".
+
+        2026-10-13: asked of Claude Haiku first (core/haiku.py). On the 354
+        labelled pairs it merged wrongly 3 times to gpt-4o-mini's 8 and
+        caught as many same-event pairs (held-out 75% vs 71%). When Haiku
+        cannot answer (no credit, an error), gpt-4o-mini answers as before."""
+        if self._haiku_key:
+            d = await haiku.ask(self._haiku_key, self._same_event_store_prompt, f"A:\n{text_a}\n\nB:\n{text_b}",
+                                self._EVENT_SCHEMA["json_schema"]["schema"])
+            if d and d.get("verdict") in ("SAME", "DIFFERENT", "UNCERTAIN"):
+                return d["verdict"], json.dumps({**d, "model": haiku.MODEL}, ensure_ascii=False)
         kwargs = dict(model=self._model, response_format=self._EVENT_SCHEMA, messages=[
             {"role": "system", "content": self._same_event_store_prompt},
             {"role": "user", "content": f"A:\n{text_a}\n\nB:\n{text_b}"},

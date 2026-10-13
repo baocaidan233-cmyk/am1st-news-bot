@@ -24,6 +24,7 @@ from pathlib import Path
 
 import anthropic
 
+from core import haiku
 from core.config import AppConfig
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,8 @@ class GuardJudge:
         """(verdict, raw). verdict is DIFFERENT_EVENT, MAJOR_DEVELOPMENT, NO_NEW, OFF or ERROR."""
         if not self.enabled:
             return "OFF", {}
+        if not haiku.available():  # out of credit: drop as before, without calling
+            return "ERROR", {"error": "haiku out of credit"}
         try:
             resp = await self._client.messages.create(
                 model=self._model, max_tokens=16000, system=self._system,
@@ -61,6 +64,7 @@ class GuardJudge:
             data["usage"] = {"in": resp.usage.input_tokens, "out": resp.usage.output_tokens}
             return data["verdict"], data
         except Exception as e:
+            haiku.note_error(e)
             logger.warning("GuardJudge: %s -- the guard drops as before", type(e).__name__)
             return "ERROR", {"error": type(e).__name__}
 

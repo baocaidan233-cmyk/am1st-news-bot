@@ -4,6 +4,8 @@ import json
 import logging
 import re
 
+from core import haiku
+
 logger = logging.getLogger(__name__)
 
 # The last gate on editorial stance, on the exact text about to go out under
@@ -367,6 +369,13 @@ Reply with JSON only:
 {"villain": "...", "side": "our_side" | "opponent" | "foreign" | "none", "quote": "..."}"""
 
 
+_CAPTION_SCHEMA = {
+    "type": "object", "additionalProperties": False, "required": ["villain", "side", "quote"],
+    "properties": {"villain": {"type": "string"}, "side": {"type": "string", "enum": ["our_side", "opponent", "foreign", "none"]},
+                   "quote": {"type": "string"}},
+}
+
+
 def _norm(s: str) -> str:
     s = (s or "").lower().replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
     return " ".join(s.split())
@@ -386,8 +395,13 @@ class CaptionStanceGuard:
         self._extra = ({"reasoning_effort": p.caption_stance_reasoning_effort}
                        if self.model.startswith("gpt-5") and p.caption_stance_reasoning_effort else {})
         self._client = create_openai_client(config) if self.enabled else None
+        # 2026-10-13: Claude Haiku first, self.model when Haiku cannot answer
+        # (core/haiku.py). Same prompt, same code rule. On 599 re-labelled of
+        # the 1,657 captions Haiku caught about 81% and blocked about 3.0% of
+        # good captions, level with this model's 10-11 measurement.
+        self._haiku_key = p.first_report_api_key if (self.enabled and p.caption_stance_haiku) else ""
         if self.enabled:
-            logger.info("CaptionStanceGuard: on (%s %s)", self.model, self._extra or "")
+            logger.info("CaptionStanceGuard: on (%s%s %s)", "Haiku, then " if self._haiku_key else "", self.model, self._extra or "")
 
     async def violation(self, post_content: str) -> str | None:
         if not self.enabled:
@@ -396,6 +410,10 @@ class CaptionStanceGuard:
                             if not l.strip().startswith("http")).strip()
         if len(caption) < 40:
             return None
+        if self._haiku_key:
+            d = await haiku.ask(self._haiku_key, _CAPTION_PROMPT, caption[:2000], _CAPTION_SCHEMA)
+            if d is not None:
+                return self._decide(d, caption)
         try:
             kw = {"max_completion_tokens": 2000} if self.model.startswith("gpt-5") else {"temperature": 0, "max_tokens": 200}
             r = await self._client.chat.completions.create(
@@ -408,6 +426,10 @@ class CaptionStanceGuard:
         except Exception:
             logger.warning("CaptionStanceGuard: check failed, not blocking", exc_info=True)
             return None
+        return self._decide(d, caption)
+
+    @staticmethod
+    def _decide(d, caption: str) -> str | None:
         if not isinstance(d, dict) or str(d.get("side", "")).strip().lower() != "our_side":
             return None
         quote = _norm(str(d.get("quote") or "")).strip('"')
