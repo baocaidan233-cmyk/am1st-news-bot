@@ -22,7 +22,15 @@ last 3 days 20 such reprints had reached the pool because one copy had no
 description and the embedding similarity fell under the duplicate line.
 
 The first copy seen is kept; which outlet published it first is for the event
-store and the clustering step to sort out."""
+store and the clustering step to sort out.
+
+2026-10-14, user: the original over the relay. When the first copy came from
+a site that only relays others' articles (_RELAYS), the original arriving
+later is kept instead of dropped -- the relay's page often cannot be
+extracted, so the story was lost (Hollywood Reporter's Getty bankruptcy and
+Tennessee Star's Omar piece behind revolver.news; two Jonathan Turley posts
+behind The Liberty Daily). A relay never displaces anything: arriving second,
+it is still a reprint."""
 from __future__ import annotations
 
 import hashlib
@@ -33,6 +41,8 @@ _OUTLET_SUFFIX = re.compile(r"\s+[|\-–—]\s+[^|\-–—]{2,40}$")
 _TAG = re.compile(r"<[^>]+>")
 _MIN_TITLE_WORDS = 4
 _MIN_DESCRIPTION_CHARS = 80
+_RELAYS = frozenset({"revolver.news", "thelibertydaily.com", "realclearpolitics.com", "instapundit.com"})
+_RELAY_MARK = "relay:"
 
 
 def _norm(text: str) -> str:
@@ -63,15 +73,27 @@ async def reprint_of(store, title: str, description: str, url: str) -> str | Non
     """Records this item's keys and returns why it is a reprint of an earlier
     item ("title" / "description"), or None. `store` is core.redis_store.RedisStore."""
     here = site(url)
+    mine = (_RELAY_MARK + here) if here in _RELAYS else here
     reason = None
     tk = title_key(title)
     if tk:
-        earlier = await store.first_seen("reprint:" + tk, here)
-        if earlier is not None and earlier != here:
-            reason = f"title, first seen on {earlier}"
+        earlier = await _first(store, "reprint:" + tk, mine)
+        if earlier is not None and earlier.removeprefix(_RELAY_MARK) != here:
+            reason = f"title, first seen on {earlier.removeprefix(_RELAY_MARK)}"
     dk = description_key(description)
     if dk:
-        earlier = await store.first_seen("reprint:" + dk, here)
+        earlier = await _first(store, "reprint:" + dk, mine)
         if earlier is not None and reason is None:
-            reason = f"description, first seen on {earlier}"
+            reason = f"description, first seen on {earlier.removeprefix(_RELAY_MARK)}"
     return reason
+
+
+async def _first(store, key: str, mine: str) -> str | None:
+    """store.first_seen(), except that an original finding a relay's claim
+    takes the key over and counts as first."""
+    earlier = await store.first_seen(key, mine)
+    relay_first = earlier is not None and (earlier.startswith(_RELAY_MARK) or earlier in _RELAYS)  # unmarked: claimed before 10-14
+    if relay_first and not mine.startswith(_RELAY_MARK):
+        await store.claim(key, mine)
+        return None
+    return earlier

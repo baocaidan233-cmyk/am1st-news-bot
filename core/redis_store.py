@@ -62,6 +62,16 @@ class RedisStore:
             logger.exception("RedisStore: first_seen failed for %s — treating as new (fail open)", key)
             return None
 
+    async def claim(self, key: str, value: str) -> None:
+        """Overwrites a first_seen() key (core/reprint.py: an original takes a
+        relay's claim over). Best effort."""
+        if self._client is None:
+            return
+        try:
+            await self._client.set(self._prefix + key, value, ex=self._ttl)
+        except Exception:
+            logger.exception("RedisStore: claim failed for %s", key)
+
     async def close(self) -> None:
         if self._client is not None:
             await self._client.aclose()
