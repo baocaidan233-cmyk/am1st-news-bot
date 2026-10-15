@@ -126,7 +126,7 @@ class FirstReportCheck:
         self._window = config.publish.timeliness_window_hours
         self._model = config.publish.first_report_model
         self._system = Path(config.publish.first_report_prompt_file).read_text(encoding="utf-8") if self.enabled else ""
-        self._claude = anthropic.AsyncAnthropic(api_key=key, timeout=60, max_retries=1) if self.enabled else None
+        self._claude = anthropic.AsyncAnthropic(api_key=key, timeout=60, max_retries=3) if self.enabled else None
         self._qdrant = (AsyncQdrantClient(url=config.qdrant.url, api_key=config.qdrant.api_key or None,
                                           timeout=config.qdrant.timeout_seconds) if self.enabled else None)
         self._embedder = Embedder(config) if self.enabled else None

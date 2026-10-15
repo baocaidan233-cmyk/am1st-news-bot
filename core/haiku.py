@@ -1,15 +1,20 @@
-"""Claude Haiku for AM1ST's judges, and what happens when it cannot answer
-(2026-10-13).
+"""Claude Haiku for the channel's judges, and what happens when it cannot answer.
 
-The user: Haiku comes with a monthly credit that resets at the end of the
-month, so a judge goes to Haiku wherever it measured better, and when the
-credit runs out the channel must fall back by itself. ask() returns the parsed
-JSON answer, or None for any failure; each caller then does what it did before
-Haiku: the event judge and the caption stance check ask their old OpenAI model,
-the guard judge drops as before, the first-report check clears the article.
+The user (10-13): Haiku comes with a monthly credit that resets at the end of
+the month, so a judge goes to Haiku wherever it measured better, and when the
+credit runs out the channel must fall back by itself.
 
-An out-of-credit (or billing) error puts every caller on its fallback for an
-hour without calling Haiku again; other errors fall back for that one call."""
+The user (10-15): ONLY an out-of-credit key falls back to OpenAI. An
+out-of-credit (or billing) error puts every judge on its OpenAI model for an
+hour without calling Haiku again (available() is False). Any other failure
+(timeout, overload, server error -- each retried 3 times -- an unreadable
+answer, a refusal) never goes to OpenAI: the caller takes its own
+conservative default -- the publish judge skips the candidate for this round,
+the event judge does not merge, the guard judge drops, the first-report check
+clears.
+
+ask() returns the parsed JSON answer, or None for any failure; a caller tells
+the two apart with available()."""
 from __future__ import annotations
 
 import json
@@ -43,7 +48,7 @@ def note_error(e: Exception) -> None:
 
 def _client(api_key: str) -> anthropic.AsyncAnthropic:
     if api_key not in _clients:
-        _clients[api_key] = anthropic.AsyncAnthropic(api_key=api_key, timeout=60, max_retries=1)
+        _clients[api_key] = anthropic.AsyncAnthropic(api_key=api_key, timeout=60, max_retries=3)
     return _clients[api_key]
 
 
@@ -64,7 +69,7 @@ async def ask(api_key: str, system: str, user: str, schema: dict | None = None, 
         resp = await _client(api_key).messages.create(**kw)
     except Exception as e:
         note_error(e)
-        logger.warning("Haiku: %s -- this call falls back", type(e).__name__)
+        logger.warning("Haiku: %s -- %s", type(e).__name__, "this call falls back" if not available() else "the judge takes its default")
         return None
     if resp.stop_reason == "refusal":
         return None
@@ -72,5 +77,5 @@ async def ask(api_key: str, system: str, user: str, schema: dict | None = None, 
     try:
         return json.loads(text) if schema else json.loads(re.search(r"\{.*\}", text, re.S).group(0))
     except Exception:
-        logger.warning("Haiku: unreadable answer -- this call falls back")
+        logger.warning("Haiku: unreadable answer -- the judge takes its default")
         return None

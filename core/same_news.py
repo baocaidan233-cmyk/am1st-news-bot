@@ -81,7 +81,7 @@ class SameNewsJudge:
         self._model = config.openai.chat_model
         self._prompt = Path(config.entity_verifier.same_news_prompt_file).read_text(encoding="utf-8")
         # 2026-10-15 (AI-60, user: switch every judge Haiku measured better on):
-        # Claude Haiku first, self._model when Haiku cannot answer (core/haiku.py).
+        # Claude Haiku first, self._model only when the Haiku key is out of credit (core/haiku.py).
         # On the 10-14 Gettr pairs Haiku stopped 85% of China Breaks' repeats
         # (4o-mini 20%), 53-72% on Leading News (8-14%), 45% on Market Watcher
         # (0%), blocking 0-5% of different news.
@@ -96,6 +96,11 @@ class SameNewsJudge:
             d = await haiku.ask(self._haiku_key, self._prompt, user, _SCHEMA["json_schema"]["schema"], cache=True)
             if d and d.get("verdict") in ("SAME", "DIFFERENT", "UNCERTAIN"):
                 return d["verdict"], json.dumps({**d, "model": haiku.MODEL}, ensure_ascii=False)
+            if haiku.available():
+                # User 10-15: only an out-of-credit key goes to OpenAI. Any other
+                # failure: find_publishable() skips this candidate for this round
+                # (its error path, not a verdict) and Haiku is asked again next round.
+                raise RuntimeError("Haiku could not answer (not out of credit)")
         kwargs = dict(model=self._model, response_format=_SCHEMA, messages=[
             {"role": "system", "content": self._prompt},
             {"role": "user", "content": user},

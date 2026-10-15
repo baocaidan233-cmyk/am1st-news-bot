@@ -1082,13 +1082,16 @@ class EventVerifier:
 
         2026-10-13: asked of Claude Haiku first (core/haiku.py). On the 354
         labelled pairs it merged wrongly 3 times to gpt-4o-mini's 8 and
-        caught as many same-event pairs (held-out 75% vs 71%). When Haiku
-        cannot answer (no credit, an error), gpt-4o-mini answers as before."""
+        caught as many same-event pairs (held-out 75% vs 71%). gpt-4o-mini
+        answers only when the Haiku key is out of credit; any other Haiku
+        failure is ERROR, not merged (user 10-15)."""
         if self._haiku_key:
             d = await haiku.ask(self._haiku_key, self._same_event_store_prompt, f"A:\n{text_a}\n\nB:\n{text_b}",
                                 self._EVENT_SCHEMA["json_schema"]["schema"])
             if d and d.get("verdict") in ("SAME", "DIFFERENT", "UNCERTAIN"):
                 return d["verdict"], json.dumps({**d, "model": haiku.MODEL}, ensure_ascii=False)
+            if haiku.available():  # user 10-15: only no credit goes to gpt-4o-mini; otherwise not merged
+                return "ERROR", json.dumps({"error": "Haiku could not answer", "model": haiku.MODEL})
         kwargs = dict(model=self._model, response_format=self._EVENT_SCHEMA, messages=[
             {"role": "system", "content": self._same_event_store_prompt},
             {"role": "user", "content": f"A:\n{text_a}\n\nB:\n{text_b}"},

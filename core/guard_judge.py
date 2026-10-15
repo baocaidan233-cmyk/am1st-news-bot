@@ -42,7 +42,7 @@ class GuardJudge:
         self.enabled = ev.guard_judge_enabled and bool(ev.guard_judge_api_key)
         self._model = ev.guard_judge_model
         self._system = Path(ev.guard_judge_prompt_file).read_text(encoding="utf-8") if self.enabled else ""
-        self._client = (anthropic.AsyncAnthropic(api_key=ev.guard_judge_api_key, timeout=60, max_retries=1)
+        self._client = (anthropic.AsyncAnthropic(api_key=ev.guard_judge_api_key, timeout=60, max_retries=3)
                         if self.enabled else None)
         if ev.guard_judge_enabled and not ev.guard_judge_api_key:
             logger.warning("GuardJudge: FIRST_REPORT_ANTHROPIC_API_KEY not set -- guards drop on the subtype alone")
