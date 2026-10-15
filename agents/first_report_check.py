@@ -48,6 +48,22 @@ from core import haiku
 from core.config import AppConfig
 from core.same_news import lead_paragraph
 
+
+def first_paragraphs(body: str, n: int = 3, limit: int = 1500) -> str:
+    """Headline + first paragraph could not tell a new round from the old
+    one (10-14: a new batch of DOJ voting charges, a bill formally introduced
+    after its September announcement, a second undercover video were all
+    stopped as old). The first three paragraphs carry the names and dates
+    that tell them apart."""
+    out = []
+    for para in (body or "").split("\n"):
+        p = " ".join(para.split())
+        if len(p) >= 80:
+            out.append(p)
+        if len(out) == n:
+            break
+    return "\n".join(out)[:limit]
+
 logger = logging.getLogger(__name__)
 
 # collection -> (time field of the article itself, text fields)
@@ -61,6 +77,9 @@ _STORES = {
     "marketwatcher_events": ("published_at", ("text", "representative_text")),
 }
 _STORE_FLOOR = 0.60
+# A listing page is not a report of anything: a tag page dated by its newest
+# item stood in as the "earlier report" of the Omar raid (10-13).
+_LISTING = re.compile(r"/(tag|tags|category|categories|topic|topics|author|authors|search|page)/", re.I)
 _MAX_CANDIDATES = 3
 _HDR = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.9"}
@@ -132,13 +151,24 @@ class FirstReportCheck:
                     t = float(h.payload.get(tf))
                 except (TypeError, ValueError):
                     continue
-                if h.score < _STORE_FLOOR or u == own or t > cutoff or u in seen:
+                if h.score < _STORE_FLOOR or u == own or t > cutoff or u in seen or _LISTING.search(u):
                     continue
                 seen.add(u)
                 text = _clean(" \n".join(str(h.payload.get(k)) for k in fields if h.payload.get(k)))[:700]
                 hits.append({"src": col, "score": round(h.score, 3), "url": h.payload.get("url", ""), "t": t, "text": text})
         hits.sort(key=lambda h: -h["score"])
-        return hits[:_MAX_CANDIDATES]
+        hits = hits[:_MAX_CANDIDATES]
+        # A store keeps only headline + summary: open each hit for its first paragraphs.
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            for h in hits:
+                try:
+                    page = await client.get(h["url"], headers=_HDR)
+                    paras = first_paragraphs(trafilatura.extract(page.text, include_comments=False) or "") if page.status_code == 200 else ""
+                except Exception:
+                    paras = ""
+                if paras:
+                    h["text"] = _clean(h["text"].split("\n")[0] + "\n" + paras)[:1700]
+        return hits
 
     @staticmethod
     async def _resolve(client: httpx.AsyncClient, url: str) -> Optional[str]:
@@ -184,10 +214,10 @@ class FirstReportCheck:
                     if real:
                         page = await client.get(real, headers=_HDR)
                         if page.status_code == 200:
-                            lead = lead_paragraph(trafilatura.extract(page.text, include_comments=False) or "")
+                            lead = first_paragraphs(trafilatura.extract(page.text, include_comments=False) or "")
                 except Exception:
                     pass
-                if lead:  # a headline alone is never evidence
+                if lead and not _LISTING.search(real or link):  # a headline alone is never evidence
                     out.append({"src": "google_news", "url": real or link, "t": t, "text": _clean(f"{head}\n{lead}")[:700]})
         return out
 
@@ -224,7 +254,7 @@ class FirstReportCheck:
         now = now or datetime.now(timezone.utc)
         cutoff = (now - timedelta(hours=self._window)).timestamp()
         lead = lead_paragraph(_strip_title(body, title))
-        ours = f"{title}\n{lead}"
+        ours = f"{title}\n{first_paragraphs(_strip_title(body, title))}"
         result = {"verdict": "fresh", "reason": "no earlier report of the same fact found", "evidence": None, "stages": []}
         try:
             for stage in ("store", "search"):

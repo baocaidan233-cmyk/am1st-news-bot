@@ -47,13 +47,17 @@ def _client(api_key: str) -> anthropic.AsyncAnthropic:
     return _clients[api_key]
 
 
-async def ask(api_key: str, system: str, user: str, schema: dict | None = None) -> dict | None:
+async def ask(api_key: str, system: str, user: str, schema: dict | None = None, cache: bool = False) -> dict | None:
     """Haiku at its default thinking (the setting that measured best on every
     judge, 10-13). With a schema the answer is structured output; without one
-    the first {...} in the reply is parsed."""
+    the first {...} in the reply is parsed. cache=True marks the system prompt
+    for Haiku's prompt cache: worth it only for a prompt past ~1,000 tokens
+    called several times within a few minutes (user 10-15: use the cache price
+    where it reliably saves; under 512 tokens nothing is cached)."""
     if not api_key or not available():
         return None
-    kw = dict(model=MODEL, max_tokens=16000, system=system, messages=[{"role": "user", "content": user}])
+    sys_block = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}] if cache else system
+    kw = dict(model=MODEL, max_tokens=16000, system=sys_block, messages=[{"role": "user", "content": user}])
     if schema:
         kw["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
     try:

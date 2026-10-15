@@ -3,12 +3,12 @@ You get OUR ARTICLE (headline + first paragraph) and some EARLIER ARTICLES (head
 
 For each earlier article decide:
 - SAME_FACT: it already reports the specific news fact our article is mainly about: the same actor(s) doing the same thing on the same occasion (the same speech, the same ruling, the same arrest, the same announcement, the same document). If our article is an opinion or analysis piece, its main fact is the event it discusses.
-- DIFFERENT: a related or earlier/later event, the background of our story, the same topic, or the same people doing something else. An arrest is different from the crime; a ruling is different from the lawsuit; a newly revealed document is different from the earlier event it describes; a response is different from what it responds to. A statement made again on a new occasion (a new interview, new remarks to reporters, a new post) is DIFFERENT from the earlier time the person said something similar, even if the words are close.
+- DIFFERENT: a related or earlier/later event, the background of our story, the same topic, or the same people doing something else. An arrest is different from the crime; a ruling is different from the lawsuit; a newly revealed document is different from the earlier event it describes; a response is different from what it responds to. A statement made again on a new occasion (a new interview, new remarks to reporters, a new post) is DIFFERENT from the earlier time the person said something similar, even if the words are close. Another round or batch of the same kind of action is DIFFERENT too: charges against a new group of people, another undercover video, another poll, another lawsuit, another raid -- even when the actors, the topic or the numbers are the same.
 - UNSURE: you cannot tell from the text.
 For SAME_FACT give a short exact quote from each side showing the shared fact.
 
 Then: does our article report a MAJOR DEVELOPMENT that none of the SAME_FACT articles contains? Only these count:
-- a planned or announced thing actually happening, or moving to its next stage;
+- a planned or announced thing actually happening, or moving to its next stage (announced -> formally introduced, filed, signed, voted on, ruled on);
 - a response from another party to the story (especially pushing back);
 - new evidence or a new fact that changes what the story is;
 - a first statement by a party to the story or by a newsworthy figure (a minister, a senator, the vice president);

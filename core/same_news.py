@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from core import haiku
 from core.config import AppConfig
 from core.event_identity import event_identity_text
 from core.openai_client import create_openai_client
@@ -79,12 +80,25 @@ class SameNewsJudge:
         self._client = create_openai_client(config)
         self._model = config.openai.chat_model
         self._prompt = Path(config.entity_verifier.same_news_prompt_file).read_text(encoding="utf-8")
+        # 2026-10-15 (AI-60, user: switch every judge Haiku measured better on):
+        # Claude Haiku first, self._model when Haiku cannot answer (core/haiku.py).
+        # On the 10-14 Gettr pairs Haiku stopped 85% of China Breaks' repeats
+        # (4o-mini 20%), 53-72% on Leading News (8-14%), 45% on Market Watcher
+        # (0%), blocking 0-5% of different news.
+        ev = config.entity_verifier
+        self._haiku_key = (getattr(ev, "haiku_api_key", "") or getattr(ev, "guard_judge_api_key", "")) if getattr(ev, "same_news_haiku", True) else ""
 
     async def judge(self, published: str, candidate: str) -> tuple[str, str]:
         """("SAME" | "DIFFERENT" | "UNCERTAIN", raw reply)."""
+        user = f"PUBLISHED:\n{published}\n\nCANDIDATE:\n{candidate}"
+        if self._haiku_key:
+            # The prompt is ~800 tokens and a candidate is compared with up to 5 posts in a row: cached.
+            d = await haiku.ask(self._haiku_key, self._prompt, user, _SCHEMA["json_schema"]["schema"], cache=True)
+            if d and d.get("verdict") in ("SAME", "DIFFERENT", "UNCERTAIN"):
+                return d["verdict"], json.dumps({**d, "model": haiku.MODEL}, ensure_ascii=False)
         kwargs = dict(model=self._model, response_format=_SCHEMA, messages=[
             {"role": "system", "content": self._prompt},
-            {"role": "user", "content": f"PUBLISHED:\n{published}\n\nCANDIDATE:\n{candidate}"},
+            {"role": "user", "content": user},
         ])
         if self._model.startswith("gpt-5"):
             kwargs["max_completion_tokens"] = 400
