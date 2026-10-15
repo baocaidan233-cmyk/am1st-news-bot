@@ -497,8 +497,10 @@ def _eastern(day: dt.date, local_ref: dt.date, east_ref: dt.date, future: bool) 
 
 # A US person, office or place. "House" only as the White House or the
 # chamber: Diaoyutai State Guesthouse and Seoul's Blue House are not.
+# A currency is not a place: "US$133.53 billion" in a Chinese customs story
+# moved Beijing's Wednesday to Tuesday (DailyNews, 2026-10-14).
 _US_MARK = re.compile(
-    r"\b(?:U\.S\.|US|USA|United States|Americans?|Washington|White House|the House|House Speaker"
+    r"\b(?:U\.S\.(?!\s*dollars?)|US(?!\$|\s*dollars?)|USA|United States|Americans?|Washington|White House|the House|House Speaker"
     r"|House of Representatives|Pentagon|Congress|congressional|Senate|senators?|congressman|congresswoman"
     r"|lawmakers|Capitol|State Department|Treasury|Justice Department|DOJ|FBI|CIA|DHS|ICE|Federal Reserve"
     r"|the Fed|Centcom|CENTCOM|Trump|Vance|Rubio|Hegseth|Bessent|Leavitt|Lutnick|Greer|Witkoff|Pigott"
