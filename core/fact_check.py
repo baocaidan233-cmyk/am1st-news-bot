@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,6 +29,15 @@ import anthropic
 from core.config import AppConfig
 
 logger = logging.getLogger(__name__)
+
+# Words a post never has and a note about the post always has: Haiku answering
+# the checker instead of correcting (DailyNews, offline 10-15: "ADAspace is not
+# stated as the launcher; the article says China launched 10 satellites.").
+_NOT_A_POST = re.compile(r"\b(?:the|this) (?:article|post)\b|\bnot stated\b|\b[SP]\d{1,2}\b"
+                         # Its own working pasted in (news channels, offline 10-15:
+                         # "Wait, I must return the corrected post only. Here it is: ...").
+                         r"|\bcorrected post\b|(?:^|\n)\s*Wait\b|\bhere it is\b|\bI (?:should|must|need to) (?:return|output)\b",
+                         re.I)
 
 _SCHEMA = {
     "type": "object", "additionalProperties": False, "required": ["claims", "verdict"],
@@ -49,6 +59,8 @@ class FactChecker:
         self._model = fc.model
         self._effort = fc.effort
         self._system = Path(fc.prompt_file).read_text(encoding="utf-8") if self.enabled else ""
+        self._fix_system = (Path("prompts/fact_fix_prompt.txt").read_text(encoding="utf-8")
+                            if self.enabled else "")
         self._client = (anthropic.AsyncAnthropic(api_key=fc.api_key, timeout=fc.timeout_seconds, max_retries=1)
                         if self.enabled else None)
         if fc.enabled and not fc.api_key:
@@ -78,6 +90,39 @@ class FactChecker:
             logger.warning("FactChecker: %s for %s -- letting it through", type(e).__name__, url)
         self._log(url, stage, post, verdict, claims, usage)
         return {"verdict": verdict, "problems": problems}
+
+    async def fix(self, title: str, article: str, post: str, problems: list[str]) -> str | None:
+        """Claude Haiku's correction of a post this check failed (2026-10-15, user:
+        四个新闻频道也应该让 haiku 重写 -- the writer model only writes the first
+        draft), or None -- refused, unchanged, a note instead of a post, an API
+        error -- and the caller drops the candidate. The prompt is
+        prompts/fact_fix_prompt.txt. Ported from DailyNews b671d57, where on 99
+        live drafts the check failed Haiku's corrections passed 90 against 89
+        for the writer model's rewrites."""
+        if not self.enabled or not problems:
+            return None
+        user = (f"ARTICLE TITLE: {title}\n\nARTICLE:\n{article}\n\nPOST:\n{post}"
+                "\n\nPROBLEMS:\n" + "\n".join(f"- {p}" for p in problems))
+        try:
+            resp = await self._client.messages.create(
+                model=self._model, max_tokens=4000, system=self._fix_system,
+                messages=[{"role": "user", "content": user}], output_config={"effort": "low"})
+        except Exception as e:
+            logger.warning("FactChecker: fix failed (%s)", type(e).__name__)
+            return None
+        if resp.stop_reason == "refusal":
+            logger.warning("FactChecker: fix refused")
+            return None
+        text = next((b.text for b in resp.content if b.type == "text"), "")
+        # Paragraphs kept, each one's whitespace tidied; "exports,." after a cut.
+        text = "\n\n".join(" ".join(p.split()) for p in re.split(r"\n\s*\n", text.strip()) if p.strip())
+        text = re.sub(r"\s*,\s*([.!?])", r"\1", text)
+        note = _NOT_A_POST.search(text)
+        if not text or " ".join(text.split()) == " ".join(post.split()) or note:
+            logger.warning("FactChecker: fix unusable (%s): %r",
+                           "a note, not a post" if note else "empty or unchanged", text[:200])
+            return None
+        return text
 
     @staticmethod
     def _log(url, stage, post, verdict, claims, usage) -> None:

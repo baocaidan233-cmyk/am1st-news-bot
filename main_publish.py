@@ -147,18 +147,19 @@ async def _fact_checked(fact_checker: FactChecker, writer: Writer, c, post: str,
     """The caption to use after the pre-publish fact check, or None to drop the
     candidate (2026-10-13, Linear AI-74, core/fact_check.py; port of China
     Breaks 5ea76b1). User, 10-13: a caption that fails is not thrown away at
-    once -- it may be this round's best story -- the writer gets one rewrite
+    once -- it may be this round's best story -- it gets one correction
     with the checker's reasons, and only a second failure drops it. PASS,
-    UNSURE and a broken check all let the caption through. The caller runs
+    UNSURE and a broken check all let the caption through. 2026-10-15 (user:
+    四个新闻频道也应该让 haiku 重写): the correction is Claude Haiku's
+    (FactChecker.fix), never the writer model's. The caller runs
     the time-word, caption, title, Biden and stance gates on the result."""
     first = await fact_checker.check(c.title or "", c.content or "", post, c.url, "draft")
     if first["verdict"] != "FAIL":
         return post
-    logger.info("run_cycle: %s — fact check failed, rewriting once: %s", c.url, " | ".join(first["problems"])[:500])
-    new = await writer.rewrite(c.title, c.content, post, first["problems"], context=background,
-                               published_at=c.published_at)
-    if Writer.is_no_comment(new) or not is_english_caption(new):
-        logger.warning("run_cycle: %s — fact-check rewrite unusable, dropped from batch", c.url)
+    logger.info("run_cycle: %s — fact check failed, Haiku correcting once: %s", c.url, " | ".join(first["problems"])[:500])
+    new = await fact_checker.fix(c.title or "", c.content or "", post, first["problems"])
+    if not new or Writer.is_no_comment(new) or not is_english_caption(new):
+        logger.warning("run_cycle: %s — fact-check correction unusable, dropped from batch", c.url)
         return None
     second = await fact_checker.check(c.title or "", c.content or "", new, c.url, "rewrite")
     if second["verdict"] == "FAIL":
