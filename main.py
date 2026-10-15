@@ -79,7 +79,7 @@ from core.prescore import PreScorer, log_prescore_decision
 from core.reprint import reprint_of
 from core.roundup import roundup_rule
 from core.notion_sources import load_rss_sources
-from core.qdrant_store import EventStore, QdrantStore, ensure_collection_with_retry
+from core.qdrant_store import EventStore, PostedHistoryStore, QdrantStore, ensure_collection_with_retry
 from core.redis_store import AppealLabels, RedisStore, StuckVersions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -117,6 +117,7 @@ async def _guard_judge(config, members, matched: dict) -> tuple[str, dict]:
 async def run_cycle(
     config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run,
     prescorer=None, shadow_scorer=None, appeal_tagger=None, appeal_labels=None, stuck_versions=None,
+    posted_store=None,
 ) -> None:
     sources = await load_rss_sources(config)
     if not sources:
@@ -409,6 +410,13 @@ async def run_cycle(
     cluster_subtypes: list[str] = []
     cluster_entity_tokens_list: list[set[str]] = []
     scoring_candidates = []  # list of (Candidate, embedding, cluster_idx)
+    # Cross-cycle dedup compares only with articles this channel posted
+    # (2026-10-15, AI-68, user). If the posted list cannot be read, the check
+    # is skipped this cycle: comparing with unposted pool articles is the
+    # error this replaces.
+    posted_hashes = await posted_store.recent_url_hashes() if posted_store is not None else None
+    if posted_hashes is None:
+        logger.warning("run_cycle: posted url hashes unavailable — cross-cycle dedup skipped this cycle")
     for cluster_idx, members in enumerate(cluster_members):
         if not members:
             cluster_peeks.append(None)
@@ -621,7 +629,10 @@ async def run_cycle(
         preview_first_seen_dt = datetime.fromtimestamp(preview_first_seen, tz=timezone.utc)
 
         for c, embedding in members:
-            best_score, matched_content, matched_hash = await qdrant_store.most_similar_recent(embedding)
+            if posted_hashes is None:
+                best_score, matched_content, matched_hash = 0.0, "", ""
+            else:
+                best_score, matched_content, matched_hash = await qdrant_store.most_similar_recent(embedding, posted_hashes)
             # 2026-09-07: was a bare `best_score >= threshold` cutoff — see
             # core/event_identity.py's cross_cycle_dedup_verdict() docstring
             # for the real China_Breaks incident (and AM1ST's own confirmed
@@ -634,6 +645,7 @@ async def run_cycle(
             if matched_content:
                 log_decision(config, {
                     "check_type": "cross_cycle_dedup",
+                    "compared_against": "posted",
                     "candidate_url": c.url,
                     "cosine_score": best_score,
                     "threshold": threshold,
@@ -860,10 +872,12 @@ async def main() -> None:
     redis_store = RedisStore(config)
     qdrant_store = QdrantStore(config)
     event_store = EventStore(config)
+    posted_store = PostedHistoryStore(config)
     hub_index = HubIndex(config)
     event_verifier = EventVerifier(config)
     await ensure_collection_with_retry(qdrant_store, "am1st_embeddings")
     await ensure_collection_with_retry(event_store, "am1st_events")
+    await ensure_collection_with_retry(posted_store, "am1st_posting_news_embedding")
     embedder = Embedder(config)
     scorer = Scorer(config)
     # Built once alongside Scorer, not per cycle: it holds an AsyncOpenAI client
@@ -892,7 +906,7 @@ async def main() -> None:
             try:
                 await asyncio.wait_for(
                     run_cycle(config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run, prescorer, shadow_scorer,
-                              appeal_tagger, appeal_labels, stuck_versions),
+                              appeal_tagger, appeal_labels, stuck_versions, posted_store),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:
@@ -911,6 +925,7 @@ async def main() -> None:
         await redis_store.close()
         await qdrant_store.close()
         await event_store.close()
+        await posted_store.close()
         await hub_index.close()
         await appeal_labels.close()
         await stuck_versions.close()

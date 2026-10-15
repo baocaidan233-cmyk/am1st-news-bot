@@ -11,6 +11,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    MatchAny,
     MatchValue,
     OrderBy,
     PayloadSchemaType,
@@ -121,8 +122,12 @@ class QdrantStore:
         await self._client.create_payload_index(
             collection_name=self._collection, field_name="publishedAt", field_schema=PayloadSchemaType.INTEGER,
         )
+        # urlHash: most_similar_recent()'s posted-only filter (2026-10-15).
+        await self._client.create_payload_index(
+            collection_name=self._collection, field_name="urlHash", field_schema=PayloadSchemaType.KEYWORD,
+        )
 
-    async def most_similar_recent(self, embedding: list[float]) -> tuple[float, str, str]:
+    async def most_similar_recent(self, embedding: list[float], url_hashes: set[str] | None = None) -> tuple[float, str, str]:
         """Highest cosine similarity against title+description embeddings
         whose source article was published in the last cross_cycle_window_hours,
         plus that matched point's own title+description text. Returns
@@ -146,12 +151,22 @@ class QdrantStore:
         if self._client is None:
             return 0.0, "", ""
         cutoff = time.time() - self._window_seconds
+        # 2026-10-15 (AI-68, user): only articles this channel actually posted
+        # count. Of 460 drops in 44h, 337 were matched against a pool article
+        # that was never posted -- nothing a reader had seen. `url_hashes` is
+        # PostedHistoryStore.recent_url_hashes(); an empty set means nothing
+        # posted to compare against.
+        must = [FieldCondition(key="publishedAt", range=Range(gte=cutoff))]
+        if url_hashes is not None:
+            if not url_hashes:
+                return 0.0, "", ""
+            must.append(FieldCondition(key="urlHash", match=MatchAny(any=sorted(url_hashes))))
         try:
             result = await self._client.query_points(
                 collection_name=self._collection,
                 query=embedding,
                 limit=1,
-                query_filter=Filter(must=[FieldCondition(key="publishedAt", range=Range(gte=cutoff))]),
+                query_filter=Filter(must=must),
                 with_payload=True,
             )
         except Exception:
@@ -774,6 +789,34 @@ class PostedHistoryStore:
         await self._client.create_payload_index(
             collection_name=self._collection, field_name="sentAt", field_schema=PayloadSchemaType.INTEGER,
         )
+
+    async def recent_url_hashes(self) -> set[str] | None:
+        """urlHash of every post this channel sent in the last
+        posted_dedup_window_hours (by `sentAt`), for main.py's cross-cycle
+        check (2026-10-15). None if Qdrant isn't configured or the read
+        fails, so the caller can skip the check rather than compare against
+        nothing."""
+        if self._client is None:
+            return None
+        cutoff = int(time.time() - self._window_seconds)
+        hashes: set[str] = set()
+        offset = None
+        try:
+            while True:
+                points, offset = await self._client.scroll(
+                    collection_name=self._collection,
+                    scroll_filter=Filter(must=[FieldCondition(key="sentAt", range=Range(gte=cutoff))]),
+                    limit=500,
+                    offset=offset,
+                    with_payload=["urlHash"],
+                    with_vectors=False,
+                )
+                hashes.update(h for p in points if (h := (p.payload or {}).get("urlHash")))
+                if offset is None:
+                    return hashes
+        except Exception:
+            logger.exception("PostedHistoryStore: recent_url_hashes failed")
+            return None
 
     async def most_recent_publish_ts(self) -> float | None:
         """The real wall-clock `publishedAt` of the single most recent post
