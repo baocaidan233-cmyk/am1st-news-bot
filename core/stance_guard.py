@@ -395,7 +395,7 @@ class CaptionStanceGuard:
         self._extra = ({"reasoning_effort": p.caption_stance_reasoning_effort}
                        if self.model.startswith("gpt-5") and p.caption_stance_reasoning_effort else {})
         self._client = create_openai_client(config) if self.enabled else None
-        # 2026-10-13: Claude Haiku first, self.model when Haiku cannot answer
+        # 2026-10-13: Claude Haiku first, self.model only when the Haiku key is out of credit (user 10-15)
         # (core/haiku.py). Same prompt, same code rule. On 599 re-labelled of
         # the 1,657 captions Haiku caught about 81% and blocked about 3.0% of
         # good captions, level with this model's 10-11 measurement.
@@ -414,6 +414,11 @@ class CaptionStanceGuard:
             d = await haiku.ask(self._haiku_key, _CAPTION_PROMPT, caption[:2000], _CAPTION_SCHEMA)
             if d is not None:
                 return self._decide(d, caption)
+            if haiku.available():
+                # User 10-15: only an out-of-credit key goes to self.model. Any
+                # other Haiku failure: not blocking, as when the check fails.
+                logger.warning("CaptionStanceGuard: Haiku could not answer (not out of credit), not blocking")
+                return None
         try:
             kw = {"max_completion_tokens": 2000} if self.model.startswith("gpt-5") else {"temperature": 0, "max_tokens": 200}
             r = await self._client.chat.completions.create(
