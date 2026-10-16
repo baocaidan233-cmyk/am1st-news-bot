@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 
 import redis.asyncio as redis
@@ -241,23 +242,76 @@ class CaptionCache:
             if config.redis.url
             else None
         )
+        self._checked: dict[str, str | None] = {}
+
+    # Fact-check marker (2026-10-16, Linear AI-89). A cache hit used to skip
+    # the fact check, so a caption cached before the check existed (10-13), or
+    # one whose check could not run, went out unchecked. A caption that was
+    # really checked (PASS or UNSURE) is stored with a digest of its exact
+    # text in front, so a caption changed after its check reads as unchecked.
+    # The marker rides in the caption's own value, not a key of its own: a
+    # cache hit costs one Redis command, as before (Upstash bills per command).
+    # Every failure reads as "not checked": one more check, never a caption
+    # let through unchecked.
+    _MARK = "\x1ffc:"
+
+    @staticmethod
+    def _digest(caption: str) -> str:
+        return hashlib.sha256((caption or "").encode("utf-8")).hexdigest()[:16]
+
+    def _split(self, value: str | None) -> tuple[str | None, str | None]:
+        """(caption, digest it was checked as, or None) from a stored value."""
+        if value is None or not value.startswith(self._MARK):
+            return value, None
+        digest, _, caption = value[len(self._MARK):].partition("\x1f")
+        return caption, digest
 
     async def get(self, url_hash: str) -> str | None:
         if self._client is None or not url_hash:
             return None
         try:
-            return await self._client.get(self._prefix + url_hash)
+            caption, digest = self._split(await self._client.get(self._prefix + url_hash))
         except Exception:
             logger.exception("CaptionCache: get failed for %s — treating as cache miss (fail open)", url_hash)
             return None
+        self._checked[url_hash] = digest
+        return caption
 
-    async def set(self, url_hash: str, caption: str) -> None:
+    async def set(self, url_hash: str, caption: str, checked: bool = False) -> None:
+        if self._client is None or not url_hash:
+            return
+        value = f"{self._MARK}{self._digest(caption)}\x1f{caption}" if checked and caption else caption
+        try:
+            await self._client.set(self._prefix + url_hash, value, ex=self._ttl)
+        except Exception:
+            logger.exception("CaptionCache: set failed for %s — continuing without caching this caption", url_hash)
+            return
+        self._checked[url_hash] = self._digest(caption) if checked and caption else None
+
+    async def is_checked(self, url_hash: str, caption: str) -> bool:
+        """True if this exact caption was really checked. Answered from the
+        last get()/set() of this url_hash when there was one -- no Redis call."""
+        if self._client is None or not url_hash or not caption:
+            return False
+        if url_hash not in self._checked:
+            await self.get(url_hash)
+        return self._checked.get(url_hash) == self._digest(caption)
+
+    async def mark_checked(self, url_hash: str, caption: str) -> None:
+        """Stores the caption with its marker (one SET, which also refreshes
+        the TTL). A failure only means it is checked again next time."""
+        await self.set(url_hash, caption, checked=True)
+
+    async def delete(self, url_hash: str) -> None:
+        """Drops the caption, so one a gate refused is written and checked
+        afresh next cycle instead of reused."""
+        self._checked.pop(url_hash, None)
         if self._client is None or not url_hash:
             return
         try:
-            await self._client.set(self._prefix + url_hash, caption, ex=self._ttl)
-        except Exception:
-            logger.exception("CaptionCache: set failed for %s — continuing without caching this caption", url_hash)
+            await self._client.delete(self._prefix + url_hash)
+        except Exception as e:
+            logger.warning("CaptionCache: delete failed for %s (%s)", url_hash, type(e).__name__)
 
     async def close(self) -> None:
         if self._client is not None:

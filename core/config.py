@@ -976,9 +976,13 @@ class PreScoreConfig(BaseModel):
 class FactCheckConfig(BaseModel):
     """Pre-publish fact check (2026-10-13, Linear AI-74, core/fact_check.py;
     port of China Breaks). Claude Haiku says whether every fact in the
-    caption is in the article. A FAIL gets one rewrite by the writer with the
-    checker's reasons, then a second check; a second FAIL drops the candidate.
-    UNSURE and any API error let the caption through."""
+    caption is in the article. A FAIL gets one correction with the checker's
+    reasons, written by Haiku (FactChecker.fix, since 2026-10-15; not the
+    writer), then a second check; a second FAIL drops the candidate. UNSURE
+    lets the caption through. Haiku broken (error, timeout, refusal,
+    unreadable answer) -> the same call once on openai.chat_model, gpt-4o-mini
+    (2026-10-16, AI-89); only when that fails too does the check let the
+    caption through and the correction drop it."""
     enabled: bool = True
     api_key: str = ""  # ANTHROPIC_API_KEY in .env
     model: str = "claude-haiku-5-5"

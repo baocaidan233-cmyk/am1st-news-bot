@@ -143,31 +143,51 @@ def _build_background(matched: dict | None) -> str:
     return " ".join(parts)
 
 
-async def _fact_checked(fact_checker: FactChecker, writer: Writer, c, post: str, background: str) -> str | None:
-    """The caption to use after the pre-publish fact check, or None to drop the
-    candidate (2026-10-13, Linear AI-74, core/fact_check.py; port of China
-    Breaks 5ea76b1). User, 10-13: a caption that fails is not thrown away at
-    once -- it may be this round's best story -- it gets one correction
-    with the checker's reasons, and only a second failure drops it. PASS,
-    UNSURE and a broken check all let the caption through. 2026-10-15 (user:
-    四个新闻频道也应该让 haiku 重写): the correction is Claude Haiku's
-    (FactChecker.fix), never the writer model's. The caller runs
-    the time-word, caption, title, Biden and stance gates on the result."""
+def _time_fixed(c, post: str) -> str:
+    """fix_caption_time_words() on a caption about to be fact-checked
+    (2026-10-16, AI-89): its cuts used to run only after the check, so they
+    were never checked. Logged like the later call in run_cycle()."""
+    post, time_fixes = fix_caption_time_words(post, c.title or "", getattr(c, "content", "") or "",
+                                              c.published_at, c.url)
+    if time_fixes:
+        logger.info("run_cycle: %s — time words: %s", c.url, " | ".join(time_fixes))
+    return post
+
+
+async def _fact_checked(fact_checker: FactChecker, writer: Writer, c, post: str, background: str) -> tuple[str | None, bool]:
+    """(caption to use after the pre-publish fact check, or None to drop the
+    candidate; whether a real verdict let it through) (2026-10-13, Linear
+    AI-74, core/fact_check.py; port of China Breaks 5ea76b1). User, 10-13: a
+    caption that fails is not thrown away at once -- it may be this round's
+    best story -- it gets one correction with the checker's reasons, and only
+    a second failure drops it. PASS, UNSURE and a broken check all let the
+    caption through. 2026-10-15 (user: 四个新闻频道也应该让 haiku 重写): the
+    correction is Claude Haiku's (FactChecker.fix), never the writer
+    model's. The caller runs the time-word, caption, title, Biden and stance
+    gates on the result.
+
+    2026-10-16 (AI-89): the second value is True only for PASS or UNSURE
+    (from Haiku or its gpt-4o-mini fallback); a check that could not run
+    (ERROR, OFF) gives False, so the caller caches the caption without
+    marking it checked and the next cycle checks it again. Time words are
+    applied right before each check, so no text changes after the last one."""
+    post = _time_fixed(c, post)
     first = await fact_checker.check(c.title or "", c.content or "", post, c.url, "draft")
     if first["verdict"] != "FAIL":
-        return post
+        return post, first["verdict"] in ("PASS", "UNSURE")
     logger.info("run_cycle: %s — fact check failed, Haiku correcting once: %s", c.url, " | ".join(first["problems"])[:500])
     new = await fact_checker.fix(c.title or "", c.content or "", post, first["problems"])
     if not new or Writer.is_no_comment(new) or not is_english_caption(new):
         logger.warning("run_cycle: %s — fact-check correction unusable, dropped from batch", c.url)
-        return None
+        return None, False
+    new = _time_fixed(c, new)
     second = await fact_checker.check(c.title or "", c.content or "", new, c.url, "rewrite")
     if second["verdict"] == "FAIL":
         logger.warning("run_cycle: %s — fact check failed again after rewrite, dropped from batch: %s",
                        c.url, " | ".join(second["problems"])[:500])
-        return None
+        return None, False
     logger.info("run_cycle: %s — fact-check rewrite accepted (%s)", c.url, second["verdict"])
-    return new
+    return new, second["verdict"] in ("PASS", "UNSURE")
 
 
 async def run_cycle(
@@ -444,6 +464,10 @@ async def run_cycle(
             # docstring for the real duplicate this caused in production.
             post_content = await caption_cache.get(c.url_hash)
             cached = post_content is not None
+            # 2026-10-16 (AI-89): what the cache holds for this story, so a gate
+            # below that drops the caption can delete it (the next cycle then
+            # writes and checks a new one instead of replaying a rejected one).
+            in_cache, cached_text = cached, post_content
             # A cached caption from before the English rule existed is not
             # trusted: it is rewritten like a miss.
             if cached and not Writer.is_no_comment(post_content) and not is_english_caption(post_content):
@@ -460,18 +484,28 @@ async def run_cycle(
                                                   english_retry=True)
                 if not Writer.is_no_comment(post_content) and not is_english_caption(post_content):
                     logger.warning("run_cycle: %s — caption still not English, dropped from batch", c.url)
+                    if in_cache:
+                        await caption_cache.delete(c.url_hash)
                     continue
 
             # Fact check on a freshly written caption (2026-10-13, AI-74), before every
-            # gate below, so a rewrite goes through all of them. A cached caption
-            # was checked when it was written.
-            if not cached and fact_checker is not None and not Writer.is_no_comment(post_content):
-                checked = await _fact_checked(fact_checker, writer, c, post_content, background)
+            # gate below, so a rewrite goes through all of them. 2026-10-16 (AI-89):
+            # a cached caption too, unless the cache marks this exact text as having
+            # passed a real check -- one cached before the check existed (10-13) or
+            # whose check could not run used to go out unchecked. c.content is the
+            # extracted article here, cache hit or not (extraction runs first).
+            fact_ok, checked_text = False, None
+            if (fact_checker is not None and getattr(fact_checker, "enabled", True)
+                    and not Writer.is_no_comment(post_content)
+                    and (not cached or not await caption_cache.is_checked(c.url_hash, post_content))):
+                checked, fact_ok = await _fact_checked(fact_checker, writer, c, post_content, background)
                 if checked is None:
+                    if in_cache:
+                        await caption_cache.delete(c.url_hash)
                     if not dry_run:
                         await mark_writer_rejected(config, c.page_id)
                     continue
-                post_content = checked
+                post_content = checked_text = checked
 
             # Time words (2026-10-11, core/time_words.py, from DailyNews; user: 时效性
             # 不能错). Every weekday or date the caption gives must be one the source
@@ -498,6 +532,8 @@ async def run_cycle(
                     "run_cycle: %s — caption blocked by caption_guard rule %s, dropped from batch",
                     c.url, violation,
                 )
+                if in_cache:
+                    await caption_cache.delete(c.url_hash)
                 continue
 
 
@@ -518,6 +554,8 @@ async def run_cycle(
                     "run_cycle: %s — caption blocked by title_guard rule %s, dropped from batch",
                     c.url, title_rule,
                 )
+                if in_cache:
+                    await caption_cache.delete(c.url_hash)
                 continue
 
             # A caption that names Biden when the article never does (2026-10-11,
@@ -528,6 +566,8 @@ async def run_cycle(
                     "run_cycle: %s — caption blocked by caption_guard rule invented-biden, dropped from batch",
                     c.url,
                 )
+                if in_cache:
+                    await caption_cache.delete(c.url_hash)
                 continue
 
             # Third gate on the same caption, plus the headline it will carry.
@@ -553,14 +593,21 @@ async def run_cycle(
                     "run_cycle: %s — blocked by stance_guard rule %s, dropped from batch",
                     c.url, stance_rule,
                 )
+                if in_cache:
+                    await caption_cache.delete(c.url_hash)
                 if not dry_run:
                     await mark_stance_blocked(config, c.page_id, stance_rule)
                     if stuck_versions is not None:
                         await stuck_versions.mark(c.url_hash, "stance")
                 continue
 
-            if not cached and not Writer.is_no_comment(post_content):
-                await caption_cache.set(c.url_hash, post_content)
+            # Cached only once every gate above passed. 2026-10-16 (AI-89): a cached
+            # caption the check corrected is stored again, and the text is marked
+            # checked only when a real verdict passed this exact text.
+            if not Writer.is_no_comment(post_content):
+                really_checked = fact_ok and post_content == checked_text
+                if not cached or post_content != cached_text or really_checked:
+                    await caption_cache.set(c.url_hash, post_content, checked=really_checked)
             if Writer.is_no_comment(post_content):
                 logger.info("run_cycle: %s — writer returned No comment, dropped from batch", c.url)
                 # 2026-09-08, per the user's explicit request: a static
@@ -632,6 +679,8 @@ async def run_cycle(
                 break
             logger.warning("run_cycle: %s — caption blocked by stance_guard rule %s, trying the next candidate",
                            winner.url, rule)
+            # Its caption is cached by now; a rejected one is not replayed (2026-10-16, AI-89).
+            await caption_cache.delete(winner.url_hash)
             if not dry_run:
                 await mark_stance_blocked(config, winner.page_id, rule)
                 if stuck_versions is not None:
