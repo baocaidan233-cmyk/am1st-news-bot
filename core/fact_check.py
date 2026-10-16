@@ -39,6 +39,15 @@ _NOT_A_POST = re.compile(r"\b(?:the|this) (?:article|post)\b|\bnot stated\b|\b[S
                          r"|\bcorrected post\b|(?:^|\n)\s*Wait\b|\bhere it is\b|\bI (?:should|must|need to) (?:return|output)\b",
                          re.I)
 
+
+def _new_note(text: str, post: str):
+    """The first note-like phrase in text that the post did not already carry.
+    China Breaks drafts write "The article says ..." themselves; a correction
+    keeping that phrase is not Haiku commenting (10-16: two good corrections
+    dropped for it)."""
+    had = post.lower()
+    return next((m for m in _NOT_A_POST.finditer(text) if m.group(0).lower() not in had), None)
+
 _SCHEMA = {
     "type": "object", "additionalProperties": False, "required": ["claims", "verdict"],
     "properties": {
@@ -117,7 +126,7 @@ class FactChecker:
         # Paragraphs kept, each one's whitespace tidied; "exports,." after a cut.
         text = "\n\n".join(" ".join(p.split()) for p in re.split(r"\n\s*\n", text.strip()) if p.strip())
         text = re.sub(r"\s*,\s*([.!?])", r"\1", text)
-        note = _NOT_A_POST.search(text)
+        note = _new_note(text, post)
         if not text or " ".join(text.split()) == " ".join(post.split()) or note:
             logger.warning("FactChecker: fix unusable (%s): %r",
                            "a note, not a post" if note else "empty or unchanged", text[:200])
