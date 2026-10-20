@@ -148,3 +148,27 @@ def roundup_rule(title: str, url: str) -> str | None:
     if _URL_LIVE_SECTION.search(path):
         return "url_live_section"
     return None
+
+# Newsletters (owner, 2026-10-20: "in today's newsletter, 就是拼盘简报").
+# Their headline reads like one story, so the title and URL rules above miss
+# them; the summary or the URL gives the page away. WSJ's newsletter items
+# open their summary with "Plus: ..." or "Plus, ...", FT's say "Also in
+# today's newsletter, ...", TechCabal's "In today's edition: ...", and Fox
+# News, CNBC, The Texan and WSJ's What's News carry "newsletter" in the URL.
+# Measured 2026-10-20 on the last ~10 days of ingested articles: 19 on AM1ST (WSJ Politics Newsletter, Logistics Report, Morning Risk Report and What's News; FT newsletters; Fox News' Campus Radicals and Antisemitism Exposed newsletters; The Texan's The 40),
+# every one a newsletter, none a single story.
+_NEWSLETTER_SUMMARY = re.compile(
+    r"^\W*plus\s*[:,]\s"
+    r"|\bin\s+(?:today|this\s+week|this\s+morning|tonight)['’]?s?\s+[\w&\s]{0,40}?(?:newsletter|edition|issue)\b",
+    re.IGNORECASE)
+_NEWSLETTER_URL = re.compile(r"newsletter", re.IGNORECASE)
+_TAG = re.compile(r"<[^>]+>")
+
+
+def newsletter_rule(description: str, url: str) -> str | None:
+    """The name of the newsletter rule this candidate breaks, or None."""
+    if _NEWSLETTER_SUMMARY.search(_TAG.sub(" ", description or "")):
+        return "newsletter_summary"
+    if _NEWSLETTER_URL.search(urlparse(url or "").path or ""):
+        return "newsletter_url"
+    return None
