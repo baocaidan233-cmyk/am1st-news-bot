@@ -1021,7 +1021,7 @@ class IngestionConfig(BaseModel):
     # later, then given up. Saved texts are what main_publish.py reads.
     fulltext_dir: str = "data/fulltext"
     fulltext_retry_minutes: float = 60
-    fulltext_keep_hours: float = 48  # housekeeping only: the publish pool's oldest candidate is 24h
+    fulltext_keep_hours: float = 24  # user 10-21: the pool's oldest candidate is 24h; past that main_publish.py fetches again
     # Same article inside one batch by vector, only at or above this cosine and
     # only between articles with a real headline (4+ words) and summary: 0.85
     # merged different outlets' reports of the same event (10-20 measurement).
