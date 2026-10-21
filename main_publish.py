@@ -6,6 +6,17 @@ main.py only ever writes candidates into the shared Notion candidate pool;
 this process is the only thing that ever reads that pool to actually pick
 something to post.
 
+2026-10-21 (Linear AI-24, user 10-21) — read the order below with this
+change: the batch is chosen exactly as before, then RANKED FIRST (the ranking
+never read the caption) and walked one candidate at a time, stopping at the
+first that passes every step. Per candidate: dedup -> headline stance ->
+full text (saved at ingestion, core/fulltext.py) -> timeliness -> caption and
+its checks -> former-Trump -> caption stance. Dedup for a candidate the
+ingestion merged judge filed: asked again only about our posts sent since it
+entered the pool (MergedJudge.posts_since()); for one filed before that: the
+old event pre-check, and the old caption check after writing. The judge's
+LOW_VALUE goes last in its band.
+
 Cycle order (every publish.interval_seconds by default, 30 min — but see
 compute_dynamic_interval() below, 2026-09-05: the actual wait each cycle
 scales 0.6x-1.3x that base on real-time news volume, clamped to
@@ -84,7 +95,7 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
-from agents.candidate_selector import filter_former_trump, is_duty, select_batch, shortlist
+from agents.candidate_selector import _TIER1_MIN_SCORE, filter_former_trump, is_duty, select_batch, shortlist
 from agents.embedder import Embedder
 from agents.extractor import Extractor
 from agents.gettr_publisher import GettrPublisher
@@ -110,7 +121,8 @@ from core.notion_candidates import topic_publication_debt
 from core.topic_mix import compute_adjustments
 from core.publish_cadence import compute_dynamic_interval
 from core.notion_sources import load_rss_sources
-from core.qdrant_store import EventStore, PostedHistoryStore, ensure_collection_with_retry
+from core.qdrant_store import EventStore, PostedHistoryStore, QdrantStore, ensure_collection_with_retry
+from core.merged_judge import MergedJudge, log_verdict
 from core.redis_store import AppealLabels, BatchSeen, CaptionCache, CycleCounter, PostedDupStrikes, StuckVersions
 from core.title_guard import title_violation
 from core.fact_check import FactChecker
@@ -214,6 +226,7 @@ async def run_cycle(
     stuck_versions: StuckVersions | None = None,
     caption_stance: CaptionStanceGuard | None = None,
     fact_checker: FactChecker | None = None,
+    merged_judge: MergedJudge | None = None,
 ) -> bool:
     """Returns True iff this cycle actually published something — main()'s
     loop uses this to track how recently the channel last posted, so the
@@ -292,6 +305,9 @@ async def run_cycle(
 
     editor_order: dict[str, int] = {}
     editor_meta: dict[str, tuple[str | None, str]] = {}
+    # The merged judge's posts/queue view, loaded once per cycle and only if a
+    # candidate filed by it comes up (_judged_dedup below).
+    judge_loaded: bool | None = None
     for attempt in range(1, config.publish.max_widen_attempts + 1):
         # Reset per attempt: a widen that falls back to select_batch must not
         # inherit the previous attempt's ordering.
@@ -333,66 +349,99 @@ async def run_cycle(
         tried_ids = {c.page_id for c in batch}
         remaining = [c for c in remaining if c.page_id not in tried_ids]
 
-        # Cheap feasibility pass, before extraction and writing. See
-        # PublishConfig.batch_event_dedup_cosine for why it is re-asked here
-        # and why the bar is so much higher than the publish-side one.
-        if config.publish.batch_event_dedup_cosine > 0:
-            kept = []
+        # Order first, then one candidate at a time (2026-10-21, AI-24, user
+        # 10-21). The ranking reads the hot flag, the score and the publish
+        # time, never the caption, so ranking the batch before anything is
+        # fetched or written gives the order ranking after writing gave -- and
+        # the walk below stops at the first candidate that passes every step,
+        # instead of extracting, checking and captioning all ten to publish one
+        # (10-14..10-20: 6.9 of every 10 finished, 1 published).
+        try:
+            judged = await event_store.points_for_urls([c.url for c in batch])
+        except Exception:
+            logger.exception("run_cycle: could not read the ingestion verdicts — every candidate takes the old dedup path")
+            judged = {}
+        if editor_order:
+            # The editor already ranked these, reading all of them together
+            # with the brief. Re-scoring them one at a time with the arithmetic
+            # the editor replaced would just undo that.
+            ranked = sorted(batch, key=lambda c: editor_order.get(c.page_id, 10**6))
+            for c in ranked:
+                subject, why = editor_meta.get(c.page_id, (None, ""))
+                logger.info("run_cycle: editor rank %d — %s [%s] %s",
+                            editor_order.get(c.page_id, -1) + 1, c.url, subject, why)
+        else:
+            ranked = await ranker.rank(batch, trending_headlines, topic_adjustments)
+            # The judge's LOW_VALUE (凑数) goes last in its band (user 10-16, 10-21).
+            # A stable sort, so the ranker's order holds everywhere else.
+            ranked.sort(key=lambda c: (not c.is_hot, c.llm_score < _TIER1_MIN_SCORE,
+                                       (judged.get(c.url) or {}).get("relation") == "LOW_VALUE"))
+        ranked_len = len(ranked)
+
+        # 2026-09-23 — retire a candidate the dedup check keeps rejecting,
+        # instead of re-extracting and re-writing it every cycle for the rest
+        # of its 24h window (172 of 184 repeatedly-judged candidates in the
+        # full posted_dedup log never changed verdict = 1539 wasted cycles).
+        # Notion is only written on the strike that reaches the threshold, so
+        # the common case (a candidate seen once and dropped) still writes
+        # nothing at all. See PublishConfig.posted_dedup_strikes_before_retire.
+        async def _retire_if_settled(c) -> None:
+            strikes = await dup_strikes.strike(c.url_hash)
+            if strikes < config.publish.posted_dedup_strikes_before_retire:
+                return
+            if dry_run:
+                logger.info("run_cycle: dry-run — would retire %s after %d duplicate verdicts", c.url, strikes)
+                return
+            if await mark_dedup_rejected(config, c.page_id):
+                logger.info("run_cycle: %s retired from the pool — %d consecutive duplicate verdicts", c.url, strikes)
+
+        async def _judged_dedup(c, rec) -> tuple[str, str]:
+            """("pass" | "drop" | "legacy", relation) for a candidate the merged
+            judge filed at ingestion (2026-10-21, AI-24, user 10-21). That judge
+            compared it with our posts then; only posts sent since can have
+            changed the answer, so it is asked again -- same prompt, same search
+            -- only when one of those is related (10-14..10-20: 13% of the
+            published). "legacy" (the judge cannot load or answer) sends the
+            candidate through the old caption-based check instead. `since`
+            reaches back one cycle limit before the Notion row was written: the
+            judge read our posts when its ingestion cycle began."""
+            nonlocal judge_loaded
+            if judge_loaded is None:
+                judge_loaded = await merged_judge.prepare_cycle()
+            if not judge_loaded:
+                return "legacy", ""
+            since = c.created_at.timestamp() - config.cycle_timeout_seconds
+            later = merged_judge.posts_since(c.title, c.description, rec["vec"], since)
+            if not later:
+                return "pass", rec.get("relation", "")
+            verdict = await merged_judge.judge(c.url, c.title, c.description, rec["vec"])
+            log_verdict(config, {**verdict.record, "stage": "publish", "posts_since": [p.get("url") for p in later]})
+            if verdict.relation == "ERROR":
+                return "legacy", ""
+            return ("drop" if verdict.action == "drop" else "pass"), verdict.relation
+
+        async def _event_already_published(c) -> bool:
+            """The old cheap pre-check, now only for candidates without an
+            ingestion verdict. See PublishConfig.batch_event_dedup_cosine."""
+            if config.publish.batch_event_dedup_cosine <= 0:
+                return False
             try:
-                batch_vectors = await embedder.embed_many(
-                    [f"{c.title}\n{c.description}"[:6000] for c in batch])
+                matched = await event_store.peek(await embedder.embed(f"{c.title}\n{c.description}"[:6000]))
             except Exception:
-                logger.exception("run_cycle: pre-batch embedding failed — skipping this check")
-                batch_vectors = []
-            for i, c in enumerate(batch):
-                if not batch_vectors:
-                    kept.append(c)
-                    continue
-                try:
-                    matched = await event_store.peek(batch_vectors[i])
-                except Exception:
-                    logger.exception(
-                        "run_cycle: pre-batch event dedup failed for %s — keeping it", c.url)
-                    kept.append(c)
-                    continue
-                score = (matched or {}).get("_score", 0.0)
-                if matched and matched.get("published") and score >= config.publish.batch_event_dedup_cosine:
-                    logger.info(
-                        "run_cycle: %s dropped before extraction — this event was already published "
-                        "(cosine %.3f), saving a fetch and a caption", c.url, score)
-                    continue
-                kept.append(c)
-            dropped = len(batch) - len(kept)
-            batch = kept
-            if dropped:
-                logger.info("run_cycle: widen attempt %d — %d of the batch were already-published events",
-                            attempt, dropped)
-            if not batch:
-                logger.info("run_cycle: widen attempt %d — every candidate was an already-published event", attempt)
-                continue
+                logger.exception("run_cycle: pre-extraction event dedup failed for %s — keeping it", c.url)
+                return False
+            score = (matched or {}).get("_score", 0.0)
+            if matched and matched.get("published") and score >= config.publish.batch_event_dedup_cosine:
+                logger.info(
+                    "run_cycle: %s dropped before extraction — this event was already published "
+                    "(cosine %.3f), saving a fetch and a caption", c.url, score)
+                return True
+            return False
 
-        # Second stance net, on the headline alone and before anything is paid
-        # for: a headline written from the hostile side is dropped here instead
-        # of being extracted and captioned first. See StanceVectorGuard.
-        if stance_vec is not None and stance_vec.enabled:
-            kept = []
-            for c in batch:
-                rule = await stance_vec.violation(getattr(c, "title", "") or "")
-                if rule:
-                    logger.warning("run_cycle: %s — blocked by stance_guard rule %s, dropped from batch", c.url, rule)
-                    if not dry_run:
-                        await mark_stance_blocked(config, c.page_id, rule)
-                        if stuck_versions is not None:
-                            await stuck_versions.mark(c.url_hash, "stance")
-                    continue
-                kept.append(c)
-            batch = kept
-            if not batch:
-                logger.info("run_cycle: widen attempt %d — every candidate failed the vector stance check", attempt)
-                continue
-
-        generated = []
-        for c in batch:
+        async def _caption(c) -> bool:
+            """Every step from the full text to a finished caption in
+            c.post_content -- the old per-batch loop body, unchanged. False:
+            this candidate is out."""
             # The text ingestion already fetched (2026-10-21, AI-29, core/fulltext.py);
             # fetched here only for a candidate from before that, or a cache miss.
             text = fulltext.load(config, c.url_hash)
@@ -414,7 +463,7 @@ async def run_cycle(
                 await record_extraction_failure(config, c.page_id, c.extraction_attempts)
                 if stuck_versions is not None and not dry_run:
                     await stuck_versions.mark(c.url_hash, "extraction")
-                continue
+                return False
             c.content = text
 
             # English-only channel — check the actual extracted article text,
@@ -427,7 +476,7 @@ async def run_cycle(
             # model noticing at all.
             if not is_english(c.content[:1000]):
                 logger.info("run_cycle: %s dropped — non-English article content", c.url)
-                continue
+                return False
 
             # Timeliness (2026-10-10, agents/timeliness_check.py), before the
             # writer is paid for. User: a story first reported 48 hours or
@@ -447,7 +496,7 @@ async def run_cycle(
                         await mark_writer_rejected(config, c.page_id)
                         if stuck_versions is not None:
                             await stuck_versions.mark(c.url_hash, "stale")
-                    continue
+                    return False
 
             # Background for the writer (2026-08-31) — peek() against the same
             # title+description embedding space main.py already uses, so this
@@ -493,7 +542,7 @@ async def run_cycle(
                     logger.warning("run_cycle: %s — caption still not English, dropped from batch", c.url)
                     if in_cache:
                         await caption_cache.delete(c.url_hash)
-                    continue
+                    return False
 
             # Fact check on a freshly written caption (2026-10-13, AI-74), before every
             # gate below, so a rewrite goes through all of them. 2026-10-16 (AI-89):
@@ -511,7 +560,7 @@ async def run_cycle(
                         await caption_cache.delete(c.url_hash)
                     if not dry_run:
                         await mark_writer_rejected(config, c.page_id)
-                    continue
+                    return False
                 post_content = checked_text = checked
 
             # Time words (2026-10-11, core/time_words.py, from DailyNews; user: 时效性
@@ -541,7 +590,7 @@ async def run_cycle(
                 )
                 if in_cache:
                     await caption_cache.delete(c.url_hash)
-                continue
+                return False
 
 
             # Second gate on the same caption, and a different question from
@@ -563,7 +612,7 @@ async def run_cycle(
                 )
                 if in_cache:
                     await caption_cache.delete(c.url_hash)
-                continue
+                return False
 
             # A caption that names Biden when the article never does (2026-10-11,
             # core/caption_guard.py; same rule as CB, LN, MW). c.content is the
@@ -575,7 +624,7 @@ async def run_cycle(
                 )
                 if in_cache:
                     await caption_cache.delete(c.url_hash)
-                continue
+                return False
 
             # Third gate on the same caption, plus the headline it will carry.
             # A different question again: not "is this fact wrong" but "are we
@@ -606,7 +655,7 @@ async def run_cycle(
                     await mark_stance_blocked(config, c.page_id, stance_rule)
                     if stuck_versions is not None:
                         await stuck_versions.mark(c.url_hash, "stance")
-                continue
+                return False
 
             # Cached only once every gate above passed. 2026-10-16 (AI-89): a cached
             # caption the check corrected is stored again, and the text is marked
@@ -626,79 +675,82 @@ async def run_cycle(
                 await mark_writer_rejected(config, c.page_id)
                 if stuck_versions is not None and not dry_run:
                     await stuck_versions.mark(c.url_hash, "no-comment")
-                continue
+                return False
             # Link appended after generation, not counted against the writer's
             # word cap — the AI's own output stays pure caption text.
             c.post_content = f"{post_content}\n\n{c.url}"
-            generated.append(c)
+            return True
 
-        if not generated:
-            logger.info("run_cycle: widen attempt %d — nothing survived extraction/content-gen", attempt)
-            continue
+        winner = None
+        processed = 0
+        for c in ranked:
+            path, relation = "legacy", ""
+            rec = judged.get(c.url)
+            if rec is not None and merged_judge is not None:
+                path, relation = await _judged_dedup(c, rec)
+                if path == "drop":
+                    logger.info("run_cycle: %s dropped — a post sent after it entered the pool already told readers (%s)",
+                                c.url, relation)
+                    if not dry_run and await mark_dedup_rejected(config, c.page_id):
+                        logger.info("run_cycle: %s retired from the pool", c.url)
+                    continue
+            if path == "legacy" and await _event_already_published(c):
+                continue
 
-        # Re-check now that full text/post_content exist — the first pass
-        # only had title+description to work with, so this catches stale
-        # phrasing that only shows up in the article body or the generated
-        # caption.
-        generated = filter_former_trump(generated)
-        if not generated:
-            logger.info("run_cycle: widen attempt %d — all candidates dropped by post-extraction former-Trump filter", attempt)
-            continue
+            # Second stance net, on the headline alone and before anything is paid
+            # for: a headline written from the hostile side is dropped here instead
+            # of being extracted and captioned first. See StanceVectorGuard.
+            if stance_vec is not None and stance_vec.enabled:
+                rule = await stance_vec.violation(getattr(c, "title", "") or "")
+                if rule:
+                    logger.warning("run_cycle: %s — blocked by stance_guard rule %s, dropped from batch", c.url, rule)
+                    if not dry_run:
+                        await mark_stance_blocked(config, c.page_id, rule)
+                        if stuck_versions is not None:
+                            await stuck_versions.mark(c.url_hash, "stance")
+                    continue
 
-        if editor_order:
-            # The editor already ranked these, reading all of them together
-            # with the brief. Re-scoring them one at a time with the arithmetic
-            # the editor replaced would just undo that.
-            ranked = sorted(generated, key=lambda c: editor_order.get(c.page_id, 10**6))
-            for c in ranked:
-                subject, why = editor_meta.get(c.page_id, (None, ""))
-                logger.info("run_cycle: editor rank %d — %s [%s] %s",
-                            editor_order.get(c.page_id, -1) + 1, c.url, subject, why)
-        else:
-            ranked = await ranker.rank(generated, trending_headlines, topic_adjustments)
-        ranked_len = len(ranked)
-        # 2026-09-23 — retire a candidate the dedup check keeps rejecting,
-        # instead of re-extracting and re-writing it every cycle for the rest
-        # of its 24h window (172 of 184 repeatedly-judged candidates in the
-        # full posted_dedup log never changed verdict = 1539 wasted cycles).
-        # Notion is only written on the strike that reaches the threshold, so
-        # the common case (a candidate seen once and dropped) still writes
-        # nothing at all. See PublishConfig.posted_dedup_strikes_before_retire.
-        async def _retire_if_settled(c) -> None:
-            strikes = await dup_strikes.strike(c.url_hash)
-            if strikes < config.publish.posted_dedup_strikes_before_retire:
-                return
-            if dry_run:
-                logger.info("run_cycle: dry-run — would retire %s after %d duplicate verdicts", c.url, strikes)
-                return
-            if await mark_dedup_rejected(config, c.page_id):
-                logger.info("run_cycle: %s retired from the pool — %d consecutive duplicate verdicts", c.url, strikes)
+            processed += 1
+            if not await _caption(c):
+                continue
 
-        winner = await find_publishable(ranked, embedder, posted_store, event_verifier, hub_index, config, on_duplicate=_retire_if_settled)
-        # Last stance check, on the finished caption of the story about to go
-        # out (2026-10-11, AI-50). Owner: a caption that attacks our side is
-        # not published -- take the next story instead. The walk resumes
-        # after the refused one, so candidates already judged duplicates are
-        # not asked again. See CaptionStanceGuard.
-        while winner is not None and caption_stance is not None and caption_stance.enabled:
-            rule = await caption_stance.violation(winner.post_content or "")
-            if not rule:
-                break
-            logger.warning("run_cycle: %s — caption blocked by stance_guard rule %s, trying the next candidate",
-                           winner.url, rule)
-            # Its caption is cached by now; a rejected one is not replayed (2026-10-16, AI-89).
-            await caption_cache.delete(winner.url_hash)
-            if not dry_run:
-                await mark_stance_blocked(config, winner.page_id, rule)
-                if stuck_versions is not None:
-                    await stuck_versions.mark(winner.url_hash, "stance")
-            rest = ranked[ranked.index(winner) + 1:]
-            winner = (await find_publishable(rest, embedder, posted_store, event_verifier, hub_index, config,
-                                             on_duplicate=_retire_if_settled) if rest else None)
+            # Re-check now that full text/post_content exist — the first pass
+            # only had title+description to work with, so this catches stale
+            # phrasing that only shows up in the article body or the generated
+            # caption.
+            if not filter_former_trump([c]):
+                logger.info("run_cycle: %s dropped by the post-extraction former-Trump filter", c.url)
+                continue
+
+            # The old check on the finished caption, for a candidate without an
+            # ingestion verdict (filed before 2026-10-21, or the judge failed).
+            if path == "legacy" and await find_publishable([c], embedder, posted_store, event_verifier, hub_index,
+                                                            config, on_duplicate=_retire_if_settled) is None:
+                continue
+
+            # Last stance check, on the finished caption of the story about to go
+            # out (2026-10-11, AI-50). Owner: a caption that attacks our side is
+            # not published -- take the next story instead. See CaptionStanceGuard.
+            if caption_stance is not None and caption_stance.enabled:
+                rule = await caption_stance.violation(c.post_content or "")
+                if rule:
+                    logger.warning("run_cycle: %s — caption blocked by stance_guard rule %s, trying the next candidate",
+                                   c.url, rule)
+                    # Its caption is cached by now; a rejected one is not replayed (2026-10-16, AI-89).
+                    await caption_cache.delete(c.url_hash)
+                    if not dry_run:
+                        await mark_stance_blocked(config, c.page_id, rule)
+                        if stuck_versions is not None:
+                            await stuck_versions.mark(c.url_hash, "stance")
+                    continue
+            winner = c
+            break
+
+        logger.info("run_cycle: widen attempt %d — %d of %d candidates processed", attempt, processed, len(ranked))
         if winner is not None:
             logger.info("run_cycle: widen attempt %d — found a publishable candidate", attempt)
             break
-        logger.info("run_cycle: widen attempt %d — all candidates were duplicates/errored, widening", attempt)
+        logger.info("run_cycle: widen attempt %d — no candidate passed, widening", attempt)
 
     log_publish_outcome(ranked_len, winner)
     if winner is None:
@@ -811,6 +863,11 @@ async def main() -> None:
     caption_stance = CaptionStanceGuard(config)
     stuck_versions = StuckVersions(config)
     cycle_counter = CycleCounter(config)
+    # The ingestion judge, asked again only about posts sent since a candidate
+    # entered the pool (2026-10-21, AI-24). QdrantStore reads our posts' source
+    # vectors; nothing here writes to it.
+    merged_judge = (MergedJudge(config, event_store, posted_store, QdrantStore(config), stuck_versions)
+                    if config.merged_judge.enabled else None)
     await ensure_collection_with_retry(posted_store, "am1st_posting_news_embedding")
     await ensure_collection_with_retry(event_store, "am1st_events")
 
@@ -848,7 +905,7 @@ async def main() -> None:
             try:
                 published_this_cycle = await asyncio.wait_for(
                     run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, timeliness, caption_cache, dup_strikes, hub_index, editor, batch_seen, cycle_counter, dry_run,
-                              appeal_labels, stance_vec, stuck_versions, caption_stance, fact_checker),
+                              appeal_labels, stance_vec, stuck_versions, caption_stance, fact_checker, merged_judge),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:

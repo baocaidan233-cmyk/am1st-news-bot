@@ -1026,6 +1026,13 @@ class IngestionConfig(BaseModel):
     # only between articles with a real headline (4+ words) and summary: 0.85
     # merged different outlets' reports of the same event (10-20 measurement).
     near_verbatim_cosine: float = 0.96
+    # 5-score band only when news is short (user 10-21, AI-31): an article
+    # scoring below low_score_below goes on to the judge and Notion only while
+    # the pool holds fewer than low_score_supply_floor usable 6+ candidates
+    # (8+ inside the age ceiling, 6-7.x published within publish.fresh_hours --
+    # what the publish batch actually draws from). 10 = one batch.
+    low_score_below: float = 6.0
+    low_score_supply_floor: int = 10
 
 
 class AppConfig(BaseModel):

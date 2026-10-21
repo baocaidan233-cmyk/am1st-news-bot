@@ -491,6 +491,26 @@ class EventStore:
                     out.setdefault(pl["url"], pl["event_id"])
         return out
 
+    async def points_for_urls(self, urls: list[str]) -> dict[str, dict]:
+        """{url: {"vec", "event_id", "relation"}} for articles the merged judge
+        filed (those carry "relation"; 2026-10-21, AI-24) -- main_publish.py's
+        view of what ingestion decided about each candidate. A candidate
+        filed before then is simply absent. Raises on a failed read."""
+        out: dict[str, dict] = {}
+        if self._client is None or not urls:
+            return out
+        for i in range(0, len(urls), 200):
+            points, _ = await self._client.scroll(
+                collection_name=self._collection,
+                scroll_filter=Filter(must=[FieldCondition(key="url", match=MatchAny(any=urls[i:i + 200]))]),
+                limit=1000, with_payload=["url", "event_id", "relation"], with_vectors=True,
+            )
+            for p in points:
+                pl = p.payload or {}
+                if pl.get("url") and pl.get("relation") and p.vector is not None:
+                    out.setdefault(pl["url"], {"vec": p.vector, "event_id": pl.get("event_id"), "relation": pl["relation"]})
+        return out
+
     async def recent_points(self, hours: float) -> list[dict]:
         """Every article filed with a publish time in the last `hours`, with its
         vector -- the merged judge's view of the Notion queue (points marked
@@ -578,6 +598,7 @@ class EventStore:
         hot_until: int = 0,
         timeline_entry: dict | None = None,
         in_notion: bool = True,
+        relation: str | None = None,
     ) -> tuple[float, int, str, set[str], int]:
         """The actual write — called AFTER scoring, and only for a local
         cluster where at least one member cleared the score gate (see
@@ -656,7 +677,14 @@ class EventStore:
         `in_notion` (2026-10-21, AI-69): False for an article the merged judge
         found to be the same update as one already waiting in Notion -- it is
         recorded here so later articles can still match the event, but it is
-        not a Notion row, so the judge's queue view skips it."""
+        not a Notion row, so the judge's queue view skips it. Also False for
+        an article the judge dropped (user 10-21, AI-69: kept as one more
+        source of its event).
+
+        `relation` (2026-10-21, AI-24): the merged judge's answer about our
+        posts, stored on this article's own point. main_publish.py reads it to
+        put LOW_VALUE last in its band, and treats its presence as "judged at
+        ingestion" (points_for_urls())."""
         heat, first_seen = self.preview_heat(matched, sources, earliest_source, earliest_published_at_unix, heat_multiplier)
         now = int(time.time())
         event_id = matched.get("event_id") if matched is not None else str(uuid.uuid4())
@@ -733,7 +761,8 @@ class EventStore:
                         id=str(uuid.uuid4()),
                         vector=emb,
                         payload={"event_id": event_id, "source": src, "published_at": pub, "url": url,
-                                 "text": own_text, "in_notion": in_notion, **shared_payload},
+                                 "text": own_text, "in_notion": in_notion,
+                                 **({"relation": relation} if relation else {}), **shared_payload},
                     )
                     for emb, src, pub, _, _, url, own_text in all_points
                 ],

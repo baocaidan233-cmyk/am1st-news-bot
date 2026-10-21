@@ -104,7 +104,7 @@ def _plain_text(prop: dict) -> str:
     return ""
 
 
-async def query_eligible_candidates(config: AppConfig) -> list[PublishCandidate]:
+async def query_eligible_candidates(config: AppConfig, min_score: float | None = None) -> list[PublishCandidate]:
     """Queries the candidate pool for everything the publish cycle is
     allowed to consider: not yet sent, created within the eligibility
     window, and scored high enough at ingestion time. Sorted by llm_score
@@ -115,7 +115,10 @@ async def query_eligible_candidates(config: AppConfig) -> list[PublishCandidate]
     ("former check") for stale "former president Trump"-style phrasing —
     this Python rebuild does that same check as a plain keyword filter in
     agents/candidate_selector.py instead of a Notion formula column, so it
-    is deliberately NOT part of this query."""
+    is deliberately NOT part of this query.
+
+    `min_score` overrides publish.candidate_min_score (main.py's supply count
+    for the 5-score band asks only for 6+, 2026-10-21, AI-31)."""
     notion = config.notion
     if not notion.candidate_key or not notion.candidate_db_id:
         logger.warning("query_eligible_candidates: NOTION_CANDIDATE_API_KEY / NOTION_CANDIDATE_DB_ID not set")
@@ -134,7 +137,8 @@ async def query_eligible_candidates(config: AppConfig) -> list[PublishCandidate]
                 {"property": props.send_status, "checkbox": {"does_not_equal": True}},
                 {"property": props.extraction_failed, "checkbox": {"does_not_equal": True}},
                 {"timestamp": "created_time", "created_time": {"after": cutoff}},
-                {"property": props.llm_score, "number": {"greater_than_or_equal_to": config.publish.candidate_min_score}},
+                {"property": props.llm_score, "number": {"greater_than_or_equal_to":
+                    config.publish.candidate_min_score if min_score is None else min_score}},
             ]
         },
         "sorts": [{"property": props.llm_score, "direction": "descending"}],

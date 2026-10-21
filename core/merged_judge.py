@@ -221,6 +221,24 @@ class MergedJudge:
         if self.ready and in_notion:
             self._queue.append({"url": url, "text": text, "vec": _unit(embedding), "event_id": event_id, "in_notion": True})
 
+    def posts_since(self, title: str, description: str, embedding, since: float) -> list[dict]:
+        """Our posts sent after `since` that this same search would show the
+        judge for this article (cosine to the post's source article >=
+        post_cos_floor, or keywords >= post_kw_floor, top post_top_k of each),
+        searched among those later posts only. main_publish.py (2026-10-21,
+        AI-24, user 10-21): an article judged at ingestion is asked again only
+        when one of these exists -- the judge already saw everything older."""
+        later = {h for h, p in self._posts.items() if p.get("sentAt", 0) > since}
+        if not later:
+            return []
+        cfg = self._cfg
+        text = f"{(title or '').strip()[:200]} {_flat(description)[:400]}"
+        v = _unit(embedding)
+        cos = {h: float(self._post_vec[h] @ v) for h in later if h in self._post_vec}
+        kw = {h: s for h, s in self._post_tfidf.scores(text).items() if h in later}
+        found = dict.fromkeys(_top(cos, cfg.post_top_k, cfg.post_cos_floor) + _top(kw, cfg.post_top_k, cfg.post_kw_floor))
+        return [self._posts[h] for h in found]
+
     async def judge(self, url: str, title: str, description: str, embedding) -> Verdict:
         cand = {"headline": (title or "").strip()[:200], "summary": _flat(description)[:400]}
         text = f"{cand['headline']} {cand['summary']}"

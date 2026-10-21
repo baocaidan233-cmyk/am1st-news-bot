@@ -20,10 +20,12 @@ Pipeline order per cycle (2026-10-21, Linear AI-69, user 10-19/10-20):
   short/empty summary becomes the first paragraph) -> reprints (same headline
   on another site / same summary / same full text) -> English only -> no roundups or newsletters -> embedding
   pre-score -> same article inside the batch (cosine >= 0.96, real headline
-  and summary only) -> score gate (gpt-4o-mini, >= 5) -> merged judge
-  (core/merged_judge.py, Haiku, one call per article: which event; anything
-  new for readers compared with OUR POSTS, NOTHING_NEW / NOT_WORTH dropped;
-  same update already waiting in Notion -> event store only) -> event store
+  and summary only) -> score gate (gpt-4o-mini, >= 5; under 6 goes on only
+  while the pool holds fewer than 10 usable 6+ candidates, AI-31) -> merged
+  judge (core/merged_judge.py, Haiku, one call per article: which event;
+  anything new for readers compared with OUR POSTS, NOTHING_NEW / NOT_WORTH
+  -> event store only, not Notion; same update already waiting in Notion ->
+  event store only; the answer is stored on the article's point) -> event store
   commit -> storyline links -> topic + appeal tags (Haiku) -> Notion
   candidate pool -> Qdrant embedding write.
   Replaced on 10-21: same-event clustering inside the batch, the event-store
@@ -59,6 +61,7 @@ from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
 from agents.scorer_shadow import ShadowScorer
 from agents.appeal_tagger import AppealTagger
+from agents.candidate_selector import _TIER1_MIN_SCORE, _is_weekday, age_ceiling_for
 from agents.topic_tagger import TopicTagger
 from agents.trending import fetch_trending_headlines
 from core import fulltext
@@ -68,7 +71,7 @@ from core.hashing import cosine_similarity
 from core.hot_topics import fetch_active_hot_topics
 from core.language import is_english
 from core.merged_judge import MergedJudge, log_verdict
-from core.notion_candidates import write_candidate
+from core.notion_candidates import query_eligible_candidates, write_candidate
 from core.prescore import PreScorer, log_prescore_decision
 from core.reprint import reprint_of
 from core.roundup import roundup_rule, newsletter_rule
@@ -147,6 +150,23 @@ async def _fetch_full_text(config, candidates, sources, retried: set[str]):
     fulltext.add_retry(config, wait)
     logger.info("run_cycle: full text for %d of %d: %s", len(texts), len(candidates), dict(how))
     return [c for c in candidates if c.url_hash in texts], texts
+
+
+async def _usable_supply(config) -> int:
+    """How many candidates of 6+ the publish batch could draw from right now
+    (2026-10-21, AI-31): 8+ inside the age ceiling, 6-7.x published within
+    publish.fresh_hours -- agents/candidate_selector.select_batch()'s tiers 1
+    and 2. Code only: one Notion query for 6+ rows. 0 when the query fails."""
+    pool = await query_eligible_candidates(config, min_score=config.ingestion.low_score_below)
+    now = datetime.now(timezone.utc)
+    pub = config.publish
+    day_ceiling = pub.weekday_max_age_hours if _is_weekday(now) else pub.weekend_max_age_hours
+    n = 0
+    for c in pool:
+        hours = (now - c.published_at).total_seconds() / 3600
+        if hours <= age_ceiling_for(c, day_ceiling, config) and (c.llm_score >= _TIER1_MIN_SCORE or hours <= pub.fresh_hours):
+            n += 1
+    return n
 
 
 async def run_cycle(
@@ -369,6 +389,21 @@ async def run_cycle(
             except Exception:
                 logger.debug("run_cycle: shadow scoring failed for %s", c.url)
 
+    # --- The 5-score band only when news is short (2026-10-21, AI-31, user
+    # 10-21: 新闻不够的时候5分档可以入库，新闻够的时候就不要入库). See
+    # _usable_supply(); a failed count lets them through, as before. ---
+    low = [c for c, _ in passed if c.llm_score < config.ingestion.low_score_below]
+    if low:
+        usable = await _usable_supply(config)
+        if usable >= config.ingestion.low_score_supply_floor:
+            passed = [(c, e) for c, e in passed if c.llm_score >= config.ingestion.low_score_below]
+            for c in low:
+                logger.info("run_cycle: %s held back — scored %.1f and the pool has %d usable %.0f+ candidates (%s)",
+                            c.url, c.llm_score, usable, config.ingestion.low_score_below, c.title[:120])
+        else:
+            logger.info("run_cycle: %d article(s) under %.0f go on — the pool has only %d usable %.0f+ candidates",
+                        len(low), config.ingestion.low_score_below, usable, config.ingestion.low_score_below)
+
     # --- Merged judge (2026-10-21, core/merged_judge.py, Linear AI-69) ---
     # Replaces the event-store judge, classify_subtype, both event guards and
     # cross-cycle dedup. One Haiku call per article that cleared the score
@@ -393,18 +428,20 @@ async def run_cycle(
                 log_verdict(config, verdict.record)
         action = verdict.action if verdict is not None else "keep"
         if action == "drop":
+            # Still filed under its event, outside Notion (user 10-21, AI-69):
+            # one more source of a story we already told.
             dropped_count += 1
             logger.info("run_cycle: %s dropped — %s, our post(s) %s already told readers (%s)", c.url, verdict.relation,
                         ",".join(verdict.record.get("covered_by", [])), c.title[:120])
-            continue
         if dry_run:
-            logger.info("run_cycle: [dry-run] would %s: %s (score=%.1f, event=%s)",
-                        "record in the event store only" if action == "fold" else "add to candidate pool",
-                        c.url, c.llm_score, (verdict.event_id if verdict else None) or "new")
-            if action == "fold":
-                folded_count += 1
-            else:
-                added_count += 1
+            if action != "drop":
+                logger.info("run_cycle: [dry-run] would %s: %s (score=%.1f, event=%s)",
+                            "record in the event store only" if action == "fold" else "add to candidate pool",
+                            c.url, c.llm_score, (verdict.event_id if verdict else None) or "new")
+                if action == "fold":
+                    folded_count += 1
+                else:
+                    added_count += 1
             continue
         try:
             matched = await event_store.get_by_id(verdict.event_id) if verdict is not None and verdict.event_id else None
@@ -424,13 +461,18 @@ async def run_cycle(
                 representative=(embedding, c.source_name, pub, rep_text, entity_tokens(rep_text), c.url, own_text),
                 extra_points=[], related_links=None, seed_frame=seed_frame, heat_multiplier=1.0,
                 hot_until=hot_untils.get(c.url_hash, 0), timeline_entry=timeline_entry,
-                in_notion=action != "fold",
+                in_notion=action == "keep",
+                # What the judge said about our posts, for main_publish.py (AI-24);
+                # none when the judge did not actually answer.
+                relation=verdict.relation if verdict is not None and verdict.relation != "ERROR" else None,
             )
             await hub_index.bump(event_id, core_entities)
             if judge_ready:
-                merged_judge.note_added(c.url, own_text, embedding, action != "fold", event_id)
+                merged_judge.note_added(c.url, own_text, embedding, action == "keep", event_id)
         except Exception:
             logger.exception("run_cycle: event-store commit failed for %s, skipping this item", c.url)
+            continue
+        if action == "drop":
             continue
         if action == "fold":
             folded_count += 1
