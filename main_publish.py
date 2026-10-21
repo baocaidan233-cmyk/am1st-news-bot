@@ -98,6 +98,7 @@ from agents.timeliness_check import TimelinessCheck
 from agents.writer import Writer
 from agents.editor import EditorPicker
 from core.time_words import fix_caption_time_words
+from core import fulltext
 from core.selection_trace import SelectionTrace
 from core.alerts import AlertNotifier
 from core.config import load_config
@@ -392,7 +393,13 @@ async def run_cycle(
 
         generated = []
         for c in batch:
-            text = await extractor.extract(c.url, sources, attempts=c.extraction_attempts)
+            # The text ingestion already fetched (2026-10-21, AI-29, core/fulltext.py);
+            # fetched here only for a candidate from before that, or a cache miss.
+            text = fulltext.load(config, c.url_hash)
+            if text:
+                logger.info("run_cycle: %s — full text from ingestion", c.url)
+            else:
+                text = await extractor.extract(c.url, sources, attempts=c.extraction_attempts)
             if not text:
                 logger.info("run_cycle: %s dropped — full-text extraction failed (paywall/blocked/empty), refusing to publish off title+description alone", c.url)
                 # Counted, not flagged on the first failure (2026-09-26). The

@@ -21,6 +21,10 @@ News and US News; one op-ed on Hot Air, Daily Signal and Patriot Post). In the
 last 3 days 20 such reprints had reached the pool because one copy had no
 description and the embedding similarity fell under the duplicate line.
 
+2026-10-21 (AI-29): ingestion now fetches the full text of every article, so a
+third key is the normalised full text itself, at least 500 characters, on any
+site.
+
 The first copy seen is kept; which outlet published it first is for the event
 store and the clustering step to sort out.
 
@@ -41,6 +45,7 @@ _OUTLET_SUFFIX = re.compile(r"\s+[|\-–—]\s+[^|\-–—]{2,40}$")
 _TAG = re.compile(r"<[^>]+>")
 _MIN_TITLE_WORDS = 4
 _MIN_DESCRIPTION_CHARS = 80
+_MIN_BODY_CHARS = 500
 _RELAYS = frozenset({"revolver.news", "thelibertydaily.com", "realclearpolitics.com", "instapundit.com"})
 _RELAY_MARK = "relay:"
 
@@ -84,9 +89,20 @@ def description_key(description: str) -> str | None:
     return "d:" + hashlib.sha1(d.encode("utf-8")).hexdigest()
 
 
-async def reprint_of(store, title: str, description: str, url: str) -> str | None:
+def body_key(text: str) -> str | None:
+    """The extracted full text, normalised (2026-10-21, AI-29, user: 顺带加个全文
+    哈希做转载检查) -- the key Perigon uses. Short texts (a video page's caption)
+    are not evidence of anything."""
+    b = _norm(text)
+    if len(b) < _MIN_BODY_CHARS:
+        return None
+    return "b:" + hashlib.sha1(b.encode("utf-8")).hexdigest()
+
+
+async def reprint_of(store, title: str, description: str, url: str, body: str = "") -> str | None:
     """Records this item's keys and returns why it is a reprint of an earlier
-    item ("title" / "description"), or None. `store` is core.redis_store.RedisStore."""
+    item ("title" / "description" / "full text"), or None. `store` is
+    core.redis_store.RedisStore."""
     here = site(url)
     mine = (_RELAY_MARK + here) if here in _RELAYS else here
     reason = None
@@ -100,6 +116,11 @@ async def reprint_of(store, title: str, description: str, url: str) -> str | Non
         earlier = await _first(store, "reprint:" + dk, mine)
         if earlier is not None and reason is None:
             reason = f"description, first seen on {earlier.removeprefix(_RELAY_MARK)}"
+    bk = body_key(body)
+    if bk:
+        earlier = await _first(store, "reprint:" + bk, mine)
+        if earlier is not None and reason is None:
+            reason = f"full text, first seen on {earlier.removeprefix(_RELAY_MARK)}"
     return reason
 
 

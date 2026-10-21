@@ -15,9 +15,10 @@ later reads that pool and decides what (if anything) actually gets posted.
 
 Pipeline order per cycle (2026-10-21, Linear AI-69, user 10-19/10-20):
   load sources (Notion) -> fetch RSS (3h publish-age filter) -> URL-hash
-  Redis dedup -> summaries (short/empty: og:description, else the article's
-  first paragraph, else dropped) -> reprints (same headline on another site /
-  same summary) -> English only -> no roundups or newsletters -> embedding
+  Redis dedup -> full text (AI-29, user 10-21: every article; saved for the
+  publish cycle; no text -> one more try an hour later, then dropped; a
+  short/empty summary becomes the first paragraph) -> reprints (same headline
+  on another site / same summary / same full text) -> English only -> no roundups or newsletters -> embedding
   pre-score -> same article inside the batch (cosine >= 0.96, real headline
   and summary only) -> score gate (gpt-4o-mini, >= 5) -> merged judge
   (core/merged_judge.py, Haiku, one call per article: which event; anything
@@ -29,13 +30,10 @@ Pipeline order per cycle (2026-10-21, Linear AI-69, user 10-19/10-20):
   judge, classify_subtype, the published-event and stale-event guards, and
   cross-cycle dedup.
 
-Full-text extraction and content generation are deliberately NOT part of
-this cycle (moved to main_publish.py, 2026-08-05) — every candidate that
-merely cleared the cheap title+description score gate used to pay for a
-full extraction + LLM-written post, even though only a handful per 30-min
-publish cycle would ever actually get posted before aging out of the 12h
-candidate-pool window. See agents/extractor.py's docstring and
-project_am1st_migration memory.
+Content generation is deliberately NOT part of this cycle (main_publish.py,
+2026-08-05). Full-text extraction moved back here on 2026-10-21 (AI-29): it
+costs no model call, and an article whose text cannot be fetched should not
+be scored or reach the pool at all.
 
 Usage:
   python3 main.py              # normal run
@@ -57,13 +55,13 @@ from dotenv import load_dotenv
 
 from agents.embedder import Embedder
 from agents.extractor import Extractor
-from agents.og_metadata import fetch_link_preview
 from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
 from agents.scorer_shadow import ShadowScorer
 from agents.appeal_tagger import AppealTagger
 from agents.topic_tagger import TopicTagger
 from agents.trending import fetch_trending_headlines
+from core import fulltext
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex, entity_tokens, event_identity_text, event_judge_text, extract_event_frame, log_decision
 from core.hashing import cosine_similarity
@@ -104,51 +102,51 @@ class _SilentAlerts:
         return None
 
 
-async def _fill_summaries(config, candidates, sources):
-    """Layer 1.05 (2026-10-21, AI-69, user 10-20): a summary shorter than
-    ingestion.min_summary_chars gets the page's og:description, failing that
-    the first paragraph of the article (agents/extractor.py, Playwright for the
-    sites that need it); failing that, the article is dropped -- with no summary
-    and no text the judge cannot tell what it adds and the writer cannot write
-    it. Replay of 10-20: 1,090 of 1,304 had a summary, 161 got og:description,
-    27 a first paragraph, 26 dropped."""
+async def _fetch_full_text(config, candidates, sources, retried: set[str]):
+    """Layer 1.05 (2026-10-21, AI-29, user 10-21): the full text of every new
+    article (agents/extractor.py, the render service for the sites that need
+    it), saved for the publish cycle (core/fulltext.py). An article with no
+    fetchable text is not scored: the first failure waits
+    ingestion.fulltext_retry_minutes for one more try, the second drops it. A
+    summary shorter than ingestion.min_summary_chars becomes the article's
+    first paragraph. Measured 10-21 on 101 articles that reached the scorer:
+    23% failed, 0.19 s CPU and median 0.34 s wall per article.
+
+    Returns (articles with text, {url_hash: text})."""
     floor = config.ingestion.min_summary_chars
-    need = [c for c in candidates if len(_summary_text(c.description)) < floor]
-    if not need:
-        return candidates
     extractor = Extractor(config, _SilentAlerts())
     gate = asyncio.Semaphore(6)
+    texts: dict[str, str] = {}
     how: Counter = Counter()
-    dropped: set[str] = set()
+    wait: list = []
 
-    async def fill(c):
+    async def fetch(c):
         async with gate:
             try:
-                og = await fetch_link_preview(c.url)
-            except Exception:
-                og = {}
-            desc = og.get("prev_desc") or ""
-            if len(_summary_text(desc)) >= floor:
-                c.description = desc
-                how["og"] += 1
-                return
-            try:
-                text = await extractor.extract(c.url, sources)
+                text = await extractor.extract(c.url, sources, attempts=1 if c.url_hash in retried else 0)
             except Exception:
                 logger.exception("run_cycle: extraction failed for %s", c.url)
                 text = None
-            if text:
-                paragraphs = [p.strip() for p in text.split("\n") if len(p.strip()) >= 60]
-                c.description = (paragraphs[0] if paragraphs else text.strip())[:400]
-                how["first_paragraph"] += 1
-                return
-            how["dropped"] += 1
-            dropped.add(c.url_hash)
-            logger.info("run_cycle: %s dropped — no summary and no article text (%s)", c.url, (c.title or "")[:120])
+        if not text:
+            if c.url_hash in retried:
+                how["given_up"] += 1
+                logger.info("run_cycle: %s dropped — no article text on the second try (%s)", c.url, (c.title or "")[:120])
+            else:
+                how["retry_later"] += 1
+                wait.append(c)
+            return
+        texts[c.url_hash] = text
+        fulltext.save(config, c.url_hash, text)
+        how["second_try" if c.url_hash in retried else "fetched"] += 1
+        if len(_summary_text(c.description)) < floor:
+            paragraphs = [p.strip() for p in text.split("\n") if len(p.strip()) >= 60]
+            c.description = (paragraphs[0] if paragraphs else text.strip())[:400]
+            how["summary_from_text"] += 1
 
-    await asyncio.gather(*(fill(c) for c in need))
-    logger.info("run_cycle: summaries filled for %d of %d short or empty: %s", len(need) - how["dropped"], len(need), dict(how))
-    return [c for c in candidates if c.url_hash not in dropped]
+    await asyncio.gather(*(fetch(c) for c in candidates))
+    fulltext.add_retry(config, wait)
+    logger.info("run_cycle: full text for %d of %d: %s", len(texts), len(candidates), dict(how))
+    return [c for c in candidates if c.url_hash in texts], texts
 
 
 async def run_cycle(
@@ -168,21 +166,30 @@ async def run_cycle(
     # --- Layer 1: exact-duplicate URL-hash dedup (Redis) ---
     survivors = [c for c in candidates if await redis_store.claim_new(c.url_hash)]
     logger.info("run_cycle: %d/%d new after URL-hash dedup", len(survivors), len(candidates))
+    # Articles whose text failed an hour ago get their second try now.
+    retry = fulltext.take_due(config)
+    if retry:
+        logger.info("run_cycle: %d article(s) back for a second full-text try", len(retry))
+    survivors += retry
+    pruned = fulltext.prune(config)
+    if pruned:
+        logger.info("run_cycle: pruned %d saved full text(s)", pruned)
     if not survivors:
         return
 
-    # --- Layer 1.05: summaries first (2026-10-21, AI-69, user 10-20) — every
-    # later step reads title + summary. See _fill_summaries(). ---
-    survivors = await _fill_summaries(config, survivors, sources)
+    # --- Layer 1.05: full text (2026-10-21, AI-29, user 10-21) — no text, no
+    # scoring; every later step reads title + summary. See _fetch_full_text(). ---
+    survivors, texts = await _fetch_full_text(config, survivors, sources, {c.url_hash for c in retry})
     if not survivors:
         return
 
     # --- Layer 1.1: reprints (2026-10-12, core/reprint.py) — the same article
-    # under another URL, by exact headline (on another site) or description. ---
+    # under another URL, by exact headline (on another site), description or
+    # full text (10-21). ---
     before_reprint = len(survivors)
     kept = []
     for c in survivors:
-        why = await reprint_of(redis_store, c.title or "", c.description or "", c.url)
+        why = await reprint_of(redis_store, c.title or "", c.description or "", c.url, texts.get(c.url_hash, ""))
         if why:
             logger.info("run_cycle: %s dropped — reprint (%s): %s", c.url, why, (c.title or "")[:120])
         else:

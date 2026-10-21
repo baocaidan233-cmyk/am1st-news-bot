@@ -1013,9 +1013,15 @@ class MergedJudgeConfig(BaseModel):
 class IngestionConfig(BaseModel):
     """Ingestion's first steps (user 10-20, AI-69)."""
     # A summary shorter than this after stripping tags and the RSS "The post ...
-    # appeared first on ..." line is backfilled: the page's og:description,
-    # else the first paragraph of the article; neither -> the article is dropped.
+    # appeared first on ..." line is replaced by the article's first paragraph
+    # (user 10-21, AI-29: the full text is fetched for every article anyway).
     min_summary_chars: int = 40
+    # Full text at ingestion (user 10-21, AI-29, core/fulltext.py): every new
+    # article is fetched; one that fails is tried once more this many minutes
+    # later, then given up. Saved texts are what main_publish.py reads.
+    fulltext_dir: str = "data/fulltext"
+    fulltext_retry_minutes: float = 60
+    fulltext_keep_hours: float = 48  # housekeeping only: the publish pool's oldest candidate is 24h
     # Same article inside one batch by vector, only at or above this cosine and
     # only between articles with a real headline (4+ words) and summary: 0.85
     # merged different outlets' reports of the same event (10-20 measurement).
