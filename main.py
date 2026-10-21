@@ -13,27 +13,21 @@ job ends at writing a candidate into the shared Notion candidate pool;
 main_publish.py is the separate, independently-scheduled process that
 later reads that pool and decides what (if anything) actually gets posted.
 
-Pipeline order per cycle (cheapest filter first):
-  load sources (Notion) -> fetch RSS (UTC-normalized, 3h publish-age filter)
-  -> URL-hash Redis dedup -> intra-batch semantic CLUSTERING (title+
-  description; groups this batch's own candidates into local event
-  clusters, not just a drop/keep decision — see Layer 2 below) -> per
-  cluster: read-only peek at core/qdrant_store.py's EventStore (a separate
-  Qdrant collection tracking heat_score/event_first_seen_at per underlying
-  event, not per article), then a second opinion on that cosine match via
-  core/event_identity.py (entity-overlap rule tier, LLM only for the
-  residual ambiguous tier — cosine similar is not the same claim as same
-  real-world event, see project_am1st_migration memory's 2026-08-09 "event
-  identity" note) for a heat_score PREVIEW to feed the AI score gate, plus
-  per-candidate cross-cycle Qdrant dedup (vs title+description written in
-  the last 72h) -> AI score gate (gpt-4o-mini, >=5) -> for each cluster
-  with at least one scoring survivor: COMMIT that cluster's accumulated
-  heat/sources to the EventStore (a cluster where nothing cleared the
-  score gate never touches it at all — see 2026-08-06 "event aggregation,
-  take 2" design note in project_am1st_migration memory) -> write
-  survivors to Notion candidate pool -> Qdrant embedding write (the same
-  title+description embeddings used for clustering, now persisted for
-  future cross-cycle checks).
+Pipeline order per cycle (2026-10-21, Linear AI-69, user 10-19/10-20):
+  load sources (Notion) -> fetch RSS (3h publish-age filter) -> URL-hash
+  Redis dedup -> summaries (short/empty: og:description, else the article's
+  first paragraph, else dropped) -> reprints (same headline on another site /
+  same summary) -> English only -> no roundups or newsletters -> embedding
+  pre-score -> same article inside the batch (cosine >= 0.96, real headline
+  and summary only) -> score gate (gpt-4o-mini, >= 5) -> merged judge
+  (core/merged_judge.py, Haiku, one call per article: which event; anything
+  new for readers compared with OUR POSTS, NOTHING_NEW / NOT_WORTH dropped;
+  same update already waiting in Notion -> event store only) -> event store
+  commit -> storyline links -> topic + appeal tags (Haiku) -> Notion
+  candidate pool -> Qdrant embedding write.
+  Replaced on 10-21: same-event clustering inside the batch, the event-store
+  judge, classify_subtype, the published-event and stale-event guards, and
+  cross-cycle dedup.
 
 Full-text extraction and content generation are deliberately NOT part of
 this cycle (moved to main_publish.py, 2026-08-05) — every candidate that
@@ -53,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 import sys
 import time
 from collections import Counter
@@ -61,6 +56,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 from agents.embedder import Embedder
+from agents.extractor import Extractor
 from agents.og_metadata import fetch_link_preview
 from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
@@ -69,11 +65,11 @@ from agents.appeal_tagger import AppealTagger
 from agents.topic_tagger import TopicTagger
 from agents.trending import fetch_trending_headlines
 from core.config import load_config
-from core.event_identity import EventVerifier, HubIndex, core_entities_of, cross_cycle_dedup_verdict, entity_tokens, event_identity_text, event_judge_text, extract_event_frame, log_decision, no_conflicting_specifics
-from core.guard_judge import get_guard_judge
+from core.event_identity import EventVerifier, HubIndex, entity_tokens, event_identity_text, event_judge_text, extract_event_frame, log_decision
 from core.hashing import cosine_similarity
 from core.hot_topics import fetch_active_hot_topics
 from core.language import is_english
+from core.merged_judge import MergedJudge, log_verdict
 from core.notion_candidates import write_candidate
 from core.prescore import PreScorer, log_prescore_decision
 from core.reprint import reprint_of
@@ -85,39 +81,80 @@ from core.redis_store import AppealLabels, RedisStore, StuckVersions
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("main")
 
-# At or above this cosine an article joins the candidate event without the
-# event judge (AI-69, 2026-10-12); below it, down to heat.related_threshold, the
-# judge decides. The two such pairs in 302 labelled ones were both one event.
-_EVENT_MERGE_COSINE = 0.90
+# Summaries (2026-10-21, AI-69, user 10-20): what counts as no summary.
+_BOILERPLATE = re.compile(r"the post .{0,300} appeared first on .{0,80}$", re.IGNORECASE | re.DOTALL)
+_TAG = re.compile(r"<[^>]+>")
 
 
-def _log_guard_drop(config, guard: str, members, matched: dict, subtype: str, **extra) -> None:
-    """One record per cluster the event-store guards drop (AI-69, 2026-10-12):
-    the cluster's articles and the event they were matched to, so a drop can
-    be judged afterwards. main.log only ever named the cluster's index."""
-    log_decision(config, {
-        "check_type": "event_guard_drop", "guard": guard, "subtype": subtype,
-        "cosine_score": matched.get("_score"), "event_id": matched.get("event_id"),
-        "event_published": bool(matched.get("published")), "event_first_seen_at": matched.get("first_seen_at"),
-        "matched_text": matched.get("text") or matched.get("representative_text", ""),
-        "articles": [{"url": c.url, "source": c.source_name, "text": event_judge_text(c.title, c.description)}
-                     for c, _ in members],
-        **extra,
-    })
+def _summary_text(description: str) -> str:
+    """The summary without tags and without the RSS "The post ... appeared first on ..." line."""
+    return _BOILERPLATE.sub("", " ".join(_TAG.sub(" ", description or "").split())).strip()
 
 
-async def _guard_judge(config, members, matched: dict) -> tuple[str, dict]:
-    """core/guard_judge.py on the matched event's article and the cluster's
-    first article, the same two texts _log_guard_drop() records."""
-    event_text = matched.get("text") or matched.get("representative_text", "")
-    new_text = event_judge_text(members[0][0].title, members[0][0].description)
-    return await get_guard_judge(config).judge(event_text, new_text)
+def _comparable(c) -> bool:
+    """Layer 2 compares only articles with a real headline and summary."""
+    return len((c.title or "").split()) >= 4 and len(_summary_text(c.description)) >= 40 and "{{" not in (c.description or "")
+
+
+class _SilentAlerts:
+    """agents/extractor.py raises a Notion alert when a cookie source fails; at
+    ingestion that is just an article without text, not something to act on."""
+
+    async def alert(self, page_id: str, message: str) -> None:
+        return None
+
+
+async def _fill_summaries(config, candidates, sources):
+    """Layer 1.05 (2026-10-21, AI-69, user 10-20): a summary shorter than
+    ingestion.min_summary_chars gets the page's og:description, failing that
+    the first paragraph of the article (agents/extractor.py, Playwright for the
+    sites that need it); failing that, the article is dropped -- with no summary
+    and no text the judge cannot tell what it adds and the writer cannot write
+    it. Replay of 10-20: 1,090 of 1,304 had a summary, 161 got og:description,
+    27 a first paragraph, 26 dropped."""
+    floor = config.ingestion.min_summary_chars
+    need = [c for c in candidates if len(_summary_text(c.description)) < floor]
+    if not need:
+        return candidates
+    extractor = Extractor(config, _SilentAlerts())
+    gate = asyncio.Semaphore(6)
+    how: Counter = Counter()
+    dropped: set[str] = set()
+
+    async def fill(c):
+        async with gate:
+            try:
+                og = await fetch_link_preview(c.url)
+            except Exception:
+                og = {}
+            desc = og.get("prev_desc") or ""
+            if len(_summary_text(desc)) >= floor:
+                c.description = desc
+                how["og"] += 1
+                return
+            try:
+                text = await extractor.extract(c.url, sources)
+            except Exception:
+                logger.exception("run_cycle: extraction failed for %s", c.url)
+                text = None
+            if text:
+                paragraphs = [p.strip() for p in text.split("\n") if len(p.strip()) >= 60]
+                c.description = (paragraphs[0] if paragraphs else text.strip())[:400]
+                how["first_paragraph"] += 1
+                return
+            how["dropped"] += 1
+            dropped.add(c.url_hash)
+            logger.info("run_cycle: %s dropped — no summary and no article text (%s)", c.url, (c.title or "")[:120])
+
+    await asyncio.gather(*(fill(c) for c in need))
+    logger.info("run_cycle: summaries filled for %d of %d short or empty: %s", len(need) - how["dropped"], len(need), dict(how))
+    return [c for c in candidates if c.url_hash not in dropped]
 
 
 async def run_cycle(
     config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run,
     prescorer=None, shadow_scorer=None, appeal_tagger=None, appeal_labels=None, stuck_versions=None,
-    posted_store=None,
+    posted_store=None, merged_judge=None,
 ) -> None:
     sources = await load_rss_sources(config)
     if not sources:
@@ -131,6 +168,12 @@ async def run_cycle(
     # --- Layer 1: exact-duplicate URL-hash dedup (Redis) ---
     survivors = [c for c in candidates if await redis_store.claim_new(c.url_hash)]
     logger.info("run_cycle: %d/%d new after URL-hash dedup", len(survivors), len(candidates))
+    if not survivors:
+        return
+
+    # --- Layer 1.05: summaries first (2026-10-21, AI-69, user 10-20) — every
+    # later step reads title + summary. See _fill_summaries(). ---
+    survivors = await _fill_summaries(config, survivors, sources)
     if not survivors:
         return
 
@@ -216,33 +259,6 @@ async def run_cycle(
         if not survivors:
             return
 
-    # --- Layer 1.6: description backfill via the article page's own
-    # og:description meta tag (2026-08-07) — some RSS feeds give a title
-    # with no description at all, which under-informs both clustering
-    # (embeds on title alone) and the AI score gate (see
-    # project_am1st_migration memory's "GOP donor memo scored only 5"
-    # investigation). This is deliberately just the page's existing
-    # meta-description tag (agents/og_metadata.py, already used for Gettr
-    # preview cards) — NOT full-article extraction, which the user
-    # explicitly rejected as a fix for this same problem and which stays
-    # deferred to the publish cycle for cost reasons (agents/extractor.py's
-    # docstring). A failed/empty fetch just leaves the candidate as-is. ---
-    backfilled = 0
-    empty_before = sum(1 for c in survivors if not c.description)
-    for c in survivors:
-        if c.description:
-            continue
-        try:
-            og = await fetch_link_preview(c.url)
-        except Exception:
-            continue
-        desc = og.get("prev_desc")
-        if desc:
-            c.description = desc
-            backfilled += 1
-    if empty_before:
-        logger.info("run_cycle: backfilled og:description for %d/%d description-less candidate(s)", backfilled, empty_before)
-
     # Manual breaking-news override (2026-08-31, core/hot_topics.py) — every
     # currently-live flag for this bot's own channel, embedded once per
     # cycle. Empty in the common case (no flag active right now); a failed
@@ -258,554 +274,168 @@ async def run_cycle(
     if hot_topics:
         logger.info("run_cycle: %d active hot-topic flag(s) this cycle", len(hot_topics))
 
-    # --- Layer 2: intra-batch semantic CLUSTERING (title+description) ---
-    # Groups this batch's own candidates into local clusters instead of a
-    # plain drop/keep decision — same pairwise cosine comparisons as
-    # before, just also tracking WHICH existing cluster a match belongs to.
-    # score >= dedup.semantic_threshold: near-duplicate WITHIN this batch —
-    #   not its own candidate, but its source still credits the cluster
-    #   (fixes a bug symmetric to the one caught in cross-cycle dedup: this
-    #   used to be silently dropped with zero corroboration credit).
-    # heat.related_threshold <= score < dedup.semantic_threshold: distinct
-    #   angle on the same local event — joins the cluster, becomes its own
-    #   candidate.
-    # score < heat.related_threshold: starts a new local cluster.
-    # See project_am1st_migration memory's 2026-08-06 "event aggregation,
-    # take 2" note for the full design (peek/preview/commit split below).
-    threshold = config.dedup.semantic_threshold
-    related_threshold = config.heat.related_threshold
-    clusters: list[dict] = []  # {"sources": set(), "earliest_source": str, "earliest_unix": int}
-    cluster_members: list[list[tuple]] = []  # parallel to clusters: [(candidate, embedding), ...]
-
-    for c in survivors:
-        try:
-            # Some RSS feeds dump full article text into "description" instead
-            # of a short summary — truncate defensively so a single oversized
-            # item can't blow past the embedding model's 8192-token limit.
-            embedding = await embedder.embed(f"{c.title}\n{c.description}"[:6000])
-        except Exception:
-            logger.exception("run_cycle: %s dropped — embedding failed, skipping this item", c.url)
+    # --- Layer 2: the same article inside this batch, by vector (2026-10-21,
+    # AI-69, user 10-20). Only near-verbatim copies: cosine >=
+    # ingestion.near_verbatim_cosine, and only between two articles that both
+    # have a real headline (4+ words) and summary -- two LifeSiteNews items
+    # with no title and the same page-code "summary" scored 0.99 apart. At the
+    # old 0.85, this step dropped other outlets' reports of the same event
+    # (10-20 measurement); those now go on to the merged judge below.
+    # Every survivor's title+summary embedding is kept for the judge and the
+    # event store. ---
+    near_verbatim = config.ingestion.near_verbatim_cosine
+    texts = [f"{c.title}\n{c.description}"[:6000] for c in survivors]
+    try:
+        vectors = await embedder.embed_many(texts)
+    except Exception:
+        logger.exception("run_cycle: batched embedding failed, embedding one by one")
+        vectors = []
+        for t in texts:
+            try:
+                vectors.append(await embedder.embed(t))
+            except Exception:
+                vectors.append(None)
+    embedded: list[tuple] = []  # (candidate, embedding)
+    for c, embedding in zip(survivors, vectors):
+        if embedding is None:
+            logger.warning("run_cycle: %s dropped — embedding failed", c.url)
             continue
-
-        best_ci, best_score = None, 0.0
-        for ci, members in enumerate(cluster_members):
-            for _, member_embedding in members:
-                score = cosine_similarity(embedding, member_embedding)
-                if score > best_score:
-                    best_score, best_ci = score, ci
-
-        # 2026-09-01: this decision (unlike the event-store match below) has
-        # no entity/LLM check backing it at all — purely cosine. Logging the
-        # score isn't itself a correctness check, but without it there was
-        # no way to even ask "how often does semantic_threshold land on a
-        # genuinely ambiguous case" — see project_am1st_news_bot memory's
-        # 0.8-0.9-band finding from the event-store data as the reason this
-        # matters. No candidate_text here (unlike other check_types) to keep
-        # this per-article, every-cycle log line cheap.
-        if best_ci is not None:
-            log_decision(config, {
-                "check_type": "intra_batch_cluster",
-                "candidate_url": c.url,
-                "matched_cluster_id": best_ci,
-                "cosine_score": best_score,
-                "decision": "merged_duplicate" if best_score >= threshold else ("joined_related" if best_score >= related_threshold else "new_cluster"),
-            })
-
-        published_unix = int(c.published_at.timestamp())
-
-        if best_score >= threshold:
-            cluster = clusters[best_ci]
-            cluster["sources"].add(c.source_name)
-            if published_unix < cluster["earliest_unix"]:
-                cluster["earliest_unix"] = published_unix
-                cluster["earliest_source"] = c.source_name
-            logger.info("run_cycle: %s dropped — intra-batch semantic duplicate (credited to cluster %d)", c.url, best_ci)
+        twin = None
+        if _comparable(c):
+            for other, other_embedding in embedded:
+                if _comparable(other) and cosine_similarity(embedding, other_embedding) >= near_verbatim:
+                    twin = other
+                    break
+        if twin is not None:
+            logger.info("run_cycle: %s dropped — same article as %s in this batch (cosine >= %.2f)", c.url, twin.url, near_verbatim)
             continue
+        embedded.append((c, embedding))
+    logger.info("run_cycle: %d/%d survive the same-article check", len(embedded), len(survivors))
 
-        if best_score >= related_threshold:
-            cluster_idx = best_ci
-        else:
-            cluster_idx = len(clusters)
-            clusters.append({"sources": set(), "earliest_source": c.source_name, "earliest_unix": published_unix})
-            cluster_members.append([])
-
-        cluster = clusters[cluster_idx]
-        cluster["sources"].add(c.source_name)
-        if published_unix < cluster["earliest_unix"]:
-            cluster["earliest_unix"] = published_unix
-            cluster["earliest_source"] = c.source_name
-        cluster_members[cluster_idx].append((c, embedding))
-
-    total_members = sum(len(m) for m in cluster_members)
-    logger.info(
-        "run_cycle: %d/%d survive intra-batch semantic dedup, forming %d local cluster(s)",
-        total_members, len(survivors), len(clusters),
-    )
-
-    # --- Layer 3: per-cluster event-store PREVIEW (read-only) + per-candidate
-    # cross-cycle Qdrant dedup (vs title+description written in the last 72h) ---
-    # 2026-08-14 P0 redesign (event-identity research memo — see
-    # project memory) — three changes from the original single-Top-1 design:
-    #   1. Walks up to entity_verifier.top_k historical event candidates
-    #      (cosine-descending), not just the single most-similar one — the
-    #      true match can rank #2+ if the top-ranked candidate is a
-    #      coincidentally-closer but actually-unrelated event (see
-    #      EventStore.peek_top_k()'s docstring). Stops at the first
-    #      accepted SAME_OCCURRENCE; a rejected candidate no longer ends
-    #      the search.
-    #   2. Every candidate resolves to one of three verdicts —
-    #      SAME_OCCURRENCE (accept, stop), RELATED_DIFFERENT_EVENT
-    #      (entity-related but a distinct action, e.g. "condemns the
-    #      launch" vs the launch itself — recorded as a breadcrumb, keep
-    #      walking), UNRELATED (zero entity overlap, no breadcrumb, keep
-    #      walking) — this is what the old NO_OVERLAP/AMBIGUOUS-LLM-
-    #      DIFFERENT split already did implicitly, just now against
-    #      multiple candidates and explicitly labeled as such in the log.
-    #   3. Once SAME_OCCURRENCE is accepted, EventVerifier.classify_subtype()
-    #      (existed since 2026-08-09, never actually called before this)
-    #      weights how much this cluster's corroboration should move the
-    #      matched event's heat_score — a real new fact (CORE_UPDATE)
-    #      moves it more than an outlet just repeating yesterday's line
-    #      (RESTATEMENT). Real added cost: one extra small LLM call per
-    #      accepted match, including the previously-free COMPATIBLE/
-    #      FAIL_OPEN rule-tier resolutions — deliberate, since heat
-    #      weighting should apply uniformly regardless of which tier
-    #      accepted the match. Does NOT touch canonical_title/
-    #      canonical_summary/timeline state — those stay seed-only/never-
-    #      rewritten per the user's earlier explicit call (see
-    #      EventStore.commit()'s docstring); this only reweights heat.
-    subtype_weights = {
-        "CORE_UPDATE": config.entity_verifier.subtype_core_update_weight,
-        "CORROBORATION": config.entity_verifier.subtype_corroboration_weight,
-        "RESTATEMENT": config.entity_verifier.subtype_restatement_weight,
-    }
-    cluster_peeks: list[dict | None] = []
-    # Parallel to cluster_peeks — every RELATED_DIFFERENT_EVENT candidate
-    # rejected while walking the Top-K list for this cluster (0, 1, or
-    # several), not just one. That is precisely the kind of link a future
-    # storyline layer needs (see 新闻事件身份更新框架.md's "new action = new
-    # event, but same storyline" principle) — NOT stored for an UNRELATED
-    # verdict, since zero entity relation is more likely an unrelated
-    # cosine false-positive (recurring event type) than a real storyline
-    # neighbor. This does NOT build storyline grouping itself — it only
-    # keeps the breadcrumbs so that work doesn't have to be reconstructed
-    # from scratch later.
-    cluster_related_links: list[list[dict]] = []
-    cluster_heat_multipliers: list[float] = []
-    # Manual hot-topic match per cluster (2026-08-31) — unix timestamp until
-    # which this cluster counts as manually-flagged-hot, or 0. Parallel to
-    # cluster_peeks/cluster_related_links/cluster_heat_multipliers, same
-    # convention (populated below, passed to EventStore.commit() as
-    # hot_until — see that method's docstring for how it then propagates
-    # to future corroborating commits on the same event_id automatically).
-    cluster_hot_untils: list[int] = []
-    # Parallel lists for the timeline + cross-event-linking pass (2026-08-31,
-    # see core/qdrant_store.py's commit()/link_related_events() docstrings):
-    # cluster_subtypes carries forward classify_subtype()'s raw verdict (was
-    # only used for heat_multiplier before) so the commit loop below can
-    # tell whether this cluster is a genuine CORE_UPDATE worth a timeline
-    # entry; cluster_entity_tokens_list reuses this loop's own new_tokens
-    # (no second NER pass) as the seed set for the post-commit HubIndex
-    # reverse lookup.
-    cluster_subtypes: list[str] = []
-    cluster_entity_tokens_list: list[set[str]] = []
-    scoring_candidates = []  # list of (Candidate, embedding, cluster_idx)
-    # Cross-cycle dedup compares only with articles this channel posted
-    # (2026-10-15, AI-68, user). If the posted list cannot be read, the check
-    # is skipped this cycle: comparing with unposted pool articles is the
-    # error this replaces.
-    posted_hashes = await posted_store.recent_url_hashes() if posted_store is not None else None
-    if posted_hashes is None:
-        logger.warning("run_cycle: posted url hashes unavailable — cross-cycle dedup skipped this cycle")
-    for cluster_idx, members in enumerate(cluster_members):
-        if not members:
-            cluster_peeks.append(None)
-            cluster_related_links.append([])
-            cluster_heat_multipliers.append(1.0)
-            cluster_hot_untils.append(0)
-            cluster_subtypes.append("")
-            cluster_entity_tokens_list.append(set())
-            continue
-
-        cluster_text = event_identity_text(members[0][0].title, members[0][0].description)
-        new_tokens = entity_tokens(cluster_text)
-        event_candidates = await event_store.peek_top_k(members[0][1], config.entity_verifier.top_k)
-
-        # Entity-identity second opinion (2026-08-09, core/event_identity.py)
-        # — cosine matching a candidate event only means "similar enough to
-        # check further," not "same real-world event" (see
-        # project_am1st_migration memory's 2026-08-09 "event identity"
-        # design note — validated on real historical am1st_events data
-        # before this was written: rule tier alone resolves ~2/3 of these,
-        # the LLM tier corrects roughly half of what it sees). Deliberately
-        # not perfect — a known, accepted residual miss rate, not chased
-        # with more entity-rarity rules; every rule-tier/LLM verdict gets
-        # logged so misses become future training data instead of
-        # recurring silently forever.
-        #
-        # 2026-10-12 (Caidan, AI-69): the rule tier no longer decides here. On
-        # 302 blind-labelled pairs from this store, 105 of the 146 it had kept
-        # apart were one event (it called them NO_OVERLAP and never asked), and
-        # a names/outlet/time rule tuned on those pairs was right on only 59/68
-        # of its own merges on held-out days. 4o-mini with
-        # prompts/same_event_store_prompt.txt was right on 97% of its SAME
-        # verdicts (38/39 held out), so from the related floor up to 0.90 every
-        # candidate goes to it, compared article to article: the matched
-        # point's own text where stored, else the event's representative.
-        # A merge needs SAME; DIFFERENT, UNCERTAIN or an error keeps it apart
-        # (a wrong merge costs more downstream than a split, user 10-12).
-        matched = None
-        heat_multiplier = 1.0
-        subtype = ""
-        related_links: list[dict] = []
-        cluster_judge_text = event_judge_text(members[0][0].title, members[0][0].description)
-        for candidate in event_candidates:
-            score = candidate.get("_score", 0.0)
-            rule_verdict = "cosine>=0.90" if score >= _EVENT_MERGE_COSINE else "judge"
-            # Shared entity tokens + their HubIndex historical scores (2026-09-06)
-            # — observational only, never fed back into rule_verdict/final_verdict
-            # above. Added purely so future distillation-model training has a
-            # richer feature (verify_compatibility() already computes this same
-            # hub_index.token_score() internally to decide COMPATIBLE/AMBIGUOUS,
-            # but didn't expose it to the log) — can't be backfilled onto past
-            # log lines since HubIndex only reflects CURRENT state, so this only
-            # starts accumulating from today forward.
-            shared_tokens = sorted(core_entities_of(candidate) & new_tokens)
-            log_record = {
-                "event_id": candidate.get("event_id"),
-                "cosine_score": candidate.get("_score"),
-                "rule_verdict": rule_verdict,
-                "candidate_url": members[0][0].url,
-                "candidate_text": cluster_text,
-                "matched_representative_text": candidate.get("representative_text", ""),
-                "shared_entity_tokens": shared_tokens,
-                "shared_entity_hub_scores": {tok: await hub_index.token_score(tok) for tok in shared_tokens},
-            }
-            if rule_verdict == "judge":
-                matched_text = candidate.get("text") or candidate.get("representative_text", "")
-                try:
-                    verdict, llm_raw = await event_verifier.same_event_store(matched_text, cluster_judge_text)
-                except Exception as e:
-                    verdict, llm_raw = "ERROR", repr(e)
-                log_decision(config, {**log_record, "judge_text_a": matched_text, "judge_text_b": cluster_judge_text,
-                                      "llm_same_event_raw": llm_raw,
-                                      "final_verdict": "SAME_OCCURRENCE" if verdict == "SAME" else "RELATED_DIFFERENT_EVENT"})
-                if verdict != "SAME":
-                    logger.info("run_cycle: cluster %d — candidate event %s is not the same event (%s, %.3f), trying next candidate",
-                                cluster_idx, candidate.get("event_id"), verdict, score)
-                    related_links.append({"event_id": candidate.get("event_id"), "cosine_score": score, "source": "seed_cosine_reject"})
-                    continue
-                matched = candidate
-            else:
-                log_decision(config, {**log_record, "final_verdict": "SAME_OCCURRENCE"})
-                matched = candidate
-
-            rep_text = candidate.get("representative_text", "")
-            if (
-                candidate.get("_score", 0.0) >= config.entity_verifier.restatement_cosine_floor
-                and no_conflicting_specifics(rep_text, cluster_text)
-            ):
-                subtype, subtype_raw = "RESTATEMENT", "auto: near-identical text, no conflicting places/numbers (LLM call skipped)"
-            else:
-                subtype, subtype_raw = await event_verifier.classify_subtype(rep_text, cluster_text)
-            heat_multiplier = subtype_weights.get(subtype, 1.0)  # unparseable/unexpected subtype -> plain corroboration weight (fail open)
-            log_decision(config, {**log_record, "subtype": subtype, "subtype_raw": subtype_raw, "heat_multiplier": heat_multiplier})
-            break
-
-        cluster_peeks.append(matched)
-        cluster_related_links.append(related_links)
-        cluster_heat_multipliers.append(heat_multiplier)
-        cluster_subtypes.append(subtype)
-        cluster_entity_tokens_list.append(new_tokens)
-
-        cluster_hot_until = 0
-        if hot_topics:
+    # Manual hot-topic flags, per article (was per cluster; same threshold and log).
+    hot_untils: dict[str, int] = {}
+    if hot_topics:
+        for c, embedding in embedded:
             best_hot_score, best_hot_text = max(
-                ((cosine_similarity(members[0][1], emb), text) for text, emb in hot_topics), key=lambda x: x[0],
+                ((cosine_similarity(embedding, emb), text) for text, emb in hot_topics), key=lambda x: x[0],
             )
             is_hot_match = best_hot_score >= config.hot_topics.match_threshold
-            # 2026-09-01: logged for EVERY comparison, not just matches, so
-            # match_threshold's score distribution (including near-misses)
-            # can eventually be recalibrated on real am1st data instead of
-            # staying an un-validated 2026-08-31 guess — see
-            # project_am1st_news_bot memory.
             log_decision(config, {
-                "check_type": "hot_topic_match",
-                "cluster_representative_url": members[0][0].url,
-                "best_hot_score": best_hot_score,
-                "matched_flag_text": best_hot_text,
-                "threshold": config.hot_topics.match_threshold,
-                "matched": is_hot_match,
+                "check_type": "hot_topic_match", "cluster_representative_url": c.url,
+                "best_hot_score": best_hot_score, "matched_flag_text": best_hot_text,
+                "threshold": config.hot_topics.match_threshold, "matched": is_hot_match,
             })
             if is_hot_match:
-                cluster_hot_until = int(time.time()) + config.hot_topics.ttl_hours * 3600
-                logger.info("run_cycle: cluster %d matched an active hot-topic flag (%.3f)", cluster_idx, best_hot_score)
-        cluster_hot_untils.append(cluster_hot_until)
+                hot_untils[c.url_hash] = int(time.time()) + config.hot_topics.ttl_hours * 3600
+                logger.info("run_cycle: %s matched an active hot-topic flag (%.3f)", c.url, best_hot_score)
 
-        # Already-published guard (2026-08-07) — if this cluster is a
-        # near-verbatim rehash (>= dedup.semantic_threshold, the same bar
-        # used for "not worth its own candidate" everywhere else) of an
-        # event we already actually posted to Gettr (matched["published"],
-        # set by main_publish.py's EventStore.mark_published()), skip the
-        # whole cluster: scoring/candidate-pool cost on something that
-        # would just tell our audience the same news twice again isn't
-        # worth paying. A genuinely different angle on that same event
-        # (0.6-0.8) is NOT blocked here — see EventStore.mark_published()'s
-        # docstring; that's still a legitimate fresh update.
-        #
-        # 2026-09-06: also drop on subtype alone (RESTATEMENT/CORROBORATION),
-        # not just raw cosine — a real production miss found the cosine-only
-        # check let an already-published court ruling get reposted by a
-        # second outlet at 0.685 cosine (below the 0.8 bar), even though
-        # classify_subtype() — computed just above, same loop iteration —
-        # had already correctly called it RESTATEMENT. Cosine alone was a
-        # cruder signal than the entity+LLM verdict this same code path
-        # already computes; this just puts that verdict to use here too.
-        # 2026-10-13 (AI-69): both guards ask core/guard_judge.py (Claude
-        # Haiku) before dropping and drop only on NO_NEW -- 49 of 220 drops
-        # on the subtype alone were wrong (a major development, or not the
-        # same event). A judge failure drops as before. Released by the first
-        # guard, the cluster is not judged again by the second.
-        guard_released = False
-        if matched is not None and matched.get("published") and (
-            matched.get("_score", 0.0) >= threshold or subtype in ("RESTATEMENT", "CORROBORATION")
-        ):
-            verdict, raw = await _guard_judge(config, members, matched)
-            if verdict in ("MAJOR_DEVELOPMENT", "DIFFERENT_EVENT"):
-                guard_released = True
-                logger.info("run_cycle: cluster %d kept — already-published event, but the guard judge says %s (%s)",
-                            cluster_idx, verdict, (raw.get("reason") or "")[:160])
-                _log_guard_drop(config, "published_event", members, matched, subtype, check_type="event_guard_release",
-                                guard_judge=verdict, guard_judge_raw=raw)
-            else:
-                logger.info(
-                    "run_cycle: cluster %d dropped — near-duplicate of an already-published event (score=%.3f, subtype=%s, judge=%s)",
-                    cluster_idx, matched.get("_score", 0.0), subtype, verdict,
-                )
-                _log_guard_drop(config, "published_event", members, matched, subtype, guard_judge=verdict, guard_judge_raw=raw)
-                continue
-
-        # Stale-event guard (2026-09-06, user's explicit rule: stale news
-        # should only ever be posted as a genuine event update) — distinct
-        # from the guard above: fires even on an event that's NEVER been
-        # posted before, if it's already older than the same day-aware
-        # freshness ceiling publish.py's own candidate query uses (see
-        # agents/candidate_selector.py's weekday/weekend max_age_hours) and
-        # this fragment adds nothing new (RESTATEMENT/CORROBORATION). A
-        # real production miss: a 2-day-old rare-earth story sat unpublished
-        # in the event store, then got its first-ever Gettr post from a
-        # same-day rehash article with nothing new to say, just because
-        # that particular article itself was freshly crawled. A genuine
-        # CORE_UPDATE on an old event still gets through — that's real news.
-        # 2026-10-13 (AI-69, user): the ceiling is the timeliness rule's 48h,
-        # not the candidate query's 12h/24h. An event nobody has posted is old
-        # news only once it was first seen 48h ago; at 12h, 41 of the 136
-        # drops in the 10-12/13 audit were events under 48h old.
-        if matched is not None and subtype in ("RESTATEMENT", "CORROBORATION") and not guard_released:
-            event_age_hours = (int(time.time()) - matched.get("first_seen_at", int(time.time()))) / 3600
-            max_age_hours = config.publish.timeliness_window_hours
-            if event_age_hours > max_age_hours:
-                verdict, raw = await _guard_judge(config, members, matched)
-                if verdict in ("MAJOR_DEVELOPMENT", "DIFFERENT_EVENT"):
-                    logger.info("run_cycle: cluster %d kept — stale event (%.1fh old), but the guard judge says %s (%s)",
-                                cluster_idx, event_age_hours, verdict, (raw.get("reason") or "")[:160])
-                    _log_guard_drop(config, "stale_event", members, matched, subtype, check_type="event_guard_release",
-                                    event_age_hours=round(event_age_hours, 1), max_age_hours=max_age_hours,
-                                    guard_judge=verdict, guard_judge_raw=raw)
-                else:
-                    logger.info(
-                        "run_cycle: cluster %d dropped — stale event (%.1fh old, ceiling %.0fh) with no new information (subtype=%s, judge=%s)",
-                        cluster_idx, event_age_hours, max_age_hours, subtype, verdict,
-                    )
-                    _log_guard_drop(config, "stale_event", members, matched, subtype,
-                                    event_age_hours=round(event_age_hours, 1), max_age_hours=max_age_hours,
-                                    guard_judge=verdict, guard_judge_raw=raw)
-                    continue
-
-        cluster = clusters[cluster_idx]
-        preview_heat, preview_first_seen = event_store.preview_heat(
-            matched, cluster["sources"], cluster["earliest_source"], cluster["earliest_unix"], heat_multiplier,
-        )
-        preview_first_seen_dt = datetime.fromtimestamp(preview_first_seen, tz=timezone.utc)
-
-        for c, embedding in members:
-            if posted_hashes is None:
-                best_score, matched_content, matched_hash = 0.0, "", ""
-            else:
-                best_score, matched_content, matched_hash = await qdrant_store.most_similar_recent(embedding, posted_hashes)
-            # 2026-09-07: was a bare `best_score >= threshold` cutoff — see
-            # core/event_identity.py's cross_cycle_dedup_verdict() docstring
-            # for the real China_Breaks incident (and AM1ST's own confirmed
-            # real near-miss pairs) this replaces it to catch.
-            candidate_text = event_identity_text(c.title, c.description)
-            # gray-zone floor is dedup.gray_zone_floor (0.7), NOT
-            # heat.related_threshold (0.6) -- see DedupConfig.gray_zone_floor
-            # for the 400-pair audit that separated them.
-            is_dup = await cross_cycle_dedup_verdict(config, hub_index, event_verifier, candidate_text, matched_content, best_score, threshold, config.dedup.gray_zone_floor)
-            if matched_content:
-                log_decision(config, {
-                    "check_type": "cross_cycle_dedup",
-                    "compared_against": "posted",
-                    "candidate_url": c.url,
-                    "cosine_score": best_score,
-                    "threshold": threshold,
-                    "related_threshold": config.dedup.gray_zone_floor,
-                    "final_verdict": "duplicate" if is_dup else "kept",
-                    "candidate_text": candidate_text,
-                    "matched_text": matched_content,
-                })
-            if is_dup and stuck_versions is not None and matched_hash:
-                stuck = await stuck_versions.reason(matched_hash)
-                if stuck:
-                    # The earlier version can no longer go out (see
-                    # core/redis_store.StuckVersions), so this one is not its
-                    # duplicate: it is the story's next chance.
-                    logger.info("run_cycle: %s kept — duplicates an earlier version that cannot be published (%s, %.3f)",
-                                c.url, stuck, best_score)
-                    is_dup = False
-            if is_dup:
-                logger.info("run_cycle: %s dropped — cross-cycle semantic duplicate (%.3f)", c.url, best_score)
-                continue
-            c.heat_score = preview_heat
-            c.event_first_seen_at = preview_first_seen_dt
-            scoring_candidates.append((c, embedding, cluster_idx))
-    logger.info("run_cycle: %d/%d survive cross-cycle semantic dedup", len(scoring_candidates), total_members)
-
-    # --- Score every survivor first, THEN decide per cluster whether to
-    # commit anything to the EventStore — a cluster where nothing clears
-    # the score gate never touches am1st_events at all, without needing a
-    # separate (and inevitably imperfect) cheap relevance classifier: the
-    # score gate we're already paying for IS that classifier. ---
-    # Fetched once per cycle, not once per candidate (agents/trending.py is
-    # already a proven, free, no-key mechanism — main_publish.py's own
-    # priority_ranker has used it since 2026-08-xx; this reuses the exact
-    # same feed for the ingestion-side Scorer too, 2026-09-04, so it has an
-    # external "what's actually trending right now" signal to weigh
-    # alongside heat_score, which only reflects AM1ST's own accumulated
-    # RSS-source corroboration).
+    # --- Score gate (unchanged: gpt-4o-mini, >= openai.score_threshold) ---
+    # Trending headlines fetched once per cycle (agents/trending.py). Since
+    # 2026-10-21 the scorer runs before the event store is consulted, so a
+    # candidate carries the defaults heat_score=1.0 / event_first_seen_at=None
+    # and the prompt's "hours since first seen" is its own publish time: that
+    # field only served to spot old news rehashed, which the publish cycle's
+    # 48h timeliness and first-report checks cover.
     trending_headlines = await fetch_trending_headlines()
-    scored: list[tuple] = []  # (candidate, embedding, cluster_idx, passed)
-    for c, embedding, cluster_idx in scoring_candidates:
+    passed: list[tuple] = []  # (candidate, embedding)
+    for c, embedding in embedded:
         try:
             score_output = await scorer.score(c, trending_headlines)
             if score_output is None:
                 continue
             c.llm_score = score_output.llm_score
             c.llm_comment = score_output.llm_comment
-            passed = c.llm_score >= config.openai.score_threshold
-            if not passed:
-                # Title included (2026-09-28) because this line is the only
-                # record a rejected candidate ever existed — nothing below the
-                # score floor reaches Notion. Without it the only way to ask
-                # what the scorer throws away is to classify the URL slug, and
-                # that collapses to 其他 for 78% of a sample, which cannot
-                # distinguish "we are not fed this kind of story" from "the
-                # scorer rejects it at the door". Those have opposite fixes.
-                # llm_comment included from 2026-10-02 so that
-                # tools/reject_report.py can say WHICH judgment was missing, not
-                # just that the number was low. A refused candidate never reaches
-                # Notion, so this line is the only record it ever existed.
+            if c.llm_score >= config.openai.score_threshold:
+                passed.append((c, embedding))
+            else:
+                # The only record a rejected candidate ever existed (see
+                # tools/reject_report.py): title and llm_comment included.
                 logger.info("run_cycle: %s scored %.1f, below threshold — %s — %s",
                             c.url, c.llm_score, c.llm_comment or "-", c.title[:160])
-            scored.append((c, embedding, cluster_idx, passed))
         except Exception:
             logger.exception("run_cycle: unhandled error scoring %s, skipping this item", c.url)
             continue
-        # Shadow scoring — observes only, and deliberately sits in its OWN
-        # try/except after `passed` is already decided, so that no failure in
-        # it can reach the production path (2026-10-01). As of 2026-10-02 the
-        # two scorers have swapped: the RETIRED 21-theme prompt is what runs
-        # here, so that what the new production scorer throws away stays
-        # visible. See agents/scorer_shadow.py.
+        # Shadow scoring — observes only, in its own try/except (2026-10-01).
         if shadow_scorer is not None:
             try:
-                await shadow_scorer.observe(
-                    c, c.llm_score, c.llm_comment, trending_headlines)
+                await shadow_scorer.observe(c, c.llm_score, c.llm_comment, trending_headlines)
             except Exception:
                 logger.debug("run_cycle: shadow scoring failed for %s", c.url)
 
-    added_count = 0
-    for cluster_idx, cluster in enumerate(clusters):
-        survivors_in_cluster = [(c, emb) for c, emb, ci, passed in scored if ci == cluster_idx and passed]
-        if not survivors_in_cluster:
+    # --- Merged judge (2026-10-21, core/merged_judge.py, Linear AI-69) ---
+    # Replaces the event-store judge, classify_subtype, both event guards and
+    # cross-cycle dedup. One Haiku call per article that cleared the score
+    # gate, oldest first and one at a time, so a later article sees the
+    # earlier ones' verdicts: which event it belongs to (or a new one); whether
+    # it tells our readers anything our posts have not (NOTHING_NEW / NOT_WORTH
+    # with a named post -> dropped); whether the same update is already
+    # waiting in Notion (-> recorded in the event store only, no Notion row).
+    # Anything the judge cannot read or answer keeps the article (fails open).
+    passed.sort(key=lambda pair: pair[0].published_at)
+    judge_ready = bool(merged_judge is not None and config.merged_judge.enabled and passed
+                       and await merged_judge.prepare_cycle())
+    added_count = folded_count = dropped_count = 0
+    for c, embedding in passed:
+        verdict = None
+        if judge_ready:
+            try:
+                verdict = await merged_judge.judge(c.url, c.title, c.description, embedding)
+            except Exception:
+                logger.exception("run_cycle: merged judge failed on %s — kept", c.url)
+            if verdict is not None:
+                log_verdict(config, verdict.record)
+        action = verdict.action if verdict is not None else "keep"
+        if action == "drop":
+            dropped_count += 1
+            logger.info("run_cycle: %s dropped — %s, our post(s) %s already told readers (%s)", c.url, verdict.relation,
+                        ",".join(verdict.record.get("covered_by", [])), c.title[:120])
             continue
-
         if dry_run:
-            for c, _ in survivors_in_cluster:
-                logger.info("run_cycle: [dry-run] would add to candidate pool: %s (score=%.1f)", c.url, c.llm_score)
+            logger.info("run_cycle: [dry-run] would %s: %s (score=%.1f, event=%s)",
+                        "record in the event store only" if action == "fold" else "add to candidate pool",
+                        c.url, c.llm_score, (verdict.event_id if verdict else None) or "new")
+            if action == "fold":
+                folded_count += 1
+            else:
                 added_count += 1
             continue
-
-        rep_c, rep_embedding = survivors_in_cluster[0]
-        rep_text = event_identity_text(rep_c.title, rep_c.description)
-        extra_points = [
-            (
-                emb, c.source_name, int(c.published_at.timestamp()),
-                event_identity_text(c.title, c.description), entity_tokens(event_identity_text(c.title, c.description)), c.url,
-                event_judge_text(c.title, c.description),
+        try:
+            matched = await event_store.get_by_id(verdict.event_id) if verdict is not None and verdict.event_id else None
+            pub = int(c.published_at.timestamp())
+            rep_text = event_identity_text(c.title, c.description)
+            own_text = event_judge_text(c.title, c.description)
+            # Free, no-LLM frame guess, only used when this starts a new event;
+            # canonical title/summary are the seed article's own (EventStore.commit()).
+            seed_frame = {**extract_event_frame(rep_text), "canonical_title": c.title,
+                          "canonical_summary": c.description or c.title}
+            # A timeline entry for a genuine new development of an existing
+            # event (was classify_subtype()'s CORE_UPDATE): the judge's HAS_NEW.
+            timeline_entry = ({"ts": pub, "source": c.source_name, "url": c.url, "summary": c.title}
+                              if matched is not None and verdict.relation == "HAS_NEW" else None)
+            heat_score, first_seen_unix, event_id, core_entities, hot_until = await event_store.commit(
+                matched, {c.source_name}, c.source_name, pub,
+                representative=(embedding, c.source_name, pub, rep_text, entity_tokens(rep_text), c.url, own_text),
+                extra_points=[], related_links=None, seed_frame=seed_frame, heat_multiplier=1.0,
+                hot_until=hot_untils.get(c.url_hash, 0), timeline_entry=timeline_entry,
+                in_notion=action != "fold",
             )
-            for c, emb in survivors_in_cluster[1:]
-        ]
-        # Free, no-LLM ACTION/ACTOR/TARGET/event_type guess (2026-08-10,
-        # core/event_identity.py) — only consulted by commit() when this
-        # cluster is actually starting a brand-new event; harmless/unused
-        # otherwise. canonical_title/canonical_summary are deliberately the
-        # seed article's own title/description, not LLM-rewritten — see
-        # EventStore.commit()'s docstring.
-        seed_frame = {
-            **extract_event_frame(rep_text),
-            "canonical_title": rep_c.title,
-            "canonical_summary": rep_c.description or rep_c.title,
-        }
-        # Timeline (2026-08-31) — only a genuine new development
-        # (classify_subtype() said CORE_UPDATE — computed earlier in the
-        # peek loop above, purely to reuse the existing call, not an extra
-        # LLM cost) is worth a timeline entry; RESTATEMENT/CORROBORATION
-        # and brand-new events (subtype == "") get None, see
-        # EventStore.commit()'s docstring.
-        timeline_entry = None
-        if cluster_subtypes[cluster_idx] == "CORE_UPDATE":
-            timeline_entry = {
-                "ts": cluster["earliest_unix"],
-                "source": cluster["earliest_source"],
-                "url": rep_c.url,
-                "summary": rep_c.title,
-            }
-        heat_score, first_seen_unix, event_id, core_entities, hot_until = await event_store.commit(
-            cluster_peeks[cluster_idx],
-            cluster["sources"],
-            cluster["earliest_source"],
-            cluster["earliest_unix"],
-            representative=(rep_embedding, rep_c.source_name, int(rep_c.published_at.timestamp()), rep_text, entity_tokens(rep_text), rep_c.url,
-                            event_judge_text(rep_c.title, rep_c.description)),
-            extra_points=extra_points,
-            related_links=cluster_related_links[cluster_idx],
-            seed_frame=seed_frame,
-            heat_multiplier=cluster_heat_multipliers[cluster_idx],
-            hot_until=cluster_hot_untils[cluster_idx],
-            timeline_entry=timeline_entry,
-        )
-        await hub_index.bump(event_id, core_entities)
-        first_seen_dt = datetime.fromtimestamp(first_seen_unix, tz=timezone.utc)
-        is_hot = hot_until > int(time.time())
+            await hub_index.bump(event_id, core_entities)
+            if judge_ready:
+                merged_judge.note_added(c.url, own_text, embedding, action != "fold", event_id)
+        except Exception:
+            logger.exception("run_cycle: event-store commit failed for %s, skipping this item", c.url)
+            continue
+        if action == "fold":
+            folded_count += 1
+            logger.info("run_cycle: %s recorded in the event store only — same update as %s, already in Notion",
+                        c.url, verdict.fold_url)
+            continue
 
-        # Cross-event storyline linking (2026-08-31, core/qdrant_store.py's
-        # EventStore.get_by_id()/link_related_events(), core/event_identity.py's
-        # HubIndex.token_events()) — reverse-lookup this cluster's own
-        # sufficiently-specific entity tokens (same hub_event_count_threshold
-        # bar used elsewhere to mean "specific enough to be identity
-        # evidence") against every OTHER event that token has ever been the
-        # core of. Usually 0-2 candidates, since a token common enough to
-        # return many would already be over the hub threshold and get
-        # skipped. Each candidate gets one LLM call asking whether it's a
-        # genuine storyline follow-up, not just a shared token — a
-        # different question from same_event()'s "is this the same
-        # occurrence" above.
-        this_event_title = (
-            cluster_peeks[cluster_idx].get("canonical_title", "") if cluster_peeks[cluster_idx] is not None else seed_frame["canonical_title"]
-        )
+        # Cross-event storyline linking (2026-08-31, unchanged): this article's
+        # specific entity tokens, reverse-looked-up against other events.
+        this_event_title = (matched or {}).get("canonical_title", "") or c.title
         candidate_event_ids: set[str] = set()
-        for tok in cluster_entity_tokens_list[cluster_idx]:
+        for tok in entity_tokens(rep_text):
             if await hub_index.token_score(tok) < config.entity_verifier.hub_event_count_threshold:
                 candidate_event_ids |= await hub_index.token_events(tok)
         candidate_event_ids.discard(event_id)
@@ -815,52 +445,41 @@ async def run_cycle(
                 continue
             other_text = other.get("representative_text", "") or other.get("canonical_summary", "")
             related, llm_raw = await event_verifier.related_event(other_text, rep_text)
-            log_decision(
-                config,
-                {
-                    "event_id": event_id, "linked_candidate_event_id": other_event_id,
-                    "llm_related_raw": llm_raw, "final_verdict": "RELATED" if related else "NOT_RELATED",
-                    "candidate_text": rep_text, "matched_representative_text": other_text,
-                },
-            )
+            log_decision(config, {
+                "event_id": event_id, "linked_candidate_event_id": other_event_id,
+                "llm_related_raw": llm_raw, "final_verdict": "RELATED" if related else "NOT_RELATED",
+                "candidate_text": rep_text, "matched_representative_text": other_text,
+            })
             if related:
                 other_title = other.get("canonical_title", "") or other_text
                 await event_store.link_related_events(event_id, this_event_title, other_event_id, other_title)
                 logger.info("run_cycle: linked event %s <-> %s as related storyline", event_id, other_event_id)
 
-        for c, embedding in survivors_in_cluster:
-            try:
-                c.heat_score = heat_score
-                c.event_first_seen_at = first_seen_dt
-                c.is_hot = is_hot
-                # Tagged here, not up in the scoring loop, so the call only
-                # runs for candidates that actually reach the pool — the
-                # scoring loop also covers items that lose their cluster or
-                # fall below threshold. Fails open to None (see TopicTagger).
-                c.topic = await topic_tagger.tag(c)
-                # Yes/no reader appeal (2026-10-06, agents/appeal_tagger.py),
-                # read back by the publish cycle to order candidates that share
-                # a score. Fails open to None = ordered as no appeal.
-                appeal = await appeal_tagger.tag(c) if appeal_tagger is not None else None
-                # Tagged but not acted on yet (2026-09-26): this pass only records
-                # the label so a week of it can be judged prospectively, the way
-                # the MAGA-consensus shadow run was. Nothing downstream reads it.
-                if not await write_candidate(config, c):
-                    logger.warning("run_cycle: candidate-pool write failed for %s", c.url)
-                    continue
-                content_for_embedding = f"{c.title}\n{c.description}"[:6000]
-                await qdrant_store.write_embedding(
-                    c.url, c.url_hash, content_for_embedding, int(c.published_at.timestamp()), embedding,
-                )
-                if appeal is not None and appeal_labels is not None and not dry_run:
-                    await appeal_labels.set(c.url_hash, appeal)
-                added_count += 1
-                logger.info("run_cycle: added to candidate pool: %s (score=%.1f, topic=%s, appeal=%s)",
-                            c.url, c.llm_score, c.topic or "-", {True: "yes", False: "no"}.get(appeal, "-"))
-            except Exception:
-                logger.exception("run_cycle: unhandled error writing %s, skipping this item", c.url)
+        try:
+            c.heat_score = heat_score
+            c.event_first_seen_at = datetime.fromtimestamp(first_seen_unix, tz=timezone.utc)
+            c.is_hot = hot_until > int(time.time())
+            # Topic and appeal tags (Haiku, gpt-4o-mini when Haiku fails), only
+            # for what reaches the pool. Both fail open to None.
+            c.topic = await topic_tagger.tag(c)
+            appeal = await appeal_tagger.tag(c) if appeal_tagger is not None else None
+            if not await write_candidate(config, c):
+                logger.warning("run_cycle: candidate-pool write failed for %s", c.url)
+                continue
+            await qdrant_store.write_embedding(
+                c.url, c.url_hash, f"{c.title}\n{c.description}"[:6000], int(c.published_at.timestamp()), embedding,
+            )
+            if appeal is not None and appeal_labels is not None:
+                await appeal_labels.set(c.url_hash, appeal)
+            added_count += 1
+            logger.info("run_cycle: added to candidate pool: %s (score=%.1f, topic=%s, appeal=%s, event=%s)",
+                        c.url, c.llm_score, c.topic or "-", {True: "yes", False: "no"}.get(appeal, "-"),
+                        "existing" if matched is not None else "new")
+        except Exception:
+            logger.exception("run_cycle: unhandled error writing %s, skipping this item", c.url)
 
-    logger.info("run_cycle: %d added to candidate pool this cycle", added_count)
+    logger.info("run_cycle: %d added to candidate pool, %d recorded in the event store only, %d dropped by the merged judge this cycle",
+                added_count, folded_count, dropped_count)
 
 
 async def main() -> None:
@@ -896,6 +515,7 @@ async def main() -> None:
     appeal_labels = AppealLabels(config)
     stuck_versions = StuckVersions(config)
     prescorer = PreScorer(config)
+    merged_judge = MergedJudge(config, event_store, posted_store, qdrant_store, stuck_versions)
 
     if dry_run:
         logger.info("Running in --dry-run mode: Notion/Qdrant writes will be logged, not sent")
@@ -906,7 +526,7 @@ async def main() -> None:
             try:
                 await asyncio.wait_for(
                     run_cycle(config, redis_store, qdrant_store, event_store, embedder, scorer, topic_tagger, hub_index, event_verifier, dry_run, prescorer, shadow_scorer,
-                              appeal_tagger, appeal_labels, stuck_versions, posted_store),
+                              appeal_tagger, appeal_labels, stuck_versions, posted_store, merged_judge),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:

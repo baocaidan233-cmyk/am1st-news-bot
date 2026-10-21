@@ -127,6 +127,25 @@ class QdrantStore:
             collection_name=self._collection, field_name="urlHash", field_schema=PayloadSchemaType.KEYWORD,
         )
 
+    async def vectors_for(self, url_hashes: list[str]) -> dict[str, list[float]]:
+        """{urlHash: title+description embedding} for these articles -- the
+        merged judge (core/merged_judge.py, AI-69) compares a new article with
+        the source article of each of our posts. Raises on a failed read."""
+        out: dict[str, list[float]] = {}
+        if self._client is None or not url_hashes:
+            return out
+        for i in range(0, len(url_hashes), 200):
+            points, _ = await self._client.scroll(
+                collection_name=self._collection,
+                scroll_filter=Filter(must=[FieldCondition(key="urlHash", match=MatchAny(any=url_hashes[i:i + 200]))]),
+                limit=1000, with_payload=["urlHash"], with_vectors=True,
+            )
+            for p in points:
+                h = (p.payload or {}).get("urlHash")
+                if h and p.vector is not None:
+                    out.setdefault(h, p.vector)
+        return out
+
     async def most_similar_recent(self, embedding: list[float], url_hashes: set[str] | None = None) -> tuple[float, str, str]:
         """Highest cosine similarity against title+description embeddings
         whose source article was published in the last cross_cycle_window_hours,
@@ -305,6 +324,13 @@ class EventStore:
         await self._client.create_payload_index(
             collection_name=self._collection, field_name="event_id", field_schema=PayloadSchemaType.KEYWORD,
         )
+        # url / published_at: the merged judge's lookups (core/merged_judge.py, AI-69).
+        await self._client.create_payload_index(
+            collection_name=self._collection, field_name="url", field_schema=PayloadSchemaType.KEYWORD,
+        )
+        await self._client.create_payload_index(
+            collection_name=self._collection, field_name="published_at", field_schema=PayloadSchemaType.INTEGER,
+        )
 
     async def peek(self, embedding: list[float]) -> dict | None:
         """Read-only — does NOT write anything. Called once per LOCAL
@@ -395,6 +421,99 @@ class EventStore:
                 break
         return candidates
 
+    async def top_events(self, embedding: list[float], k: int, floor: float) -> list[tuple[str, float]]:
+        """The k events nearest to this article (best point per event, cosine
+        >= floor, updated within heat.window_hours) -- the merged judge's
+        candidate events. Raises on a failed query."""
+        if self._client is None:
+            return []
+        cutoff = time.time() - self._window_seconds
+        result = await self._client.query_points(
+            collection_name=self._collection, query=embedding, limit=k * 6,
+            query_filter=Filter(must=[FieldCondition(key="last_updated_at", range=Range(gte=cutoff))]),
+            with_payload=["event_id"],
+        )
+        out: list[tuple[str, float]] = []
+        for point in result.points:
+            if point.score < floor:
+                break
+            event_id = (point.payload or {}).get("event_id")
+            if event_id and event_id not in {e for e, _ in out}:
+                out.append((event_id, point.score))
+            if len(out) >= k:
+                break
+        return out
+
+    async def event_articles(self, event_ids: list[str], per_event: int = 3) -> dict[str, list[str]]:
+        """{event_id: the first `per_event` filed articles' own texts (title +
+        description), oldest first} -- how the merged judge is shown an event."""
+        out: dict[str, list[str]] = {}
+        if self._client is None or not event_ids:
+            return out
+        points, _ = await self._client.scroll(
+            collection_name=self._collection,
+            scroll_filter=Filter(must=[FieldCondition(key="event_id", match=MatchAny(any=event_ids))]),
+            limit=max(200, 40 * len(event_ids)),
+            with_payload=["event_id", "text", "representative_text", "published_at"], with_vectors=False,
+        )
+        grouped: dict[str, list[tuple[int, str]]] = {}
+        for p in points:
+            pl = p.payload or {}
+            text = pl.get("text") or pl.get("representative_text") or ""
+            if pl.get("event_id") and text:
+                grouped.setdefault(pl["event_id"], []).append((pl.get("published_at") or 0, text))
+        for event_id, rows in grouped.items():
+            seen: list[str] = []
+            for _, text in sorted(rows):
+                head = " ".join(text.split("\n", 1)[0].lower().split())
+                if head not in [" ".join(t.split("\n", 1)[0].lower().split()) for t in seen]:
+                    seen.append(text)
+                if len(seen) >= per_event:
+                    break
+            out[event_id] = seen
+        return out
+
+    async def event_ids_for_urls(self, urls: list[str]) -> dict[str, str]:
+        """{url: event_id} for articles filed in this store (each of our posts'
+        source article). Raises on a failed read."""
+        out: dict[str, str] = {}
+        if self._client is None:
+            return out
+        for i in range(0, len(urls), 200):
+            points, _ = await self._client.scroll(
+                collection_name=self._collection,
+                scroll_filter=Filter(must=[FieldCondition(key="url", match=MatchAny(any=urls[i:i + 200]))]),
+                limit=1000, with_payload=["url", "event_id"], with_vectors=False,
+            )
+            for p in points:
+                pl = p.payload or {}
+                if pl.get("url") and pl.get("event_id"):
+                    out.setdefault(pl["url"], pl["event_id"])
+        return out
+
+    async def recent_points(self, hours: float) -> list[dict]:
+        """Every article filed with a publish time in the last `hours`, with its
+        vector -- the merged judge's view of the Notion queue (points marked
+        in_notion=False are filtered out by the caller). Raises on a failed read."""
+        if self._client is None:
+            return []
+        cutoff = int(time.time() - hours * 3600)
+        out, offset = [], None
+        while True:
+            points, offset = await self._client.scroll(
+                collection_name=self._collection,
+                scroll_filter=Filter(must=[FieldCondition(key="published_at", range=Range(gte=cutoff))]),
+                limit=500, offset=offset,
+                with_payload=["url", "text", "representative_text", "event_id", "in_notion"], with_vectors=True,
+            )
+            for p in points:
+                pl = p.payload or {}
+                if p.vector is not None and pl.get("url"):
+                    out.append({"url": pl["url"], "text": pl.get("text") or pl.get("representative_text") or "",
+                                "event_id": pl.get("event_id"), "in_notion": pl.get("in_notion", True), "vec": p.vector})
+            if offset is None:
+                return out
+
     def preview_heat(
         self,
         matched: dict | None,
@@ -458,6 +577,7 @@ class EventStore:
         heat_multiplier: float = 1.0,
         hot_until: int = 0,
         timeline_entry: dict | None = None,
+        in_notion: bool = True,
     ) -> tuple[float, int, str, set[str], int]:
         """The actual write — called AFTER scoring, and only for a local
         cluster where at least one member cleared the score gate (see
@@ -531,7 +651,12 @@ class EventStore:
         event_id and core_entities (core/event_identity.core_entities_of()
         on the just-written payload) are for the caller to pass to
         HubIndex.bump(); hot_until is the final stored value described
-        above, for the caller to derive is_hot = hot_until > now."""
+        above, for the caller to derive is_hot = hot_until > now.
+
+        `in_notion` (2026-10-21, AI-69): False for an article the merged judge
+        found to be the same update as one already waiting in Notion -- it is
+        recorded here so later articles can still match the event, but it is
+        not a Notion row, so the judge's queue view skips it."""
         heat, first_seen = self.preview_heat(matched, sources, earliest_source, earliest_published_at_unix, heat_multiplier)
         now = int(time.time())
         event_id = matched.get("event_id") if matched is not None else str(uuid.uuid4())
@@ -608,7 +733,7 @@ class EventStore:
                         id=str(uuid.uuid4()),
                         vector=emb,
                         payload={"event_id": event_id, "source": src, "published_at": pub, "url": url,
-                                 "text": own_text, **shared_payload},
+                                 "text": own_text, "in_notion": in_notion, **shared_payload},
                     )
                     for emb, src, pub, _, _, url, own_text in all_points
                 ],
@@ -817,6 +942,25 @@ class PostedHistoryStore:
         except Exception:
             logger.exception("PostedHistoryStore: recent_url_hashes failed")
             return None
+
+    async def recent_posts(self, hours: float) -> list[dict]:
+        """Every post this channel sent in the last `hours` (by sentAt): url,
+        urlHash, sentAt, content (the caption), title (the source article's).
+        For the merged judge (core/merged_judge.py, AI-69). Raises on a failed read."""
+        if self._client is None:
+            return []
+        cutoff = int(time.time() - hours * 3600)
+        out, offset = [], None
+        while True:
+            points, offset = await self._client.scroll(
+                collection_name=self._collection,
+                scroll_filter=Filter(must=[FieldCondition(key="sentAt", range=Range(gte=cutoff))]),
+                limit=500, offset=offset,
+                with_payload=["url", "urlHash", "sentAt", "content", "title"], with_vectors=False,
+            )
+            out.extend(dict(p.payload or {}) for p in points if (p.payload or {}).get("sentAt"))
+            if offset is None:
+                return out
 
     async def most_recent_publish_ts(self) -> float | None:
         """The real wall-clock `publishedAt` of the single most recent post

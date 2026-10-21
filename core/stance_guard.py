@@ -414,11 +414,8 @@ class CaptionStanceGuard:
             d = await haiku.ask(self._haiku_key, _CAPTION_PROMPT, caption[:2000], _CAPTION_SCHEMA)
             if d is not None:
                 return self._decide(d, caption)
-            if haiku.available():
-                # User 10-15: only an out-of-credit key goes to self.model. Any
-                # other Haiku failure: not blocking, as when the check fails.
-                logger.warning("CaptionStanceGuard: Haiku could not answer (not out of credit), not blocking")
-                return None
+            # User 10-16 (AI-69): Haiku broken or out of credit, the check goes
+            # to self.model below (was: only out of credit, 10-15).
         try:
             kw = {"max_completion_tokens": 2000} if self.model.startswith("gpt-5") else {"temperature": 0, "max_tokens": 200}
             r = await self._client.chat.completions.create(

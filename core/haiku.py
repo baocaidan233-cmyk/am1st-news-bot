@@ -4,14 +4,13 @@ The user (10-13): Haiku comes with a monthly credit that resets at the end of
 the month, so a judge goes to Haiku wherever it measured better, and when the
 credit runs out the channel must fall back by itself.
 
-The user (10-15): ONLY an out-of-credit key falls back to OpenAI. An
-out-of-credit (or billing) error puts every judge on its OpenAI model for an
-hour without calling Haiku again (available() is False). Any other failure
-(timeout, overload, server error -- each retried 3 times -- an unreadable
-answer, a refusal) never goes to OpenAI: the caller takes its own
-conservative default -- the publish judge skips the candidate for this round,
-the event judge does not merge, the guard judge drops, the first-report check
-clears.
+The user (10-16, replacing the 10-15 rule): whenever Haiku cannot answer --
+out of credit, or broken (timeout, overload, server error -- each retried 3
+times -- an unreadable answer, a refusal) -- the caller asks its OpenAI model
+instead ("所有的haiku都是坏了，没钱了，就fallback到4o mini。这是生产持续性考虑").
+An out-of-credit (or billing) error also puts every caller on OpenAI for an
+hour without calling Haiku again (available() is False). Callers with no
+OpenAI path (the first-report check) still take their own default.
 
 ask() returns the parsed JSON answer, or None for any failure; a caller tells
 the two apart with available()."""

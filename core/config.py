@@ -991,6 +991,37 @@ class FactCheckConfig(BaseModel):
     timeout_seconds: float = 60.0
 
 
+class MergedJudgeConfig(BaseModel):
+    """Ingestion's merged judge (core/merged_judge.py, Linear AI-69), user 10-16..10-21.
+    Replaces the event-store judge, classify_subtype, both event guards and
+    cross-cycle dedup with one Haiku call per article that cleared the score
+    gate. Floors and counts are the ones the offline tests used (10-16..10-20)."""
+    enabled: bool = True
+    api_key: str = ""  # FIRST_REPORT_ANTHROPIC_API_KEY, the key the judges it replaces used
+    prompt_file: str = "prompts/merged_judge_prompt.txt"
+    log_path: str = "logs/merged_judge.jsonl"
+    window_hours: int = 240      # our posts and events looked at: 10 days
+    queue_hours: int = 12        # the Notion queue: articles published in the last 12h (the publish cycle's max age)
+    post_top_k: int = 5          # per search: top 5 by cosine and top 5 by keywords
+    post_cos_floor: float = 0.40
+    post_kw_floor: float = 0.10
+    event_top_k: int = 5
+    event_cos_floor: float = 0.40
+    tags_haiku: bool = True      # topic and appeal tags on Haiku (default effort), gpt-4o-mini when Haiku fails (user 10-16, 10-20)
+
+
+class IngestionConfig(BaseModel):
+    """Ingestion's first steps (user 10-20, AI-69)."""
+    # A summary shorter than this after stripping tags and the RSS "The post ...
+    # appeared first on ..." line is backfilled: the page's og:description,
+    # else the first paragraph of the article; neither -> the article is dropped.
+    min_summary_chars: int = 40
+    # Same article inside one batch by vector, only at or above this cosine and
+    # only between articles with a real headline (4+ words) and summary: 0.85
+    # merged different outlets' reports of the same event (10-20 measurement).
+    near_verbatim_cosine: float = 0.96
+
+
 class AppConfig(BaseModel):
     notion: NotionConfig = Field(default_factory=NotionConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
@@ -1009,6 +1040,8 @@ class AppConfig(BaseModel):
     editor: EditorConfig = Field(default_factory=EditorConfig)
     prescore: PreScoreConfig = Field(default_factory=PreScoreConfig)
     fact_check: FactCheckConfig = Field(default_factory=FactCheckConfig)
+    merged_judge: MergedJudgeConfig = Field(default_factory=MergedJudgeConfig)
+    ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     max_publish_age_hours: int = 3
     poll_interval_seconds: int = 600
     cycle_timeout_seconds: int = 540  # 9 min — per the user's real n8n experience, a healthy cycle runs ~5min and almost never past 7min; this hard-cuts a stuck cycle so the next one always starts on schedule (main.py and main_publish.py loops both apply this, independently — see 2026-08-12 waterfall/no-external-retrigger discussion)
@@ -1028,6 +1061,7 @@ _ENV_OVERRIDES = {
     ("fact_check", "api_key"): "ANTHROPIC_API_KEY",
     ("publish", "first_report_api_key"): "FIRST_REPORT_ANTHROPIC_API_KEY",
     ("entity_verifier", "guard_judge_api_key"): "FIRST_REPORT_ANTHROPIC_API_KEY",
+    ("merged_judge", "api_key"): "FIRST_REPORT_ANTHROPIC_API_KEY",
     ("openai", "fallback_api_key"): "OPENAI_API_KEY_FALLBACK",
     ("qdrant", "url"): "QDRANT_URL",
     ("qdrant", "api_key"): "QDRANT_API_KEY",

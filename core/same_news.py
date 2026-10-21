@@ -96,11 +96,8 @@ class SameNewsJudge:
             d = await haiku.ask(self._haiku_key, self._prompt, user, _SCHEMA["json_schema"]["schema"], cache=True)
             if d and d.get("verdict") in ("SAME", "DIFFERENT", "UNCERTAIN"):
                 return d["verdict"], json.dumps({**d, "model": haiku.MODEL}, ensure_ascii=False)
-            if haiku.available():
-                # User 10-15: only an out-of-credit key goes to OpenAI. Any other
-                # failure: find_publishable() skips this candidate for this round
-                # (its error path, not a verdict) and Haiku is asked again next round.
-                raise RuntimeError("Haiku could not answer (not out of credit)")
+            # User 10-16 (AI-69): Haiku broken or out of credit, the same
+            # question goes to OpenAI below (was: only out of credit, 10-15).
         kwargs = dict(model=self._model, response_format=_SCHEMA, messages=[
             {"role": "system", "content": self._prompt},
             {"role": "user", "content": user},

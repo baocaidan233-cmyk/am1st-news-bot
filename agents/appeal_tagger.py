@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 
+from core import haiku
 from core.config import AppConfig
 from core.models import Candidate
 from core.openai_client import create_openai_client
@@ -45,11 +46,23 @@ class AppealTagger:
         self._client = create_openai_client(config)
         with open(_PROMPT_PATH, encoding="utf-8") as fh:
             self._prompt = fh.read()
+        # 2026-10-21 (AI-69, user 10-16/10-20): Haiku first, default effort, the
+        # same prompt on the title alone. On our 240 posts with a 24h engagement
+        # reading Haiku's labels separated engagement at least as well as
+        # gpt-4o-mini's (AUC 0.70 vs 0.69). Haiku broken or out of credit -> the
+        # gpt-4o-mini call below, unchanged.
+        mj = config.merged_judge
+        self._haiku_key = mj.api_key if mj.tags_haiku else ""
 
     async def tag(self, item: Candidate) -> bool | None:
         title = (item.title or "").strip()[:900]
         if not title:
             return None
+        if self._haiku_key:
+            answer = await haiku.ask(self._haiku_key, self._prompt, title, cache=True)
+            d = normalise(answer) if answer is not None else None
+            if d:
+                return d.get("g") not in ("none", "", None)
         try:
             resp = await self._client.chat.completions.create(
                 model=self._config.openai.chat_model,

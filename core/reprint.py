@@ -55,8 +55,23 @@ def site(url: str) -> str:
     return (urlparse(url or "").hostname or "").lower().removeprefix("www.")
 
 
+# Flags outlets add to the same headline (user 10-20, AI-69): "BREAKING:",
+# "JUST IN:", "WATCH:" in front, "[WATCH]", "(VIDEO)" or an ellipsis at the end.
+# Of the 10-20 pairs at cosine 0.93+, the same article under two titles
+# differed mostly by these.
+_FLAG_PREFIX = re.compile(r"^\s*(breaking|just in|watch)\s*[:\-–—]\s*", re.IGNORECASE)
+_FLAG_SUFFIX = re.compile(r"\s*(\[(watch|video)\]|\((watch|video)\)|…|\.\.\.)\s*$", re.IGNORECASE)
+
+
+def _strip_flags(title: str) -> str:
+    t = (title or "").strip()
+    for _ in range(3):
+        t = _FLAG_SUFFIX.sub("", _FLAG_PREFIX.sub("", t)).strip()
+    return t
+
+
 def title_key(title: str) -> str | None:
-    t = _norm(_OUTLET_SUFFIX.sub("", (title or "").strip()))
+    t = _norm(_OUTLET_SUFFIX.sub("", _strip_flags(title)))
     if len(t.split()) < _MIN_TITLE_WORDS:
         return None
     return "t:" + hashlib.sha1(t.encode("utf-8")).hexdigest()

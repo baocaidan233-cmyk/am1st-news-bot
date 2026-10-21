@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 
+from core import haiku
 from core.config import AppConfig
 from core.models import Candidate
 from core.openai_client import create_openai_client
@@ -66,6 +67,10 @@ Reply with EXACTLY this JSON and no other keys, and the value must be one of the
 bucket names above, copied exactly: {"t": "选举诚信"}"""
 
 
+_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["t"],
+           "properties": {"t": {"type": "string", "enum": list(TOPICS)}}}
+
+
 class TopicTagger:
     """One cheap gpt-4o-mini call per candidate that survives scoring, on
     title + description only.
@@ -85,11 +90,21 @@ class TopicTagger:
     def __init__(self, config: AppConfig) -> None:
         self._config = config
         self._client = create_openai_client(config)
+        # 2026-10-21 (AI-69, user 10-16/10-20): Haiku first, at its default
+        # effort -- on 77 adjudicated disagreements Haiku was right 46 times,
+        # gpt-4o-mini 19; turning thinking off dropped Haiku to 39. Haiku broken
+        # or out of credit -> the gpt-4o-mini call below, unchanged.
+        mj = config.merged_judge
+        self._haiku_key = mj.api_key if mj.tags_haiku else ""
 
     async def tag(self, item: Candidate) -> str | None:
         text = f"{item.title}\n{item.description}".strip()[:600]
         if not text:
             return None
+        if self._haiku_key:
+            d = await haiku.ask(self._haiku_key, _PROMPT, text, _SCHEMA)
+            if d and d.get("t") in TOPICS:
+                return d["t"]
         try:
             resp = await self._client.chat.completions.create(
                 model=self._config.openai.chat_model,
