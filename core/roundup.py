@@ -124,10 +124,23 @@ _URL_LIVE_SECTION = re.compile(r"/(business|markets?|politics|world|news|sport)/
 _LIVE_ENTRY_RE = re.compile(r"/(live-blog-update|liveblog_entry|liveblog-entry)/", re.IGNORECASE)
 
 
+# Date-stamped issues (owner, 2026-10-22: 需要加). A numeric date in the title
+# -- "JUICE🍊— 10.22.2026 —", "Pro-Life 10.20.26", "In The Mailbox: 10.22.26",
+# "Tuesday's Mini-Report, 9.29.26", "... Rally in Grand Island, NE – 10/05/26"
+# -- marks one day's issue, episode or stream, not a story. Every title that
+# reached the pre-score since 09-29 with such a date: 130, of which 129 were
+# newsletters, podcast and show episodes, livestreams and a crossword; the one
+# story quoted a date ("'Remember 7.10.23': In Israel, Hostage Square..."), so
+# a date that touches a quote mark does not count.
+_DATED_TITLE = re.compile(r"(?<![\w'‘’\"“”])\d{1,2}[./]\d{1,2}[./](?:20)?\d{2}(?![\w'‘’\"“”])")
+
+
 def roundup_rule(title: str, url: str) -> str | None:
     """The name of the rule this candidate breaks, or None."""
     text = title or ""
     lowered = text.lower()
+    if _DATED_TITLE.search(text):
+        return "dated_issue"
     if _LIVE_STREAM_TITLE.search(text):
         return "live_stream"
     if _LIVE_STREAM_URL.search(urlparse(url or "").path or ""):
