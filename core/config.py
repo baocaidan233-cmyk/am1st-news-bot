@@ -759,6 +759,7 @@ class DynamicPublishConfig(BaseModel):
     calibration_log_path: str = 'logs/dynamic_interval_calibration.jsonl'
     calibration_window_days: float = 14.0
     calibration_min_samples: int = 50  # below this many recent samples, use the *_default bands instead of computed percentiles
+    self_calibrate: bool = False  # user 10-22 (AI-28): off -- the log rotates daily, so it only ever compared an evening with its own morning
 
     trending_check_top_k: int = 25  # cap on how many eligible candidates (by llm_score) get embedded against trending headlines each cycle, to bound cost against a pool that has run into the hundreds
 

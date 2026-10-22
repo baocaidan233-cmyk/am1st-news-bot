@@ -61,7 +61,7 @@ from agents.rss_fetcher import fetch_all
 from agents.scorer import Scorer
 from agents.scorer_shadow import ShadowScorer
 from agents.appeal_tagger import AppealTagger
-from agents.candidate_selector import _TIER1_MIN_SCORE, _is_weekday, age_ceiling_for
+from agents.candidate_selector import usable_count
 from agents.topic_tagger import TopicTagger
 from agents.trending import fetch_trending_headlines
 from core import fulltext
@@ -109,42 +109,64 @@ async def _fetch_full_text(config, candidates, sources, retried: set[str]):
     """Layer 1.05 (2026-10-21, AI-29, user 10-21): the full text of every new
     article (agents/extractor.py, the render service for the sites that need
     it), saved for the publish cycle (core/fulltext.py). An article with no
-    fetchable text is not scored: the first failure waits
-    ingestion.fulltext_retry_minutes for one more try, the second drops it. A
-    summary shorter than ingestion.min_summary_chars becomes the article's
-    first paragraph. Measured 10-21 on 101 articles that reached the scorer:
-    23% failed, 0.19 s CPU and median 0.34 s wall per article.
+    fetchable text is not scored. A plain fetch that fails goes straight to the
+    headless browser in the same cycle (user 10-22: the sites that refuse the
+    plain fetch -- Washington Times, BizPac Review, Daily Signal, Tennessee
+    Star, Rumble -- are blocking a client, not down: the browser got 57 of 72
+    articles the plain retry had given up, while the plain retry an hour later
+    got 1 of 245). What the browser cannot get either waits
+    ingestion.fulltext_retry_minutes for one more browser try, then is
+    dropped. Browser fetches run two at a time: the render service is shared.
+    A summary shorter than ingestion.min_summary_chars becomes the article's
+    first paragraph.
 
     Returns (articles with text, {url_hash: text})."""
     floor = config.ingestion.min_summary_chars
     extractor = Extractor(config, _SilentAlerts())
-    gate = asyncio.Semaphore(6)
+    plain_gate, browser_gate = asyncio.Semaphore(6), asyncio.Semaphore(2)
     texts: dict[str, str] = {}
     how: Counter = Counter()
     wait: list = []
 
-    async def fetch(c):
-        async with gate:
+    async def extract(c, browser: bool):
+        # attempts >= browser_after_attempts makes the extractor render the page
+        # whenever the plain fetch comes back empty or too thin.
+        async with (browser_gate if browser else plain_gate):
             try:
-                text = await extractor.extract(c.url, sources, attempts=1 if c.url_hash in retried else 0)
+                return await extractor.extract(c.url, sources,
+                                               attempts=config.extraction.browser_after_attempts if browser else 0)
             except Exception:
                 logger.exception("run_cycle: extraction failed for %s", c.url)
-                text = None
-        if not text:
-            if c.url_hash in retried:
-                how["given_up"] += 1
-                logger.info("run_cycle: %s dropped — no article text on the second try (%s)", c.url, (c.title or "")[:120])
-            else:
-                how["retry_later"] += 1
-                wait.append(c)
-            return
+                return None
+
+    def keep(c, text, how_key):
         texts[c.url_hash] = text
         fulltext.save(config, c.url_hash, text)
-        how["second_try" if c.url_hash in retried else "fetched"] += 1
+        how[how_key] += 1
         if len(_summary_text(c.description)) < floor:
             paragraphs = [p.strip() for p in text.split("\n") if len(p.strip()) >= 60]
             c.description = (paragraphs[0] if paragraphs else text.strip())[:400]
             how["summary_from_text"] += 1
+
+    async def fetch(c):
+        if c.url_hash in retried:
+            text = await extract(c, browser=True)
+            if text:
+                keep(c, text, "second_try")
+            else:
+                how["given_up"] += 1
+                logger.info("run_cycle: %s dropped — no article text on the second try (%s)", c.url, (c.title or "")[:120])
+            return
+        text = await extract(c, browser=False)
+        if text:
+            keep(c, text, "fetched")
+            return
+        text = await extract(c, browser=True)
+        if text:
+            keep(c, text, "browser")
+            return
+        how["retry_later"] += 1
+        wait.append(c)
 
     await asyncio.gather(*(fetch(c) for c in candidates))
     fulltext.add_retry(config, wait)
@@ -158,15 +180,7 @@ async def _usable_supply(config) -> int:
     publish.fresh_hours -- agents/candidate_selector.select_batch()'s tiers 1
     and 2. Code only: one Notion query for 6+ rows. 0 when the query fails."""
     pool = await query_eligible_candidates(config, min_score=config.ingestion.low_score_below)
-    now = datetime.now(timezone.utc)
-    pub = config.publish
-    day_ceiling = pub.weekday_max_age_hours if _is_weekday(now) else pub.weekend_max_age_hours
-    n = 0
-    for c in pool:
-        hours = (now - c.published_at).total_seconds() / 3600
-        if hours <= age_ceiling_for(c, day_ceiling, config) and (c.llm_score >= _TIER1_MIN_SCORE or hours <= pub.fresh_hours):
-            n += 1
-    return n
+    return usable_count(pool, config, datetime.now(timezone.utc))
 
 
 async def run_cycle(

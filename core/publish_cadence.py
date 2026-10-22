@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agents.candidate_selector import is_night
+from agents.candidate_selector import is_night, usable_count
 from agents.embedder import Embedder
 from agents.trending import fetch_trending_headlines
 from core.config import AppConfig
@@ -106,7 +106,12 @@ async def compute_dynamic_interval(config: AppConfig) -> float:
         logger.exception("compute_dynamic_interval: query_eligible_candidates failed -- failing open to max_interval_seconds")
         return float(dp.max_interval_seconds)
 
-    backlog = len(candidates)
+    # 2026-10-22 (user: 节奏根据新的流程调整，现在这样发太少了): backlog is the
+    # usable 6+ supply, not the raw pool. Since 10-21 the 5-score band enters
+    # the pool only when news is short (AI-31), so the raw count fell from
+    # ~800 to ~500 and read as "slow news". The usable count is what a batch
+    # actually draws from and is untouched by that rule.
+    backlog = usable_count(candidates, config, datetime.now(timezone.utc))
     heat = max((c.heat_score for c in candidates), default=0.0)
 
     trending = 0.0
@@ -134,7 +139,12 @@ async def compute_dynamic_interval(config: AppConfig) -> float:
     history = _load_and_prune_calibration(calib_path, dp.calibration_window_days)
     _append_calibration_sample(calib_path, backlog, heat, trending)
 
-    if len(history) >= dp.calibration_min_samples:
+    # Self-calibration off (user 10-22, AI-28): the log is rotated every
+    # midnight, so "the last 14 days" was only today's samples, and from the
+    # 50th cycle each evening the day's own range turned a normal evening into
+    # "slow news" (10-21: 31-39 minute gaps for 4.5 hours). Samples are still
+    # written.
+    if dp.self_calibrate and len(history) >= dp.calibration_min_samples:
         backlog_low = _percentile([h["backlog"] for h in history], 0.10)
         backlog_high = _percentile([h["backlog"] for h in history], 0.90)
         heat_low = _percentile([h["heat"] for h in history], 0.10)
@@ -148,7 +158,11 @@ async def compute_dynamic_interval(config: AppConfig) -> float:
         trending_low, trending_high = dp.trending_low_default, dp.trending_high_default
         source = "bootstrap"
 
-    u_backlog = _urgency(backlog, backlog_low, backlog_high, log_space=True)
+    # Full urgency from one batch of usable candidates up -- the line the user
+    # set for "news is short" (ingestion.low_score_supply_floor, 10-21);
+    # proportionally less below it.
+    u_backlog = (min(1.0, backlog / config.ingestion.low_score_supply_floor) if source == "bootstrap"
+                 else _urgency(backlog, backlog_low, backlog_high, log_space=True))
     u_heat = _urgency(heat, heat_low, heat_high, log_space=True)
     u_trending = _urgency(trending, trending_low, trending_high, log_space=False)
 

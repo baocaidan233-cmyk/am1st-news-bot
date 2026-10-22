@@ -138,6 +138,26 @@ def age_ceiling_for(c: PublishCandidate, day_ceiling: float, config: AppConfig) 
     return float(day_ceiling)
 
 
+def usable_count(candidates: list[PublishCandidate], config: AppConfig, now: datetime) -> int:
+    """How many candidates of ingestion.low_score_below (6) or more a publish
+    batch could draw from right now: 8+ inside the age ceiling, 6-7.x
+    published within publish.fresh_hours -- select_batch()'s tiers 1 and 2.
+    The supply measure the user's 5-score rule uses (2026-10-21, AI-31: under
+    10 = news is short), and since 10-22 the cadence's backlog signal too:
+    unlike the raw pool size it does not shrink when 5-score articles stop
+    entering the pool."""
+    pub = config.publish
+    day_ceiling = pub.weekday_max_age_hours if _is_weekday(now) else pub.weekend_max_age_hours
+    n = 0
+    for c in candidates:
+        if c.llm_score < config.ingestion.low_score_below:
+            continue
+        hours = (now - c.published_at).total_seconds() / 3600
+        if hours <= age_ceiling_for(c, day_ceiling, config) and (c.llm_score >= _TIER1_MIN_SCORE or hours <= pub.fresh_hours):
+            n += 1
+    return n
+
+
 def _stable_key(c: PublishCandidate) -> str:
     """A deterministic pseudo-random ordering key, from the candidate's own url.
 
