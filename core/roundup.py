@@ -50,6 +50,7 @@ candidates (0.7%), 2 of which would otherwise have entered the pool, and 3 of
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 # Live and stream pages of any kind, single event or not (owner, 2026-10-06).
@@ -131,15 +132,29 @@ _LIVE_ENTRY_RE = re.compile(r"/(live-blog-update|liveblog_entry|liveblog-entry)/
 # reached the pre-score since 09-29 with such a date: 130, of which 129 were
 # newsletters, podcast and show episodes, livestreams and a crossword; the one
 # story quoted a date ("'Remember 7.10.23': In Israel, Hostage Square..."), so
-# a date that touches a quote mark does not count.
-_DATED_TITLE = re.compile(r"(?<![\w'‘’\"“”])\d{1,2}[./]\d{1,2}[./](?:20)?\d{2}(?![\w'‘’\"“”])")
+# a date that touches a quote mark does not count. Nor, since the rule went to
+# CB, LN and MW the same day, does a date outside this year and last: Zeit's
+# "Angriff auf Israel 7.10.2023: ..." is a story about the 2023 attack, and
+# "PHP 8.4.27" is a version number.
+_DATED_TITLE = re.compile(r"(?<![\w'‘’\"“”])\d{1,2}[./]\d{1,2}[./]((?:20)?\d{2})(?![\w'‘’\"“”])")
+
+
+def _dated_issue(title: str) -> bool:
+    this_year = datetime.now(timezone.utc).year
+    for m in _DATED_TITLE.finditer(title or ""):
+        year = int(m.group(1))
+        if year < 100:
+            year += 2000
+        if this_year - 1 <= year <= this_year:
+            return True
+    return False
 
 
 def roundup_rule(title: str, url: str) -> str | None:
     """The name of the rule this candidate breaks, or None."""
     text = title or ""
     lowered = text.lower()
-    if _DATED_TITLE.search(text):
+    if _dated_issue(text):
         return "dated_issue"
     if _LIVE_STREAM_TITLE.search(text):
         return "live_stream"
