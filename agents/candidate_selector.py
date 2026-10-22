@@ -501,7 +501,10 @@ def select_batch(
     def key(c: PublishCandidate):
         h = (_stable_key(c) if not cycle_token else hashlib.sha1(
             (cycle_token + (c.url or c.page_id)).encode("utf-8")).hexdigest())
-        return (0 if (c.appeal or is_duty(c)) else 1, h) if appeal_first else h
+        # 2026-10-22 (AI-24, user: 这次更新有几家在报参与排序): where the order
+        # was a coin toss, the update more outlets are reporting goes first.
+        many = -int(getattr(c, "versions", 1) or 1)
+        return (0 if (c.appeal or is_duty(c)) else 1, many, h) if appeal_first else (many, h)
 
     batch: list[PublishCandidate] = []
     # tier1 draws from `candidates`, not from `fresh`. The two filters are

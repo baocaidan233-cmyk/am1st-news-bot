@@ -260,6 +260,18 @@ async def run_cycle(
                     sum(c.appeal is None for c in candidates), len(candidates),
                     sum(1 for c in candidates if not c.appeal and is_duty(c)))
 
+    # How many reports of the same update each row stands for (2026-10-22,
+    # AI-24): select_batch() puts more ahead of fewer where it used to draw
+    # at random. Fails open to 1 each, the old order.
+    try:
+        filed = await event_store.points_for_urls([c.url for c in candidates], with_vectors=False)
+        for c in candidates:
+            c.versions = (filed.get(c.url) or {}).get("versions", 1)
+        logger.info("run_cycle: %d candidate(s) stand for more than one report of their update",
+                    sum(1 for c in candidates if c.versions > 1))
+    except Exception:
+        logger.exception("run_cycle: could not read version counts — selecting as before")
+
     sources = await load_rss_sources(config)
     trending_headlines = await fetch_trending_headlines()
 
@@ -394,6 +406,11 @@ async def run_cycle(
                 return
             if await mark_dedup_rejected(config, c.page_id):
                 logger.info("run_cycle: %s retired from the pool — %d consecutive duplicate verdicts", c.url, strikes)
+            # Out of the pool, so the ingestion judge must not fold new reports
+            # into it (10-22: Stephen Hubbard's release, 24 reports folded into a
+            # row retired as a duplicate, none ever reached Notion).
+            if stuck_versions is not None:
+                await stuck_versions.mark(c.url_hash, "dedup")
 
         async def _judged_dedup(c, rec) -> tuple[str, str]:
             """("pass" | "drop" | "legacy", relation) for a candidate the merged
@@ -418,6 +435,8 @@ async def run_cycle(
             log_verdict(config, {**verdict.record, "stage": "publish", "posts_since": [p.get("url") for p in later]})
             if verdict.relation == "ERROR":
                 return "legacy", ""
+            # The fresher answer is what the writer gets (_caption).
+            rec["relation"], rec["new_info"] = verdict.relation, verdict.record.get("new_info", "")
             return ("drop" if verdict.action == "drop" else "pass"), verdict.relation
 
         async def _event_already_published(c) -> bool:
@@ -528,8 +547,15 @@ async def run_cycle(
             # trusted: it is rewritten like a miss.
             if cached and not Writer.is_no_comment(post_content) and not is_english_caption(post_content):
                 post_content, cached = None, False
+            # What this report adds for readers who saw our earlier post on the
+            # story (2026-10-22, AI-24, user: 写稿也优化下): the judge's own words,
+            # for a candidate it judged HAS_NEW. A follow-up whose caption retold
+            # the old news first read as a repost (10-22 New Jersey subpoena).
+            rec_ = judged.get(c.url) or {}
+            new_info = rec_.get("new_info", "") if rec_.get("relation") == "HAS_NEW" else ""
             if post_content is None:
-                post_content = await writer.write(c.title, c.content, context=background, published_at=c.published_at)
+                post_content = await writer.write(c.title, c.content, context=background, published_at=c.published_at,
+                                                  new_info=new_info)
 
             # Every letter of the caption has to be English (AI-73, the Leading
             # News rule): a single foreign word is a writer slip. One retry
@@ -537,7 +563,7 @@ async def run_cycle(
             if not Writer.is_no_comment(post_content) and not is_english_caption(post_content):
                 logger.warning("run_cycle: %s — caption not English, retrying once: %r", c.url, post_content[-120:])
                 post_content = await writer.write(c.title, c.content, context=background, published_at=c.published_at,
-                                                  english_retry=True)
+                                                  english_retry=True, new_info=new_info)
                 if not Writer.is_no_comment(post_content) and not is_english_caption(post_content):
                     logger.warning("run_cycle: %s — caption still not English, dropped from batch", c.url)
                     if in_cache:
@@ -693,6 +719,8 @@ async def run_cycle(
                                 c.url, relation)
                     if not dry_run and await mark_dedup_rejected(config, c.page_id):
                         logger.info("run_cycle: %s retired from the pool", c.url)
+                    if not dry_run and stuck_versions is not None:
+                        await stuck_versions.mark(c.url_hash, "dedup")  # no folding into a retired row (10-22)
                     continue
             if path == "legacy" and await _event_already_published(c):
                 continue

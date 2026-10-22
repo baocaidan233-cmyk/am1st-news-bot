@@ -88,6 +88,17 @@ class Scorer:
         self._client = create_openai_client(config)
         self._model = config.openai.chat_model
         self._system_prompt = Path(config.openai.scoring_prompt_file).read_text(encoding="utf-8")
+        self._focus_note = config.openai.scoring_focus_note.strip()
+        self._focus_until = config.openai.scoring_focus_until.strip()
+
+    def _focus_block(self) -> str:
+        """The editor's current focus (2026-10-22), in the user message rather
+        than the 18k-character system prompt, until scoring_focus_until."""
+        if not self._focus_note:
+            return ""
+        if self._focus_until and datetime.now(timezone.utc).date().isoformat() > self._focus_until:
+            return ""
+        return f"\n\n{self._focus_note}"
 
     async def _call(self, user_message: str) -> str:
         kwargs = dict(
@@ -135,6 +146,7 @@ class Scorer:
             f" reporting it so far; higher means more outlets, weighted, are covering the same event),"
             f" hours_since_event_first_seen={hours_since_first_seen}"
             f"{trending_block}"
+            f"{self._focus_block()}"
         )
         raw = await self._call(user_message)
         try:

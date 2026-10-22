@@ -44,6 +44,9 @@ openai:
   writer_reasoning_effort: "none"  # 5.4-mini 最低档是 none（minimal 会 400）
   embedding_model: "text-embedding-3-small"
   scoring_prompt_file: "prompts/scoring_prompt_v23.txt"  # 2026-10-07 切到手术版 v2.3（用户批准）：解决分数坍塌，8 分档成顶档；旧版 prompts/scoring_prompt.txt 保留，改回这一行即可回滚。2026-10-03 那次回退的是另一个 v2（scoring_prompt_v2.txt），不是这个
+  # 2026-10-22 用户：「中期选举是现在热点事件」。附在每篇打分输入里，到期自动不加；改重点只改这两行。
+  scoring_focus_note: "Editor's current focus, until the November 3 midterm elections: the midterm campaign is the biggest running story for this audience. A race development (a poll or race-rating shift, a notable endorsement, early-voting turnout, a candidate's scandal, gaffe or clash) is core news for this channel. Do not mark it down as a routine prediction or a generic reaction; grade it by what it reports, like any other story."
+  scoring_focus_until: "2026-11-04"
   content_gen_prompt_file: "prompts/content_gen_prompt.txt"
   score_threshold: 5.0  # inclusive — score >= 5.0 passes
   # 影子打分：只观察。生产决策完全由上面的 Scorer 决定，影子的答案只写日志。

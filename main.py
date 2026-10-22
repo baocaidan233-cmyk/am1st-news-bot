@@ -67,13 +67,13 @@ from agents.trending import fetch_trending_headlines
 from core import fulltext
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex, entity_tokens, event_identity_text, event_judge_text, extract_event_frame, log_decision
-from core.hashing import cosine_similarity
+from core.hashing import cosine_similarity, sha256_url_hash
 from core.hot_topics import fetch_active_hot_topics
 from core.language import is_english
 from core.merged_judge import MergedJudge, log_verdict
-from core.notion_candidates import query_eligible_candidates, write_candidate
+from core.notion_candidates import query_eligible_candidates, retire_by_url, write_candidate
 from core.prescore import PreScorer, log_prescore_decision
-from core.reprint import reprint_of
+from core.reprint import RELAYS, reprint_of, site
 from core.roundup import roundup_rule, newsletter_rule
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, QdrantStore, ensure_collection_with_retry
@@ -172,6 +172,17 @@ async def _fetch_full_text(config, candidates, sources, retried: set[str]):
     fulltext.add_retry(config, wait)
     logger.info("run_cycle: full text for %d of %d: %s", len(texts), len(candidates), dict(how))
     return [c for c in candidates if c.url_hash in texts], texts
+
+
+def _stronger_version(c, queued_url: str, queued: dict | None) -> bool:
+    """Is this report a stronger version of the update already waiting in
+    Notion (2026-10-22, AI-24)? The original over a relay site's copy (user
+    10-14: 优先原稿不发转述), else a higher score than the queued one's. A
+    queued row filed before 10-22 carries no score: only the relay rule then."""
+    if site(queued_url) in RELAYS and site(c.url) not in RELAYS:
+        return True
+    score = (queued or {}).get("score")
+    return score is not None and c.llm_score > float(score)
 
 
 async def _usable_supply(config) -> int:
@@ -430,7 +441,7 @@ async def run_cycle(
     passed.sort(key=lambda pair: pair[0].published_at)
     judge_ready = bool(merged_judge is not None and config.merged_judge.enabled and passed
                        and await merged_judge.prepare_cycle())
-    added_count = folded_count = dropped_count = 0
+    added_count = folded_count = dropped_count = replaced_count = 0
     for c, embedding in passed:
         verdict = None
         if judge_ready:
@@ -441,6 +452,18 @@ async def run_cycle(
             if verdict is not None:
                 log_verdict(config, verdict.record)
         action = verdict.action if verdict is not None else "keep"
+        # The same update already waiting in Notion (2026-10-22, AI-24, user:
+        # 更强的版本换进 Notion): a stronger report takes that row's place --
+        # the original over a relay, else a higher score -- instead of folding
+        # into it; a weaker one folds and adds to the row's version count.
+        replaced, queued = None, None
+        if action == "fold":
+            try:
+                queued = (await event_store.points_for_urls([verdict.fold_url], with_vectors=False)).get(verdict.fold_url)
+            except Exception:
+                logger.exception("run_cycle: could not read the queued version %s", verdict.fold_url)
+            if _stronger_version(c, verdict.fold_url, queued):
+                action, replaced = "keep", verdict.fold_url
         if action == "drop":
             # Still filed under its event, outside Notion (user 10-21, AI-69):
             # one more source of a story we already told.
@@ -449,9 +472,10 @@ async def run_cycle(
                         ",".join(verdict.record.get("covered_by", [])), c.title[:120])
         if dry_run:
             if action != "drop":
-                logger.info("run_cycle: [dry-run] would %s: %s (score=%.1f, event=%s)",
+                logger.info("run_cycle: [dry-run] would %s: %s (score=%.1f, event=%s)%s",
                             "record in the event store only" if action == "fold" else "add to candidate pool",
-                            c.url, c.llm_score, (verdict.event_id if verdict else None) or "new")
+                            c.url, c.llm_score, (verdict.event_id if verdict else None) or "new",
+                            f", replacing {replaced}" if replaced else "")
                 if action == "fold":
                     folded_count += 1
                 else:
@@ -479,13 +503,34 @@ async def run_cycle(
                 # What the judge said about our posts, for main_publish.py (AI-24);
                 # none when the judge did not actually answer.
                 relation=verdict.relation if verdict is not None and verdict.relation != "ERROR" else None,
+                # For the writer (10-22): what this report adds, when it adds something.
+                new_info=(verdict.record.get("new_info", "") if verdict is not None and verdict.relation == "HAS_NEW" else ""),
+                score=c.llm_score,
+                versions=(int((queued or {}).get("versions") or 1) + 1) if replaced else 1,
             )
             await hub_index.bump(event_id, core_entities)
             if judge_ready:
                 merged_judge.note_added(c.url, own_text, embedding, action == "keep", event_id)
+            if action == "fold" and verdict.fold_url:
+                await event_store.add_version(verdict.fold_url)
         except Exception:
             logger.exception("run_cycle: event-store commit failed for %s, skipping this item", c.url)
             continue
+        if replaced:
+            # The weaker row leaves Notion, the judge's queue, and the fold
+            # targets (StuckVersions), so later reports fold into this one.
+            replaced_count += 1
+            try:
+                await event_store.leave_queue(replaced)
+                retired = await retire_by_url(config, replaced)
+                if stuck_versions is not None:
+                    await stuck_versions.mark(sha256_url_hash(replaced), "replaced")
+                if judge_ready:
+                    merged_judge.forget(replaced)
+                logger.info("run_cycle: %s replaces %s in the candidate pool — the stronger report of the same update "
+                            "(%d row(s) retired)", c.url, replaced, retired)
+            except Exception:
+                logger.exception("run_cycle: could not retire the replaced version %s", replaced)
         if action == "drop":
             continue
         if action == "fold":
@@ -541,8 +586,8 @@ async def run_cycle(
         except Exception:
             logger.exception("run_cycle: unhandled error writing %s, skipping this item", c.url)
 
-    logger.info("run_cycle: %d added to candidate pool, %d recorded in the event store only, %d dropped by the merged judge this cycle",
-                added_count, folded_count, dropped_count)
+    logger.info("run_cycle: %d added to candidate pool, %d recorded in the event store only, %d dropped by the merged judge this cycle"
+                " (%d replaced a weaker queued version)", added_count, folded_count, dropped_count, replaced_count)
 
 
 async def main() -> None:

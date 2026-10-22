@@ -105,4 +105,9 @@ class PublishCandidate(BaseModel):
     # means unlabelled, which the selector orders exactly like no appeal.
     appeal: Optional[bool] = None
 
+    # How many reports of the same update this row stands for, itself included
+    # (2026-10-22, AI-24: folded reports add to it at ingestion). Read from the
+    # event store in main_publish.py; 1 when unknown.
+    versions: int = 1
+
     gettr_post_id: Optional[str] = None

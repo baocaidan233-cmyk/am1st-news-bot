@@ -48,6 +48,7 @@ _MIN_DESCRIPTION_CHARS = 80
 _MIN_BODY_CHARS = 500
 _RELAYS = frozenset({"revolver.news", "thelibertydaily.com", "realclearpolitics.com", "instapundit.com"})
 _RELAY_MARK = "relay:"
+RELAYS = _RELAYS  # main.py (10-22): a relay's copy is the weaker version of an update
 
 
 def _norm(text: str) -> str:

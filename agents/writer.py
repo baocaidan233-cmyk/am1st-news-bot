@@ -41,7 +41,7 @@ class Writer:
         self._system_prompt = Path(config.openai.content_gen_prompt_file).read_text(encoding="utf-8")
 
     async def write(self, title: str, article: str, context: str = "", is_opinion: bool = False, published_at=None,
-                    english_retry: bool = False) -> str:
+                    english_retry: bool = False, new_info: str = "") -> str:
         """`context` (2026-08-31) — optional prior-developments/related-
         events summary for this story, built by main_publish.py from
         core/qdrant_store.py's EventStore (timeline + related_event_ids on
@@ -72,8 +72,11 @@ class Writer:
         by core/date_context.py to resolve the source's relative dates before
         the model sees them. Optional and fails open: without it the message
         carries today's date alone, which is what it carried before.
+        `new_info` (2026-10-22, AI-24): for a follow-up to a story this channel
+        already posted, what the ingestion judge found new for our readers.
+        The post leads with it; empty for everything else.
         """
-        user_message = self._user_message(title, article, context, is_opinion, published_at, english_retry)
+        user_message = self._user_message(title, article, context, is_opinion, published_at, english_retry, new_info)
         resp = await self._client.chat.completions.create(
             model=self._model,
             **self._extra,
@@ -109,11 +112,19 @@ class Writer:
         return (resp.choices[0].message.content or "").strip()
 
     @staticmethod
-    def _user_message(title, article, context, is_opinion, published_at, english_retry) -> str:
+    def _user_message(title, article, context, is_opinion, published_at, english_retry, new_info="") -> str:
         user_message = (f"{date_block(article, published_at)}\n\n"
                         f"Title:  {title}\n\nArticle: {article}")
         if context:
             user_message += f"\n\nBackground: {context}"
+        if new_info:
+            user_message += (
+                "\n\nFollow-up: this channel has already posted this story, so our readers know the earlier "
+                f"part. What this article adds for them: {new_info}\n"
+                "Open the post with that new development, written as news in its own right: do not compare it "
+                "with earlier reports or say what is new about it. Mention what they already know only as "
+                "brief context, after it, if at all."
+            )
         if is_opinion:
             user_message += (
                 "\n\nNote: this article is analysis/commentary about an event "

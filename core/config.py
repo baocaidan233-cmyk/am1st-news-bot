@@ -130,6 +130,11 @@ class OpenAIConfig(BaseModel):
     writer_reasoning_effort: str = ""
     embedding_model: str = "text-embedding-3-small"
     scoring_prompt_file: str = "prompts/scoring_prompt.txt"
+    # The editor's current focus, added to every scoring request until the date
+    # (UTC, inclusive) -- a live input the fixed prompt cannot carry (2026-10-22,
+    # user: 中期选举是现在热点事件). Empty or past date: nothing is added.
+    scoring_focus_note: str = ""
+    scoring_focus_until: str = ""
     content_gen_prompt_file: str = "prompts/content_gen_prompt.txt"
     staleness_check_prompt_file: str = "prompts/staleness_check_prompt.txt"  # agents/staleness_checker.py — retired 2026-10-10 by agents/timeliness_check.py, kept for its history
     timeliness_extract_prompt_file: str = "prompts/timeliness_extract_prompt.txt"  # agents/timeliness_check.py — copies developments and time words; DailyNews' 10-09 extraction prompt, unchanged. Its 10-10 revision ("when" = first public) made gpt-4o-mini blank the time of every relay: 8 of 13 stale posts stopped instead of 13

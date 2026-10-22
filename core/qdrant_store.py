@@ -491,11 +491,13 @@ class EventStore:
                     out.setdefault(pl["url"], pl["event_id"])
         return out
 
-    async def points_for_urls(self, urls: list[str]) -> dict[str, dict]:
-        """{url: {"vec", "event_id", "relation"}} for articles the merged judge
-        filed (those carry "relation"; 2026-10-21, AI-24) -- main_publish.py's
-        view of what ingestion decided about each candidate. A candidate
-        filed before then is simply absent. Raises on a failed read."""
+    async def points_for_urls(self, urls: list[str], with_vectors: bool = True) -> dict[str, dict]:
+        """{url: {"vec", "event_id", "relation", "new_info", "score", "versions"}}
+        for articles the merged judge filed (those carry "relation"; 2026-10-21,
+        AI-24) -- main_publish.py's view of what ingestion decided about each
+        candidate. A candidate filed before then is simply absent. "versions"
+        (10-22): how many reports of the same update this Notion row stands
+        for, itself included. Raises on a failed read."""
         out: dict[str, dict] = {}
         if self._client is None or not urls:
             return out
@@ -503,13 +505,39 @@ class EventStore:
             points, _ = await self._client.scroll(
                 collection_name=self._collection,
                 scroll_filter=Filter(must=[FieldCondition(key="url", match=MatchAny(any=urls[i:i + 200]))]),
-                limit=1000, with_payload=["url", "event_id", "relation"], with_vectors=True,
+                limit=1000, with_payload=["url", "event_id", "relation", "new_info", "score", "versions"],
+                with_vectors=with_vectors,
             )
             for p in points:
                 pl = p.payload or {}
-                if pl.get("url") and pl.get("relation") and p.vector is not None:
-                    out.setdefault(pl["url"], {"vec": p.vector, "event_id": pl.get("event_id"), "relation": pl["relation"]})
+                if pl.get("url") and pl.get("relation") and (p.vector is not None or not with_vectors):
+                    out.setdefault(pl["url"], {"vec": p.vector, "event_id": pl.get("event_id"), "relation": pl["relation"],
+                                               "new_info": pl.get("new_info") or "", "score": pl.get("score"),
+                                               "versions": int(pl.get("versions") or 1)})
         return out
+
+    async def add_version(self, url: str) -> int:
+        """One more report of the same update was folded into this Notion row
+        (2026-10-22, AI-24): its "versions" count goes up by one. Returns the
+        new count, 0 when the row is not in the store."""
+        if self._client is None:
+            return 0
+        flt = Filter(must=[FieldCondition(key="url", match=MatchValue(value=url))])
+        points, _ = await self._client.scroll(collection_name=self._collection, scroll_filter=flt, limit=20,
+                                              with_payload=["versions"], with_vectors=False)
+        if not points:
+            return 0
+        n = max(int((p.payload or {}).get("versions") or 1) for p in points) + 1
+        await self._client.set_payload(collection_name=self._collection, payload={"versions": n}, points=flt)
+        return n
+
+    async def leave_queue(self, url: str) -> None:
+        """This row has been replaced in Notion by a stronger version of the same
+        update (2026-10-22, AI-24): out of the merged judge's queue view."""
+        if self._client is None:
+            return
+        await self._client.set_payload(collection_name=self._collection, payload={"in_notion": False},
+                                       points=Filter(must=[FieldCondition(key="url", match=MatchValue(value=url))]))
 
     async def recent_points(self, hours: float) -> list[dict]:
         """Every article filed with a publish time in the last `hours`, with its
@@ -599,6 +627,9 @@ class EventStore:
         timeline_entry: dict | None = None,
         in_notion: bool = True,
         relation: str | None = None,
+        new_info: str = "",
+        score: float | None = None,
+        versions: int = 1,
     ) -> tuple[float, int, str, set[str], int]:
         """The actual write — called AFTER scoring, and only for a local
         cluster where at least one member cleared the score gate (see
@@ -684,7 +715,11 @@ class EventStore:
         `relation` (2026-10-21, AI-24): the merged judge's answer about our
         posts, stored on this article's own point. main_publish.py reads it to
         put LOW_VALUE last in its band, and treats its presence as "judged at
-        ingestion" (points_for_urls())."""
+        ingestion" (points_for_urls()). `new_info`, `score`, `versions`
+        (10-22, AI-24): what the judge found new for our readers (the writer
+        leads with it), the article's score (a later report of the same update
+        that scores higher replaces this row), and how many reports of the same
+        update this row stands for (more ranks first within a band)."""
         heat, first_seen = self.preview_heat(matched, sources, earliest_source, earliest_published_at_unix, heat_multiplier)
         now = int(time.time())
         event_id = matched.get("event_id") if matched is not None else str(uuid.uuid4())
@@ -762,7 +797,10 @@ class EventStore:
                         vector=emb,
                         payload={"event_id": event_id, "source": src, "published_at": pub, "url": url,
                                  "text": own_text, "in_notion": in_notion,
-                                 **({"relation": relation} if relation else {}), **shared_payload},
+                                 **({"relation": relation} if relation else {}),
+                                 **({"new_info": new_info[:300]} if new_info else {}),
+                                 **({"score": score} if score is not None else {}),
+                                 "versions": versions, **shared_payload},
                     )
                     for emb, src, pub, _, _, url, own_text in all_points
                 ],

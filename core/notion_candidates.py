@@ -331,6 +331,35 @@ async def mark_dedup_rejected(config: AppConfig, page_id: str) -> bool:
     return await mark_extraction_failed(config, page_id)
 
 
+async def retire_by_url(config: AppConfig, url: str) -> int:
+    """Takes the unsent row(s) for this article URL out of the pool, with the
+    same flag as the retirements above (2026-10-22, AI-24: a stronger report
+    of the same update replaced it in Notion). Returns how many were retired."""
+    notion = config.notion
+    if not notion.candidate_key or not notion.candidate_db_id:
+        return 0
+    body = {"filter": {"and": [{"property": notion.candidate_props.url, "url": {"equals": url}},
+                               {"property": notion.candidate_props.send_status, "checkbox": {"does_not_equal": True}}]}}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"https://api.notion.com/v1/databases/{notion.candidate_db_id}/query",
+                headers={"Authorization": f"Bearer {notion.candidate_key}", "Notion-Version": NOTION_VERSION,
+                         "Content-Type": "application/json"},
+                json=body,
+            )
+            resp.raise_for_status()
+            pages = [r.get("id") for r in resp.json().get("results", []) if r.get("id")]
+    except Exception:
+        logger.exception("retire_by_url: Notion query failed for %s", url)
+        return 0
+    n = 0
+    for page_id in pages:
+        if await mark_extraction_failed(config, page_id):
+            n += 1
+    return n
+
+
 async def mark_writer_rejected(config: AppConfig, page_id: str) -> bool:
     """Flips the same extraction_failed flag as mark_extraction_failed above
     — called by main_publish.py's run_cycle() when Writer.write() returns

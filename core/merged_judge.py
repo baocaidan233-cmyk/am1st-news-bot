@@ -221,6 +221,12 @@ class MergedJudge:
         if self.ready and in_notion:
             self._queue.append({"url": url, "text": text, "vec": _unit(embedding), "event_id": event_id, "in_notion": True})
 
+    def forget(self, url: str) -> None:
+        """A queued row replaced by a stronger version this cycle (main.py,
+        10-22): later articles must not fold into it."""
+        if self.ready:
+            self._queue = [q for q in self._queue if q.get("url") != url]
+
     def posts_since(self, title: str, description: str, embedding, since: float) -> list[dict]:
         """Our posts sent after `since` that this same search would show the
         judge for this article (cosine to the post's source article >=
