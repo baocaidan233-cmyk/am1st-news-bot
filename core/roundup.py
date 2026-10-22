@@ -58,8 +58,14 @@ from urllib.parse import urlparse
 # "livestream", or Gateway Pundit's "... and More!" show title. URL: a
 # watch-live or livestream slug, Epoch TV's /live-now-..., RSBN's /video/live-...
 # Not a bare "live-" slug: /live-nation-sued/ is a story about Live Nation.
+# 2026-10-22: a title that ends on the start time ("President Trump Midterm
+# MAGA Rally, Greenville North Carolina – 7:00pm ET") is the stream page
+# too. Conservative Treehouse's slug usually says -livestream; that one did
+# not, and the writer stopped declining it once it was told to write every
+# story aimed at Democrats. 5 of 44k titles end on a time, all stream pages.
 _LIVE_STREAM_TITLE = re.compile(
-    r"^\W*(?:watch\s+)?live(?:\s+now)?\s*[:|–-]|\bwatch\s+live\b|\blive\s*stream\b|\band\s+more!",
+    r"^\W*(?:watch\s+)?live(?:\s+now)?\s*[:|–-]|\bwatch\s+live\b|\blive\s*stream\b|\band\s+more!"
+    r"|[–—-]\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)\s*(?:ET|EST|EDT|CT|PT)?\s*$",
     re.IGNORECASE)
 _LIVE_STREAM_URL = re.compile(r"/(?:[^/]*watch-live|[^/]*live-?stream|live-now-)[^/]*(?=/|$)|/video/live-", re.IGNORECASE)
 
