@@ -47,6 +47,7 @@ from agents.embedder import Embedder
 from core import haiku
 from core.config import AppConfig
 from core.same_news import lead_paragraph
+from core.claude_usage import log_usage
 
 
 def first_paragraphs(body: str, n: int = 3, limit: int = 1500) -> str:
@@ -227,7 +228,7 @@ class FirstReportCheck:
             model=self._model, max_tokens=16000, system=self._system,
             messages=[{"role": "user", "content": user}],
             output_config={"format": {"type": "json_schema", "schema": _SCHEMA}})
-        usage = {"in": resp.usage.input_tokens, "out": resp.usage.output_tokens}
+        usage = log_usage(resp, 'first-report check')
         if resp.stop_reason == "refusal":
             return {"stale": False, "same": [], "raw": None, "usage": usage}
         v = json.loads(next(b.text for b in resp.content if b.type == "text"))

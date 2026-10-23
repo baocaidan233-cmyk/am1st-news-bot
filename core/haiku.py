@@ -22,6 +22,7 @@ import re
 import time
 
 import anthropic
+from core.claude_usage import log_usage
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ async def ask(api_key: str, system: str, user: str, schema: dict | None = None, 
         kw["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
     try:
         resp = await _client(api_key).messages.create(**kw)
+        log_usage(resp, f"haiku {(system or '')[:40]!r}")
     except Exception as e:
         note_error(e)
         logger.warning("Haiku: %s -- %s", type(e).__name__, "this call falls back" if not available() else "the judge takes its default")

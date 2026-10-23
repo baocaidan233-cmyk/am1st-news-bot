@@ -26,6 +26,7 @@ import anthropic
 
 from core import haiku
 from core.config import AppConfig
+from core.claude_usage import log_usage
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class GuardJudge:
             if resp.stop_reason == "refusal":
                 return "ERROR", {"refusal": True}
             data = json.loads(next(b.text for b in resp.content if b.type == "text"))
-            data["usage"] = {"in": resp.usage.input_tokens, "out": resp.usage.output_tokens}
+            data["usage"] = log_usage(resp, 'guard judge')
             return data["verdict"], data
         except Exception as e:
             haiku.note_error(e)
