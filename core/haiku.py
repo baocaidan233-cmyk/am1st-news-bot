@@ -51,16 +51,22 @@ def _client(api_key: str) -> anthropic.AsyncAnthropic:
     return _clients[api_key]
 
 
-async def ask(api_key: str, system: str, user: str, schema: dict | None = None, cache: bool = False) -> dict | None:
+async def ask(api_key: str, system: str, user: str, schema: dict | None = None, cache: bool = False,
+              cache_ttl: str = "5m") -> dict | None:
     """Haiku at its default thinking (the setting that measured best on every
     judge, 10-13). With a schema the answer is structured output; without one
     the first {...} in the reply is parsed. cache=True marks the system prompt
     for Haiku's prompt cache: worth it only for a prompt past ~1,000 tokens
     called several times within a few minutes (user 10-15: use the cache price
-    where it reliably saves; under 512 tokens nothing is cached)."""
+    where it reliably saves; under 512 tokens nothing is cached).
+    cache_ttl="1h" (2026-10-23, user: 1小时缓存还是5分钟便宜?) for a prompt called
+    every cycle: cycles run 10+ minutes apart, past the 5-minute entry, so each
+    paid a fresh write (1.25x input). An hour's entry costs 2x to write once and
+    every read (0.1x) restarts its clock. Priced on 10-20..10-23's call times."""
     if not api_key or not available():
         return None
-    sys_block = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}] if cache else system
+    control = {"type": "ephemeral", "ttl": "1h"} if cache_ttl == "1h" else {"type": "ephemeral"}
+    sys_block = [{"type": "text", "text": system, "cache_control": control}] if cache else system
     kw = dict(model=MODEL, max_tokens=16000, system=sys_block, messages=[{"role": "user", "content": user}])
     if schema:
         kw["output_config"] = {"format": {"type": "json_schema", "schema": schema}}

@@ -59,7 +59,7 @@ class AppealTagger:
         if not title:
             return None
         if self._haiku_key:
-            answer = await haiku.ask(self._haiku_key, self._prompt, title, cache=True)
+            answer = await haiku.ask(self._haiku_key, self._prompt, title, cache=True, cache_ttl="1h")
             d = normalise(answer) if answer is not None else None
             if d:
                 return d.get("g") not in ("none", "", None)

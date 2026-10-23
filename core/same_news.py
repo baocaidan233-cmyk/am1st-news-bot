@@ -93,7 +93,7 @@ class SameNewsJudge:
         user = f"PUBLISHED:\n{published}\n\nCANDIDATE:\n{candidate}"
         if self._haiku_key:
             # The prompt is ~800 tokens and a candidate is compared with up to 5 posts in a row: cached.
-            d = await haiku.ask(self._haiku_key, self._prompt, user, _SCHEMA["json_schema"]["schema"], cache=True)
+            d = await haiku.ask(self._haiku_key, self._prompt, user, _SCHEMA["json_schema"]["schema"], cache=True, cache_ttl="1h")
             if d and d.get("verdict") in ("SAME", "DIFFERENT", "UNCERTAIN"):
                 return d["verdict"], json.dumps({**d, "model": haiku.MODEL}, ensure_ascii=False)
             # User 10-16 (AI-69): Haiku broken or out of credit, the same

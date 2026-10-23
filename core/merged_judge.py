@@ -290,7 +290,7 @@ class MergedJudge:
         started = time.monotonic()
         answer, model = None, "none"
         if self._key:
-            answer = await haiku.ask(self._key, self._prompt, user, SCHEMA, cache=True)
+            answer = await haiku.ask(self._key, self._prompt, user, SCHEMA, cache=True, cache_ttl="1h")
             model = haiku.MODEL if answer is not None else model
         if answer is None:
             answer = await self._ask_openai(user)
