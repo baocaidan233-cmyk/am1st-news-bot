@@ -997,6 +997,18 @@ class FactCheckConfig(BaseModel):
     timeout_seconds: float = 60.0
 
 
+class OutletCheckConfig(BaseModel):
+    """The caption checked against other outlets' reports (2026-10-23, Linear
+    AI-86, agents/outlet_check.py; DailyNews's AI-83 fitted to AM1ST). Evidence
+    from the event store and Google News in the last days_back days, judged
+    by Claude Haiku (gpt-4o-mini when Haiku cannot answer); code decides what
+    counts as a contradiction and whether the detail is deleted or corrected."""
+    enabled: bool = True
+    api_key: str = ""  # ANTHROPIC_API_KEY in .env, the fact check's
+    days_back: int = 3
+    max_google: int = 5
+
+
 class MergedJudgeConfig(BaseModel):
     """Ingestion's merged judge (core/merged_judge.py, Linear AI-69), user 10-16..10-21.
     Replaces the event-store judge, classify_subtype, both event guards and
@@ -1059,6 +1071,7 @@ class AppConfig(BaseModel):
     editor: EditorConfig = Field(default_factory=EditorConfig)
     prescore: PreScoreConfig = Field(default_factory=PreScoreConfig)
     fact_check: FactCheckConfig = Field(default_factory=FactCheckConfig)
+    outlet_check: OutletCheckConfig = Field(default_factory=OutletCheckConfig)
     merged_judge: MergedJudgeConfig = Field(default_factory=MergedJudgeConfig)
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     max_publish_age_hours: int = 3
@@ -1078,6 +1091,7 @@ _ENV_OVERRIDES = {
     ("redis", "url"): "REDIS_URL",
     ("openai", "api_key"): "OPENAI_API_KEY",
     ("fact_check", "api_key"): "ANTHROPIC_API_KEY",
+    ("outlet_check", "api_key"): "ANTHROPIC_API_KEY",
     ("publish", "first_report_api_key"): "FIRST_REPORT_ANTHROPIC_API_KEY",
     ("entity_verifier", "guard_judge_api_key"): "FIRST_REPORT_ANTHROPIC_API_KEY",
     ("merged_judge", "api_key"): "FIRST_REPORT_ANTHROPIC_API_KEY",

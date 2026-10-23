@@ -120,6 +120,20 @@ def _keywords(title: str) -> str:
     return " ".join(words[:8])
 
 
+
+def _page_day(html: str):
+    """The publication day a page states about itself (trafilatura's reading of
+    its metadata), or None. DailyNews's fix (2026-10-13, AI-80), brought here
+    10-23: Google dated ynet's 10-09 "Trump strikes deal for over 4.8 million
+    tons of Russian diesel" September 10, and the first report of the deal went
+    stale on it."""
+    try:
+        meta = trafilatura.extract_metadata(html)
+        return datetime.strptime(meta.date[:10], "%Y-%m-%d").date() if meta and meta.date else None
+    except Exception:
+        return None
+
+
 class FirstReportCheck:
     def __init__(self, config: AppConfig, cache_size: int = 2000) -> None:
         key = config.publish.first_report_api_key
@@ -209,15 +223,25 @@ class FirstReportCheck:
                     continue
                 if t > cutoff:
                     continue
-                lead, real = "", None
+                lead, real, page_t = "", None, None
                 try:
                     real = await self._resolve(client, link)
                     if real:
                         page = await client.get(real, headers=_HDR)
                         if page.status_code == 200:
                             lead = first_paragraphs(trafilatura.extract(page.text, include_comments=False) or "")
+                            page_t = _page_day(page.text)
                 except Exception:
                     pass
+                # The page's own date, not Google's (see _page_day), when the two
+                # are 2+ days apart. 10-23 replay on 80 stale verdicts: this changed
+                # only Kash Patel's misdated report, correctly; DailyNews's form
+                # (page day before the cutoff's, no date = no evidence) also dropped
+                # 4 real earlier reports on the boundary day (Netflix, Omar's
+                # lawyers, Oregon x2).
+                if (page_t is not None and abs((page_t - datetime.fromtimestamp(t, timezone.utc).date()).days) >= 2
+                        and page_t >= datetime.fromtimestamp(cutoff, timezone.utc).date()):
+                    continue
                 if lead and not _LISTING.search(real or link):  # a headline alone is never evidence
                     out.append({"src": "google_news", "url": real or link, "t": t, "text": _clean(f"{head}\n{lead}")[:700]})
         return out

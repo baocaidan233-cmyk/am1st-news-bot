@@ -126,6 +126,7 @@ from core.merged_judge import MergedJudge, log_verdict
 from core.redis_store import AppealLabels, BatchSeen, CaptionCache, CycleCounter, PostedDupStrikes, StuckVersions
 from core.title_guard import title_violation
 from core.fact_check import FactChecker
+from agents.outlet_check import OutletCheck, in_article, problems as outlet_problems, still_disputed
 from core.stance_guard import CaptionStanceGuard, StanceVectorGuard, epithet_violation
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -203,6 +204,37 @@ async def _fact_checked(fact_checker: FactChecker, writer: Writer, c, post: str,
     return new, second["verdict"] in ("PASS", "UNSURE")
 
 
+async def _outlet_checked(outlet_check: OutletCheck, fact_checker: FactChecker, writer: Writer, c, post: str,
+                          background: str) -> tuple[str | None, bool | None]:
+    """(caption after the check against other outlets, or None to drop the
+    candidate; the fact check's verdict on a changed caption, None when the
+    caption is unchanged) (2026-10-23, AI-86, agents/outlet_check.py).
+
+    A contradiction whose disputed figure, day or name is in our own article
+    too: the article and the outlet disagree, Haiku deletes the detail. One
+    that is not: the writer got it wrong, FactChecker.fix corrects it from the
+    article. The result goes back through the fact check; still carrying the
+    disputed words, or unusable, the candidate is dropped."""
+    v = await outlet_check.check(post, c.url)
+    if v["verdict"] != "CONTRADICTED":
+        return post, None
+    con = v["contradicted"]
+    article = in_article(con, c.title or "", c.content or "")
+    logger.info("run_cycle: %s — contradicted by other outlets (%s): %s", c.url,
+                "our article says it too, deleting" if article else "not in our article, correcting",
+                " | ".join(f"{x['post_quote']!r} vs {x['report_quote']!r}" for x in con)[:500])
+    new = (await outlet_check.delete(post, con, c.url) if article
+           else await fact_checker.fix(c.title or "", c.content or "", post, outlet_problems(con)))
+    if (not new or still_disputed(new, con) or Writer.is_no_comment(new) or not is_english_caption(new)):
+        logger.warning("run_cycle: %s — still carries words other outlets contradict, dropped from batch", c.url)
+        return None, False
+    checked, ok = await _fact_checked(fact_checker, writer, c, new, background)
+    if checked is None or still_disputed(checked, con):
+        return None, False
+    logger.info("run_cycle: %s — caption changed after the outlet check", c.url)
+    return checked, ok
+
+
 async def run_cycle(
     config,
     embedder: Embedder,
@@ -227,6 +259,7 @@ async def run_cycle(
     caption_stance: CaptionStanceGuard | None = None,
     fact_checker: FactChecker | None = None,
     merged_judge: MergedJudge | None = None,
+    outlet_check: OutletCheck | None = None,
 ) -> bool:
     """Returns True iff this cycle actually published something — main()'s
     loop uses this to track how recently the channel last posted, so the
@@ -588,6 +621,20 @@ async def run_cycle(
                         await mark_writer_rejected(config, c.page_id)
                     return False
                 post_content = checked_text = checked
+                # Then against other outlets (2026-10-23, AI-86), on the same
+                # freshly checked caption only: a cached caption marked checked
+                # had this check when it was written.
+                if outlet_check is not None and outlet_check.enabled and not Writer.is_no_comment(post_content):
+                    verified, ok = await _outlet_checked(outlet_check, fact_checker, writer, c, post_content, background)
+                    if verified is None:
+                        if in_cache:
+                            await caption_cache.delete(c.url_hash)
+                        if not dry_run:
+                            await mark_writer_rejected(config, c.page_id)
+                        return False
+                    if ok is not None:
+                        post_content = checked_text = verified
+                        fact_ok = ok
 
             # Time words (2026-10-11, core/time_words.py, from DailyNews; user: 时效性
             # 不能错). Every weekday or date the caption gives must be one the source
@@ -886,6 +933,7 @@ async def main() -> None:
     extractor = Extractor(config, alerts)
     writer = Writer(config)
     fact_checker = FactChecker(config)
+    outlet_check = OutletCheck(config, event_store, embedder)
     timeliness = TimelinessCheck(config)
     caption_cache = CaptionCache(config)
     dup_strikes = PostedDupStrikes(config)
@@ -938,7 +986,7 @@ async def main() -> None:
             try:
                 published_this_cycle = await asyncio.wait_for(
                     run_cycle(config, embedder, ranker, posted_store, event_store, event_verifier, publisher, extractor, writer, timeliness, caption_cache, dup_strikes, hub_index, editor, batch_seen, cycle_counter, dry_run,
-                              appeal_labels, stance_vec, stuck_versions, caption_stance, fact_checker, merged_judge),
+                              appeal_labels, stance_vec, stuck_versions, caption_stance, fact_checker, merged_judge, outlet_check),
                     timeout=config.cycle_timeout_seconds,
                 )
             except asyncio.TimeoutError:
