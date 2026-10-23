@@ -40,6 +40,12 @@ TOPICS = (
     "堕胎",
     "共和党内部与人物",
     "政府腐败与浪费",
+    # Not a subject: Iranian regime propaganda, which main.py keeps out of the
+    # pool (owner, 2026-10-23: 伊朗口炮太多，全是宣传，没有实质意义; 范围只针对伊朗).
+    # A bucket here rather than a separate call (owner: 又是额外调用？). On 178
+    # Iran articles of 10-09..10-23 it took 10, all the regime's own claims and
+    # threats; 0 of 150 other articles.
+    "伊朗宣传",
     "其他",
 )
 
@@ -61,6 +67,7 @@ Antifa左翼暴力 Antifa, riots, left political violence, attacks on conservati
 堕胎 abortion
 共和党内部与人物 GOP internal politics, personalities, endorsements, campaigns, ceremonies, appointments
 政府腐败与浪费 corruption, fraud against the government, influence peddling, NGO funding, wasted taxpayer money, an official resigning in scandal, Epstein-style cover-ups
+伊朗宣传 the news is only Iran's regime talking: its government, officials, the IRGC or state media claiming its own success, threatening, boasting or vowing retaliation ("Iran claims it hit seven tankers", "IRGC warns it will sink U.S. warships"). Not when the news is something that happened (even if Iran did it), Iran failing or the U.S. side succeeding, a named official of another government assessing Iran, Iranian officials admitting a motive, or a U.S. action or statement: those go to their subject bucket
 其他 none of the above
 
 Reply with EXACTLY this JSON and no other keys, and the value must be one of the

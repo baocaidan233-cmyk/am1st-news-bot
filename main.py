@@ -570,6 +570,14 @@ async def run_cycle(
             # Topic and appeal tags (Haiku, gpt-4o-mini when Haiku fails), only
             # for what reaches the pool. Both fail open to None.
             c.topic = await topic_tagger.tag(c)
+            # Iranian regime propaganda stays out of the pool (owner, 2026-10-23,
+            # agents/topic_tagger.py). Its event-store row leaves the judge's queue
+            # view too, so later reports of the same update are not folded into a
+            # row that will never be posted (the 10-22 Hubbard hole).
+            if c.topic == "伊朗宣传":
+                await event_store.leave_queue(c.url)
+                logger.info("run_cycle: %s dropped — Iranian regime propaganda (%s)", c.url, c.title[:120])
+                continue
             appeal = await appeal_tagger.tag(c) if appeal_tagger is not None else None
             if not await write_candidate(config, c):
                 logger.warning("run_cycle: candidate-pool write failed for %s", c.url)
