@@ -63,7 +63,6 @@ from agents.scorer_shadow import ShadowScorer
 from agents.appeal_tagger import AppealTagger
 from agents.candidate_selector import usable_count
 from agents.topic_tagger import TopicTagger
-from agents.trending import fetch_trending_headlines
 from core import fulltext
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex, entity_tokens, event_identity_text, event_judge_text, extract_event_frame, log_decision
@@ -388,7 +387,10 @@ async def run_cycle(
     # and the prompt's "hours since first seen" is its own publish time: that
     # field only served to spot old news rehashed, which the publish cycle's
     # 48h timeliness and first-report checks cover.
-    trending_headlines = await fetch_trending_headlines()
+    # No trending headlines in the scoring request any more (2026-10-23, user:
+    # 那15条Google新闻头条现在就能换掉). They never did their job; a hot-topic
+    # input may take their place later (AI-78).
+    trending_headlines = None
     passed: list[tuple] = []  # (candidate, embedding)
     for c, embedding in embedded:
         try:

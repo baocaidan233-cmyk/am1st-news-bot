@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 
 from agents.embedder import Embedder
 from core.config import AppConfig
-from core.event_identity import EventVerifier, HubIndex, entity_tokens, log_decision, posted_dedup_rule_verdict
+from core.event_identity import EventVerifier, HubIndex, entity_tokens, log_decision
 from core.same_news import get_judge, lead_paragraph, news_record
 from core.models import PublishCandidate
 from core.qdrant_store import PostedHistoryStore
@@ -190,17 +190,17 @@ async def find_publishable(
                     continue
                 matched_content = content_for_embedding(m["content"], m["url"])
                 matched_record = news_record(matched_content, m["title"], m["lead"], m["description"])
-                judged_on = ""
-                rule_verdict = await posted_dedup_rule_verdict(config, hub_index, candidate_content, matched_content, similarity)
-                if rule_verdict == "COMPATIBLE":
-                    is_duplicate = True
-                    same_event_raw = "RULE: posted_dedup_rule_verdict() — non-hub entity overlap, no actor conflict, skipped LLM call"
-                    resolved_by = "entity_rule"
-                else:
-                    verdict, same_event_raw = await get_judge(config).judge(matched_record, candidate_record)
-                    is_duplicate = verdict != "DIFFERENT"
-                    judged_on = "post_title_lead" if m["lead"] else "post_title_description"
-                    resolved_by = "llm" if verdict != "UNCERTAIN" else "llm_uncertain"
+                # Every flagged pair goes to the judge (2026-10-23). The entity-overlap
+                # rule that used to call a pair a duplicate without asking was wrong on
+                # 11 of 20 pairs read: the same people or agency doing a different thing
+                # (DOJ charging 28 noncitizens vs DOJ moving to block 20,000 ballots;
+                # "deal could free Americans" vs Hubbard actually freed). The judge, on
+                # the same pairs, was wrong on 2; replayed on 10-22's posts it stopped 8
+                # repeats and no post the owner wanted kept.
+                verdict, same_event_raw = await get_judge(config).judge(matched_record, candidate_record)
+                is_duplicate = verdict != "DIFFERENT"
+                judged_on = "post_title_lead" if m["lead"] else "post_title_description"
+                resolved_by = "llm" if verdict != "UNCERTAIN" else "llm_uncertain"
                 matched_entities = entity_tokens(matched_content)
                 comparison = {
                     "matched_url": m["url"],

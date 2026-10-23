@@ -750,10 +750,15 @@ async def run_cycle(
                 logger.info("run_cycle: %s dropped by the post-extraction former-Trump filter", c.url)
                 continue
 
-            # The old check on the finished caption, for a candidate without an
-            # ingestion verdict (filed before 2026-10-21, or the judge failed).
-            if path == "legacy" and await find_publishable([c], embedder, posted_store, event_verifier, hub_index,
-                                                            config, on_duplicate=_retire_if_settled) is None:
+            # The check on the finished caption against our posts of the last 10
+            # days, for every candidate (2026-10-23, user). From 10-21 it ran only
+            # for candidates without an ingestion verdict, trusting the ingestion
+            # judge, which keeps whatever it is unsure of: 10-22 then posted 6-9
+            # repeats in 72 posts against 1-2 in ~175 over 10-18..10-20. Replayed
+            # on 10-22 without the entity rule it stopped 8 repeats, every one the
+            # owner confirmed, and kept all 12 posts it was asked about.
+            if await find_publishable([c], embedder, posted_store, event_verifier, hub_index,
+                                      config, on_duplicate=_retire_if_settled) is None:
                 continue
 
             # Last stance check, on the finished caption of the story about to go
