@@ -176,12 +176,15 @@ async def _fetch_full_text(config, candidates, sources, retried: set[str]):
 def _stronger_version(c, queued_url: str, queued: dict | None) -> bool:
     """Is this report a stronger version of the update already waiting in
     Notion (2026-10-22, AI-24)? The original over a relay site's copy (user
-    10-14: 优先原稿不发转述), else a higher score than the queued one's. A
-    queued row filed before 10-22 carries no score: only the relay rule then."""
-    if site(queued_url) in RELAYS and site(c.url) not in RELAYS:
-        return True
-    score = (queued or {}).get("score")
-    return score is not None and c.llm_score > float(score)
+    10-14: 优先原稿不发转述).
+
+    2026-10-26 (user approved): no longer "a higher score wins". Of 46
+    replacements on 10-23..26, 42 were by score, and two versions of one update
+    differ mostly by one point, the scorer's own noise (10-22: 20 of 22). The
+    noise favoured rewrites with louder headlines: in 6 pairs the article
+    swapped in links the one it replaced, none the other way round. The other
+    version still counts toward the row's versions."""
+    return site(queued_url) in RELAYS and site(c.url) not in RELAYS
 
 
 async def _usable_supply(config) -> int:

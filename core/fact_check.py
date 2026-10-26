@@ -45,7 +45,11 @@ logger = logging.getLogger(__name__)
 _NOT_A_POST = re.compile(r"\b(?:the|this) (?:article|post)\b|\bnot stated\b|\b[SP]\d{1,2}\b"
                          # Its own working pasted in (news channels, offline 10-15:
                          # "Wait, I must return the corrected post only. Here it is: ...").
-                         r"|\bcorrected post\b|(?:^|\n)\s*Wait\b|\bhere it is\b|\bI (?:should|must|need to) (?:return|output)\b",
+                         r"|\bcorrected post\b|(?:^|\n)\s*Wait\b|\bhere it is\b|\bI (?:should|must|need to) (?:return|output)\b"
+                         # Its correction narrated (published 10-19: "Correction: Homeland
+                         # Security Investigations agents made the arrests. Let me correct
+                         # the first sentence instead."). 0 other hits in 632 published posts.
+                         r"|\bCorrection:|\bLet me (?:correct|fix|rewrite|revise|redo)\b",
                          re.I)
 
 
