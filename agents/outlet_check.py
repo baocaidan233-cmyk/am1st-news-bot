@@ -318,7 +318,7 @@ class OutletCheck:
         return out
 
     async def _judge(self, user: str) -> tuple[Optional[dict], str]:
-        d = await haiku.ask(self._key, _JUDGE, user, schema=_SCHEMA)
+        d = await haiku.ask(self._key, _JUDGE, user, schema=_SCHEMA, cache=True, cache_ttl="1h")
         if d is not None:
             return d, haiku.MODEL
         if self._openai is None:

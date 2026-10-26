@@ -249,7 +249,7 @@ class FirstReportCheck:
     async def _judge(self, ours: str, cands: list[dict]) -> dict:
         user = f"OUR ARTICLE:\n{ours}\n\n" + "\n\n".join(f"EARLIER ARTICLE {i + 1}:\n{c['text']}" for i, c in enumerate(cands))
         resp = await self._claude.messages.create(
-            model=self._model, max_tokens=16000, system=self._system,
+            model=self._model, max_tokens=16000, system=[{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
             messages=[{"role": "user", "content": user}],
             output_config={"format": {"type": "json_schema", "schema": _SCHEMA}})
         usage = log_usage(resp, 'first-report check')

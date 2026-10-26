@@ -109,7 +109,7 @@ class TopicTagger:
         if not text:
             return None
         if self._haiku_key:
-            d = await haiku.ask(self._haiku_key, _PROMPT, text, _SCHEMA)
+            d = await haiku.ask(self._haiku_key, _PROMPT, text, _SCHEMA, cache=True, cache_ttl="1h")
             if d and d.get("t") in TOPICS:
                 return d["t"]
         try:

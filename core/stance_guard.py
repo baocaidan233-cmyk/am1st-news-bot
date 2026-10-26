@@ -411,7 +411,7 @@ class CaptionStanceGuard:
         if len(caption) < 40:
             return None
         if self._haiku_key:
-            d = await haiku.ask(self._haiku_key, _CAPTION_PROMPT, caption[:2000], _CAPTION_SCHEMA)
+            d = await haiku.ask(self._haiku_key, _CAPTION_PROMPT, caption[:2000], _CAPTION_SCHEMA, cache=True, cache_ttl="1h")
             if d is not None:
                 return self._decide(d, caption)
             # User 10-16 (AI-69): Haiku broken or out of credit, the check goes
