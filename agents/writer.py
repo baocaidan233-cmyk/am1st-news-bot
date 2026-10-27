@@ -6,6 +6,7 @@ from pathlib import Path
 from core.config import AppConfig
 from core.openai_client import create_openai_client
 from core.date_context import date_block
+from core.caption_meta import drop_meta_clauses
 
 NO_COMMENT = "No comment"
 
@@ -34,10 +35,10 @@ class Writer:
     def __init__(self, config: AppConfig) -> None:
         self._client = create_openai_client(config)
         self._model = config.openai.writer_model or config.openai.chat_model
-        # gpt-5 family only (2026-10-11): reasoning effort, and no temperature
+        # gpt-5 and gpt-6 families only (2026-10-11, gpt-6 2026-10-27): reasoning effort, and no temperature
         # (none is sent today either way).
         self._extra = ({"reasoning_effort": config.openai.writer_reasoning_effort}
-                       if self._model.startswith("gpt-5") and config.openai.writer_reasoning_effort else {})
+                       if self._model.startswith(("gpt-5", "gpt-6")) and config.openai.writer_reasoning_effort else {})
         self._system_prompt = Path(config.openai.content_gen_prompt_file).read_text(encoding="utf-8")
 
     async def write(self, title: str, article: str, context: str = "", is_opinion: bool = False, published_at=None,
@@ -85,7 +86,7 @@ class Writer:
                 {"role": "user", "content": user_message},
             ],
         )
-        return (resp.choices[0].message.content or "").strip()
+        return drop_meta_clauses((resp.choices[0].message.content or "").strip()) or NO_COMMENT
 
     async def rewrite(self, title: str, article: str, draft: str, problems: list[str], context: str = "",
                       is_opinion: bool = False, published_at=None) -> str:
@@ -109,7 +110,7 @@ class Writer:
                 {"role": "user", "content": fix},
             ],
         )
-        return (resp.choices[0].message.content or "").strip()
+        return drop_meta_clauses((resp.choices[0].message.content or "").strip()) or NO_COMMENT
 
     @staticmethod
     def _user_message(title, article, context, is_opinion, published_at, english_retry, new_info="") -> str:

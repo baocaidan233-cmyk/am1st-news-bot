@@ -40,8 +40,9 @@ redis:
 
 openai:
   chat_model: "gpt-4o-mini"  # every OpenAI-backed call — Writer, Scorer, PriorityRanker, EventVerifier — see core/config.py comment
-  writer_model: "gpt-5.4-mini"  # 2026-10-11 AI-50 用户定「写稿换到5.4mini，推理最少」；只换写手，打分/判官等仍用 chat_model
-  writer_reasoning_effort: "none"  # 5.4-mini 最低档是 none（minimal 会 400）
+  # 2026-10-27 用户：「几个在用5.4mini写稿的，都换成 6 luna」
+  writer_model: "gpt-6-luna"  # 写手单独设模型（10-11 AI-50 起，当时是 5.4-mini）；打分/判官等仍用 chat_model
+  writer_reasoning_effort: "low"  # 2026-10-27 luna 推理档 none/low/medium 盲评，四个频道都是 low 毛病最少（用户同意）
   embedding_model: "text-embedding-3-small"
   scoring_prompt_file: "prompts/scoring_prompt_v23.txt"  # 2026-10-07 切到手术版 v2.3（用户批准）：解决分数坍塌，8 分档成顶档；旧版 prompts/scoring_prompt.txt 保留，改回这一行即可回滚。2026-10-03 那次回退的是另一个 v2（scoring_prompt_v2.txt），不是这个
   # 2026-10-22 用户：「中期选举是现在热点事件」。附在每篇打分输入里，到期自动不加；改重点只改这两行。

@@ -234,7 +234,7 @@ def _cut(post: str, token: str) -> str:
     m = None
     for pat in (r"(?i)(\s*,)?\s*\b(?:on|this|last|since|by|until|from|through|as of|early|late)\s+%s\b(,)?" % t,
                 r"\b%s['’]s\s+" % t,
-                r"\s*\b%s\b" % t):
+                r"(\s*,)?\s*\b%s\b" % t):
         m = re.search(pat, post)
         if m:
             break
@@ -677,6 +677,9 @@ def fix_time_words(post: str, source: str, published_at=None, url: str = "") -> 
             continue
         new = _written(target, form, text)
         post = post.replace(text, new, 1)
+        # "Tuesday, Oct. 27" whose source gives only the weekday: one
+        # "Tuesday", not "Tuesday, Tuesday" (2026-10-27, gpt-6-luna test).
+        post = re.sub(r"\b(%s),?\s+\1\b" % re.escape(new), r"\1", post, count=1)
         if target != day.local:
             shifted[-1] = new
         why = ("the source's day, in Eastern (a US event)" if target != day.local
