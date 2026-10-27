@@ -86,6 +86,27 @@ _BOILERPLATE = re.compile(r"the post .{0,300} appeared first on .{0,80}$", re.IG
 _TAG = re.compile(r"<[^>]+>")
 
 
+def _judge_summary(text: str, description: str, limit: int = 400) -> str:
+    """What the merged judge reads under the headline (2026-10-27, user: 可以):
+    the article's first paragraph(s), up to `limit` characters, instead of the
+    RSS summary -- the user's rule is that a repeat check compares the headline
+    and the first paragraph. Some RSS summaries are a photo caption or the
+    headline again, and the judge then answered CANNOT_TELL and let the repeat
+    through. Replayed on 84 AM1ST articles (judge1027): CANNOT_TELL 6 -> 3,
+    NOTHING_NEW 10 -> 15, 2 of 5 leaked repeats caught (DOJ charging 48
+    immigrants, U.S. ready to strike Iran in 96 hours), 1 real development of 30
+    held back once and passed on another run. The RSS summary when there is no
+    text."""
+    out = ""
+    for p in (x.strip() for x in (text or "").split("\n")):
+        if len(p) < 60:
+            continue
+        out = f"{out} {p}".strip()
+        if len(out) >= limit:
+            break
+    return out[:limit] or description
+
+
 def _summary_text(description: str) -> str:
     """The summary without tags and without the RSS "The post ... appeared first on ..." line."""
     return _BOILERPLATE.sub("", " ".join(_TAG.sub(" ", description or "").split())).strip()
@@ -226,7 +247,7 @@ async def run_cycle(
 
     # --- Layer 1.05: full text (2026-10-21, AI-29, user 10-21) — no text, no
     # scoring; every later step reads title + summary. See _fetch_full_text(). ---
-    survivors, texts = await _fetch_full_text(config, survivors, sources, {c.url_hash for c in retry})
+    survivors, full_texts = await _fetch_full_text(config, survivors, sources, {c.url_hash for c in retry})
     if not survivors:
         return
 
@@ -236,7 +257,7 @@ async def run_cycle(
     before_reprint = len(survivors)
     kept = []
     for c in survivors:
-        why = await reprint_of(redis_store, c.title or "", c.description or "", c.url, texts.get(c.url_hash, ""))
+        why = await reprint_of(redis_store, c.title or "", c.description or "", c.url, full_texts.get(c.url_hash, ""))
         if why:
             logger.info("run_cycle: %s dropped — reprint (%s): %s", c.url, why, (c.title or "")[:120])
         else:
@@ -451,7 +472,8 @@ async def run_cycle(
         verdict = None
         if judge_ready:
             try:
-                verdict = await merged_judge.judge(c.url, c.title, c.description, embedding)
+                verdict = await merged_judge.judge(c.url, c.title,
+                                                   _judge_summary(full_texts.get(c.url_hash, ""), c.description), embedding)
             except Exception:
                 logger.exception("run_cycle: merged judge failed on %s — kept", c.url)
             if verdict is not None:
