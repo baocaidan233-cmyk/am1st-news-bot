@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -91,6 +93,22 @@ class Scorer:
         self._focus_note = config.openai.scoring_focus_note.strip()
         self._focus_until = config.openai.scoring_focus_until.strip()
         self._standing_note = config.openai.scoring_standing_note.strip()
+        self._calls_log = Path(config.openai.scorer_calls_log_path)
+        self._prompt_sha = hashlib.sha256(self._system_prompt.encode("utf-8")).hexdigest()[:12]
+
+    def _log_call(self, candidate: Candidate, user_message: str, result: ScoreOutput | None, retried: bool) -> None:
+        """One JSON line per scoring call (2026-10-27): the exact message and
+        what came back. Best-effort: a logging failure never fails the score."""
+        try:
+            record = {"logged_at": int(time.time()), "url": candidate.url, "title": candidate.title,
+                      "model": self._model, "prompt_sha": self._prompt_sha, "user_message": user_message,
+                      "llm_score": result.llm_score if result else None,
+                      "llm_comment": result.llm_comment if result else None, "retried": retried}
+            self._calls_log.parent.mkdir(parents=True, exist_ok=True)
+            with self._calls_log.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception:
+            logger.exception("Scorer: failed to write %s -- continuing", self._calls_log)
 
     def _focus_block(self) -> str:
         """The editor's current focus (2026-10-22), in the user message rather
@@ -153,9 +171,11 @@ class Scorer:
             f"{self._focus_block()}"
         )
         raw = await self._call(user_message)
+        result, retried = None, False
         try:
-            return ScoreOutput.model_validate(json.loads(raw))
+            result = ScoreOutput.model_validate(json.loads(raw))
         except (json.JSONDecodeError, ValidationError) as e:
+            retried = True
             logger.warning("Scorer: malformed output for %s, retrying once: %s", candidate.url, e)
             retry_message = (
                 f"{user_message}\n\nYour previous response could not be parsed as "
@@ -163,7 +183,8 @@ class Scorer:
             )
             raw_retry = await self._call(retry_message)
             try:
-                return ScoreOutput.model_validate(json.loads(raw_retry))
+                result = ScoreOutput.model_validate(json.loads(raw_retry))
             except (json.JSONDecodeError, ValidationError):
                 logger.error("Scorer: gave up on %s after retry", candidate.url)
-                return None
+        self._log_call(candidate, user_message, result, retried)
+        return result

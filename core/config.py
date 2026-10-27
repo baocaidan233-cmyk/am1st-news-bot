@@ -152,6 +152,10 @@ class OpenAIConfig(BaseModel):
     shadow_scoring_enabled: bool = False
     shadow_scoring_prompt_file: str = "prompts/scoring_prompt.txt"
     shadow_scoring_log_path: str = "logs/scorer_shadow.jsonl"
+    # 2026-10-27 (user: 打分那一步加一行日志): one line per scoring call with
+    # the exact user message sent and the score it got, so another model can
+    # be replayed on the same inputs (gpt-6-luna test) without re-running this one.
+    scorer_calls_log_path: str = "logs/scorer_calls.jsonl"
 
     @property
     def api_keys(self) -> list[str]:
