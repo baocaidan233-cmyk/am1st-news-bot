@@ -135,6 +135,9 @@ class OpenAIConfig(BaseModel):
     # user: 中期选举是现在热点事件). Empty or past date: nothing is added.
     scoring_focus_note: str = ""
     scoring_focus_until: str = ""
+    # A standing note, added to every scoring request with no end date
+    # (2026-10-27, user: 左派操纵或偷窃选举的指控，不管发生在美国还是外国……都是选举诚信核心新闻).
+    scoring_standing_note: str = ""
     content_gen_prompt_file: str = "prompts/content_gen_prompt.txt"
     staleness_check_prompt_file: str = "prompts/staleness_check_prompt.txt"  # agents/staleness_checker.py — retired 2026-10-10 by agents/timeliness_check.py, kept for its history
     timeliness_extract_prompt_file: str = "prompts/timeliness_extract_prompt.txt"  # agents/timeliness_check.py — copies developments and time words; DailyNews' 10-09 extraction prompt, unchanged. Its 10-10 revision ("when" = first public) made gpt-4o-mini blank the time of every relay: 8 of 13 stale posts stopped instead of 13
@@ -533,6 +536,10 @@ class PublishConfig(BaseModel):
     # a candidate across a band. Off by default so a missing config line means
     # the previous order.
     appeal_order: bool = False
+    # Added to the score of an election-fraud candidate for selection and
+    # ranking only (core/election_fraud.py; 2026-10-27, user: 让 7 分的舞弊稿能排到
+    # 8 分的普通稿前面). 0 turns it off. The stored score is not changed.
+    election_fraud_boost: float = 0.0
     # Vector stance check before extraction (core/stance_guard.StanceVectorGuard,
     # 2026-10-07). Empty = off. The threshold lives in the model file.
     stance_vector_model_file: str = ""

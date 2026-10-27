@@ -125,6 +125,7 @@ from core.qdrant_store import EventStore, PostedHistoryStore, QdrantStore, ensur
 from core.merged_judge import MergedJudge, log_verdict
 from core.redis_store import AppealLabels, BatchSeen, CaptionCache, CycleCounter, PostedDupStrikes, StuckVersions
 from core.title_guard import title_violation
+from core.election_fraud import is_election_fraud
 from core.fact_check import FactChecker
 from agents.outlet_check import OutletCheck, in_article, problems as outlet_problems, still_disputed
 from core.stance_guard import CaptionStanceGuard, StanceVectorGuard, epithet_violation
@@ -279,6 +280,20 @@ async def run_cycle(
     if not candidates:
         logger.info("run_cycle: all candidates dropped by former-Trump filter")
         return False
+
+    # Election fraud first (2026-10-27, user: 大家在乎的是选举舞弊，尤其左派偷盗选举;
+    # 让 7 分的舞弊稿能排到 8 分的普通稿前面). Selection and ranking read llm_score,
+    # so the boost goes there, on this cycle's copies only; Notion keeps the scorer's
+    # score. Replayed on 40 cycles 10-24..10-27: the first choice changed in 4, each
+    # time to a fraud story (405 migrants' ballots, voting with no ID, ...).
+    boost = config.publish.election_fraud_boost
+    if boost:
+        boosted = [c for c in candidates if is_election_fraud(c.title, c.topic)]
+        for c in boosted:
+            c.llm_score += boost
+        if boosted:
+            logger.info("run_cycle: election fraud +%.1f for %d candidate(s): %s", boost, len(boosted),
+                        " | ".join(c.title[:60] for c in boosted[:5]))
 
     # Reader-appeal labels written at pool entry (2026-10-06). Only read when
     # publish.appeal_order is on; an unlabelled candidate keeps appeal=None,

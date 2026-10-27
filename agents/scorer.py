@@ -90,15 +90,19 @@ class Scorer:
         self._system_prompt = Path(config.openai.scoring_prompt_file).read_text(encoding="utf-8")
         self._focus_note = config.openai.scoring_focus_note.strip()
         self._focus_until = config.openai.scoring_focus_until.strip()
+        self._standing_note = config.openai.scoring_standing_note.strip()
 
     def _focus_block(self) -> str:
         """The editor's current focus (2026-10-22), in the user message rather
-        than the 18k-character system prompt, until scoring_focus_until."""
-        if not self._focus_note:
-            return ""
-        if self._focus_until and datetime.now(timezone.utc).date().isoformat() > self._focus_until:
-            return ""
-        return f"\n\n{self._focus_note}"
+        than the 18k-character system prompt, until scoring_focus_until; then
+        the standing note (2026-10-27), which has no end date."""
+        notes = []
+        if self._focus_note and not (self._focus_until and
+                                     datetime.now(timezone.utc).date().isoformat() > self._focus_until):
+            notes.append(self._focus_note)
+        if self._standing_note:
+            notes.append(self._standing_note)
+        return "".join(f"\n\n{n}" for n in notes)
 
     async def _call(self, user_message: str) -> str:
         kwargs = dict(

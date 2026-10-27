@@ -48,6 +48,8 @@ openai:
   # 2026-10-22 用户：「中期选举是现在热点事件」。附在每篇打分输入里，到期自动不加；改重点只改这两行。
   scoring_focus_note: "Editor's current focus, until the November 3 midterm elections: the midterm campaign is the biggest running story for this audience. A race development (a poll or race-rating shift, a notable endorsement, early-voting turnout, a candidate's scandal, gaffe or clash) is core news for this channel. Do not mark it down as a routine prediction or a generic reaction; grade it by what it reports, like any other story."
   scoring_focus_until: "2026-11-04"
+  # 2026-10-27 用户批准，长期有效（不随 11-04 失效）。巴西大选那几天约 60 篇被当外国新闻打 4–5 分；离线 23 篇巴西稿 6 分以上 11→23，其他外国稿和美国选举稿不变。
+  scoring_standing_note: "Claims that the left rigged or stole an election, in the U.S. or abroad (Brazil, for example), and what President Trump or U.S. officials say about them, are core election-integrity news for this audience. Do not mark such a story down because the election is foreign."
   content_gen_prompt_file: "prompts/content_gen_prompt.txt"
   score_threshold: 5.0  # inclusive — score >= 5.0 passes
   # 影子打分：只观察。生产决策完全由上面的 Scorer 决定，影子的答案只写日志。
@@ -158,6 +160,7 @@ publish:
   caption_stance_model: "gpt-5.4-mini"  # 2026-10-11 AI-50 用户定：发布前对 caption 再查一次立场，过不了这篇不发、换下一篇；置空=关闭
   caption_stance_reasoning_effort: "none"
   appeal_order: true            # 2026-10-06 owner-approved trial: within a score band, candidates with a reader appeal go first (agents/appeal_tagger.py). false = previous hash order
+  election_fraud_boost: 1.0       # 2026-10-27 用户批准：选举舞弊/偷选举稿在选稿和排序时 +1 分（core/election_fraud.py），7 分舞弊稿排到 8 分普通稿前面；0=关闭
   weekday_min_score: 6.0        # raised to 7.0 2026-09-14 per 7-day audit, reverted same day — user judged too few real 7+ stories on a given day, tier would starve too often before falling back
   weekend_min_score: 5.0
   candidate_max_age_hours: 24  # Notion query ceiling (wider of weekday/weekend below)
