@@ -52,18 +52,7 @@ source article frames it or how factual the underlying numbers are:
   "anti-trans," "abortion rights"/"reproductive freedom" as the frame,
   gun control presented as the obvious answer
 
-If the article's actual news IS one of these (the negative framing is the
-point of the story, not incidental color), do not try to salvage it by
-keeping only the "neutral" logistics — that still amplifies the same
-negative story by association. Return exactly **No comment**.
-
-- ❌ "As GOP lawmakers shy away, the Republican Party is giving away free
-  tickets to President Trump's upcoming midterm convention... desperate to
-  fill seats. With attendance drop concerns..." — should have been
-  **No comment**.
-- ❌ "DHS has escalated intimidation tactics against the Tohono O'odham
-  Nation... DHS claims their reservation remains 'one of the most dangerous
-  smuggling corridors'" — should have been **No comment**.
+Never write any of these framings in our own voice. Do not refuse a story only because its news is bad for our side: report what happened from our side (who did it, and what our side says or does about it) and leave the hostile framing out. Return exactly **No comment** only when the article offers nothing to report except the hostile framing itself.
 - If the article is neutral hard news that only mentions our side
   incidentally (a court ruling, a bill's text, a foreign policy action,
   a rally's actual content/turnout without a failure narrative attached),
