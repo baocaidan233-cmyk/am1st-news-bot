@@ -128,6 +128,15 @@ class OpenAIConfig(BaseModel):
     # family; gpt-5.4-mini's lowest accepted value is "none" ("minimal" is a 400).
     writer_model: str = ""
     writer_reasoning_effort: str = ""
+    # The Scorer on its own model (2026-10-29, AI-105, user: 上线). Blank =
+    # chat_model. A failed scorer_model call is asked once of fallback_model.
+    scorer_model: str = ""
+    scorer_reasoning_effort: str = "low"
+    # 2026-10-29 (user: 所有回退、fallback 到 5.4mini、4o mini 的情况，全部改成 luna，
+    # 以后新闻频道 open ai 只用 luna): the model every Haiku step and the scorer fall
+    # back to (core/fallback.py). chat_model stays the primary for the steps still on it.
+    fallback_model: str = "gpt-6-luna"
+    fallback_reasoning_effort: str = "low"
     embedding_model: str = "text-embedding-3-small"
     scoring_prompt_file: str = "prompts/scoring_prompt.txt"
     # The editor's current focus, added to every scoring request until the date

@@ -52,6 +52,7 @@ import numpy as np
 
 from core import haiku
 from core.config import AppConfig
+from core.fallback import fallback_params
 from core.openai_client import create_openai_client
 
 logger = logging.getLogger(__name__)
@@ -187,7 +188,8 @@ class MergedJudge:
         self._prompt = Path(self._cfg.prompt_file).read_text(encoding="utf-8")
         self._key = self._cfg.api_key
         self._openai = create_openai_client(config)
-        self._fallback_model = config.openai.chat_model
+        self._fallback_model = config.openai.fallback_model
+        self._fb = fallback_params(config, 1200)
         self.ready = False
         if not self._key:
             logger.warning("MergedJudge: FIRST_REPORT_ANTHROPIC_API_KEY not set -- every call goes to %s", self._fallback_model)
@@ -334,7 +336,7 @@ class MergedJudge:
     async def _ask_openai(self, user: str) -> dict | None:
         try:
             resp = await self._openai.chat.completions.create(
-                model=self._fallback_model, temperature=0, max_tokens=1200,
+                **self._fb,
                 response_format={"type": "json_schema", "json_schema": {"name": "merged_judge", "strict": True, "schema": SCHEMA}},
                 messages=[{"role": "system", "content": self._prompt}, {"role": "user", "content": user}])
             return json.loads(resp.choices[0].message.content or "{}")

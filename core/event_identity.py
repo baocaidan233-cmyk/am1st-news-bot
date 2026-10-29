@@ -30,6 +30,7 @@ from collections import Counter
 
 from core import haiku
 from core.config import AppConfig
+from core.fallback import fallback_params
 from core.hashing import tokenize, weighted_overlap
 from core.language import is_english
 from core.openai_client import create_openai_client
@@ -1038,6 +1039,7 @@ class EventVerifier:
     def __init__(self, config: AppConfig) -> None:
         self._client = create_openai_client(config)
         self._model = config.openai.chat_model
+        self._store_fb = fallback_params(config, 200)  # same_event_store's fallback (2026-10-29)
         self._same_event_prompt = Path(config.entity_verifier.same_event_prompt_file).read_text(encoding="utf-8")
         self._same_event_store_prompt = Path(config.entity_verifier.same_event_store_prompt_file).read_text(encoding="utf-8")
         self._same_event_ingest_prompt = Path(config.entity_verifier.same_event_ingest_prompt_file).read_text(encoding="utf-8")
@@ -1090,18 +1092,12 @@ class EventVerifier:
                                 self._EVENT_SCHEMA["json_schema"]["schema"])
             if d and d.get("verdict") in ("SAME", "DIFFERENT", "UNCERTAIN"):
                 return d["verdict"], json.dumps({**d, "model": haiku.MODEL}, ensure_ascii=False)
-            if haiku.available():  # user 10-15: only no credit goes to gpt-4o-mini; otherwise not merged
+            if haiku.available():  # user 10-15: only no credit goes to openai.fallback_model; otherwise not merged
                 return "ERROR", json.dumps({"error": "Haiku could not answer", "model": haiku.MODEL})
-        kwargs = dict(model=self._model, response_format=self._EVENT_SCHEMA, messages=[
+        kwargs = dict(**self._store_fb, response_format=self._EVENT_SCHEMA, messages=[
             {"role": "system", "content": self._same_event_store_prompt},
             {"role": "user", "content": f"A:\n{text_a}\n\nB:\n{text_b}"},
         ])
-        if self._model.startswith("gpt-5"):
-            kwargs["max_completion_tokens"] = 300
-            kwargs["reasoning_effort"] = "minimal"
-        else:
-            kwargs["temperature"] = 0
-            kwargs["max_tokens"] = 200
         resp = await self._client.chat.completions.create(**kwargs)
         raw = (resp.choices[0].message.content or "").strip()
         return json.loads(raw)["verdict"], raw

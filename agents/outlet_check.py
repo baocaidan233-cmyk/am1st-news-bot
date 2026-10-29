@@ -55,6 +55,7 @@ from agents.embedder import Embedder
 from core import haiku
 from core.claude_usage import log_usage
 from core.config import AppConfig
+from core.fallback import fallback_params
 from core.fact_check import _new_note
 from core.openai_client import create_openai_client
 from core.qdrant_store import EventStore
@@ -260,7 +261,9 @@ class OutletCheck:
         self._max_google = oc.max_google
         self._store = event_store
         self._embedder = embedder
-        self._openai_model = config.openai.chat_model
+        self._openai_model = config.openai.fallback_model
+        self._fb_judge = fallback_params(config, 4000)
+        self._fb_delete = fallback_params(config, 1000)
         self._openai = None
         if self.enabled and config.openai.api_key:
             try:
@@ -323,9 +326,9 @@ class OutletCheck:
             return d, haiku.MODEL
         if self._openai is None:
             return None, ""
-        try:  # Haiku cannot answer: the same question once to gpt-4o-mini (user 10-16)
+        try:  # Haiku cannot answer: the same question once to openai.fallback_model (user 10-16, 10-29)
             resp = await self._openai.chat.completions.create(
-                model=self._openai_model, temperature=0, max_tokens=4000,
+                **self._fb_judge,
                 messages=[{"role": "system", "content": _JUDGE}, {"role": "user", "content": user}],
                 response_format={"type": "json_schema", "json_schema": {"name": "outlet_check", "strict": True, "schema": _SCHEMA}})
             return json.loads(resp.choices[0].message.content or ""), self._openai_model
@@ -381,7 +384,7 @@ class OutletCheck:
 
     # ---------------------------------------------------------------- delete
     async def delete(self, post: str, con: list[dict], url: str = "") -> Optional[str]:
-        """Haiku cuts the disputed details (gpt-4o-mini when Haiku fails), or None."""
+        """Haiku cuts the disputed details (openai.fallback_model when Haiku fails), or None."""
         user = "POST:\n" + post + "\n\nDETAILS TO DELETE:\n" + "\n".join(f"- \"{w}\"" for x in con for w in x["ours"])
         text, model = None, haiku.MODEL
         if haiku.available():
@@ -398,7 +401,7 @@ class OutletCheck:
         if text is None and self._openai is not None:
             try:
                 resp = await self._openai.chat.completions.create(
-                    model=self._openai_model, temperature=0, max_tokens=1000,
+                    **self._fb_delete,
                     messages=[{"role": "system", "content": _DELETE}, {"role": "user", "content": user}])
                 text, model = resp.choices[0].message.content or "", self._openai_model
             except Exception as e:

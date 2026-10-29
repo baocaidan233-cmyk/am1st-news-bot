@@ -5,6 +5,7 @@ import logging
 
 from core import haiku
 from core.config import AppConfig
+from core.fallback import fallback_params
 from core.models import Candidate
 from core.openai_client import create_openai_client
 from core.scoring import normalise
@@ -65,9 +66,7 @@ class AppealTagger:
                 return d.get("g") not in ("none", "", None)
         try:
             resp = await self._client.chat.completions.create(
-                model=self._config.openai.chat_model,
-                temperature=0,
-                max_tokens=80,
+                **fallback_params(self._config, 80),
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": self._prompt},

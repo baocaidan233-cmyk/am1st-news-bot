@@ -5,6 +5,7 @@ import logging
 
 from core import haiku
 from core.config import AppConfig
+from core.fallback import fallback_params
 from core.models import Candidate
 from core.openai_client import create_openai_client
 
@@ -114,9 +115,7 @@ class TopicTagger:
                 return d["t"]
         try:
             resp = await self._client.chat.completions.create(
-                model=self._config.openai.chat_model,
-                temperature=0,
-                max_tokens=24,
+                **fallback_params(self._config, 24),
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": _PROMPT},

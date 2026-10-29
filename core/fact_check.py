@@ -34,6 +34,7 @@ from pathlib import Path
 import anthropic
 
 from core.config import AppConfig
+from core.fallback import fallback_params
 from core.openai_client import create_openai_client
 from core.claude_usage import log_usage
 
@@ -103,7 +104,8 @@ class FactChecker:
         # check is on and there is an OpenAI key; anything else means no
         # fallback, never a failed start.
         self._timeout = fc.timeout_seconds
-        self._openai_model = config.openai.chat_model
+        self._openai_model = config.openai.fallback_model
+        self._fb = fallback_params(config, 4000)
         self._openai = None
         if self.enabled and config.openai.api_key:
             try:
@@ -187,19 +189,14 @@ class FactChecker:
         return text
 
     async def _openai_answer(self, system: str, user: str, json_out: bool) -> tuple[str, dict | None]:
-        """One call to config.openai.chat_model with the same system prompt and
+        """One call to config.openai.fallback_model with the same system prompt and
         user message (2026-10-16, AI-89). json_out: structured output with the
         check's _SCHEMA, strict (the schema meets OpenAI's strict rules)."""
-        kwargs = dict(model=self._openai_model, timeout=self._timeout, messages=[
+        kwargs = dict(**self._fb, timeout=self._timeout, messages=[
             {"role": "system", "content": system}, {"role": "user", "content": user}])
         if json_out:
             kwargs["response_format"] = {"type": "json_schema",
                                          "json_schema": {"name": "fact_check", "strict": True, "schema": _SCHEMA}}
-        if self._openai_model.startswith("gpt-5"):
-            kwargs["max_completion_tokens"] = 4000
-        else:
-            kwargs["temperature"] = 0
-            kwargs["max_tokens"] = 4000
         resp = await self._openai.chat.completions.create(**kwargs)
         if getattr(resp.choices[0].message, "refusal", None):
             raise RuntimeError("refusal")

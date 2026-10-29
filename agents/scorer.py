@@ -89,6 +89,12 @@ class Scorer:
     def __init__(self, config: AppConfig) -> None:
         self._client = create_openai_client(config)
         self._model = config.openai.chat_model
+        # 2026-10-29 (AI-105, user: 上线): scorer_model first; a call that fails
+        # outright is asked once of openai.fallback_model (gpt-6-luna, user
+        # 10-29: 所有回退全部改成 luna). Blank scorer_model = chat_model, as before.
+        self._scorer_model = config.openai.scorer_model or self._model
+        self._scorer_effort = config.openai.scorer_reasoning_effort
+        self._fallback_model = config.openai.fallback_model
         self._system_prompt = Path(config.openai.scoring_prompt_file).read_text(encoding="utf-8")
         self._focus_note = config.openai.scoring_focus_note.strip()
         self._focus_until = config.openai.scoring_focus_until.strip()
@@ -96,12 +102,13 @@ class Scorer:
         self._calls_log = Path(config.openai.scorer_calls_log_path)
         self._prompt_sha = hashlib.sha256(self._system_prompt.encode("utf-8")).hexdigest()[:12]
 
-    def _log_call(self, candidate: Candidate, user_message: str, result: ScoreOutput | None, retried: bool) -> None:
+    def _log_call(self, candidate: Candidate, user_message: str, result: ScoreOutput | None, retried: bool,
+                  model: str = "") -> None:
         """One JSON line per scoring call (2026-10-27): the exact message and
         what came back. Best-effort: a logging failure never fails the score."""
         try:
             record = {"logged_at": int(time.time()), "url": candidate.url, "title": candidate.title,
-                      "model": self._model, "prompt_sha": self._prompt_sha, "user_message": user_message,
+                      "model": model or self._model, "prompt_sha": self._prompt_sha, "user_message": user_message,
                       "llm_score": result.llm_score if result else None,
                       "llm_comment": result.llm_comment if result else None, "retried": retried}
             self._calls_log.parent.mkdir(parents=True, exist_ok=True)
@@ -122,16 +129,21 @@ class Scorer:
             notes.append(self._standing_note)
         return "".join(f"\n\n{n}" for n in notes)
 
-    async def _call(self, user_message: str) -> str:
+    async def _call(self, user_message: str, model: str) -> str:
         kwargs = dict(
-            model=self._model,
+            model=model,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": self._system_prompt},
                 {"role": "user", "content": user_message},
             ],
         )
-        if self._model.startswith("gpt-5"):
+        if model.startswith("gpt-6"):
+            # Reasoning counts against this cap; at low effort the 10-29 test
+            # (886 stories) used about 200 output tokens a story in all.
+            kwargs["max_completion_tokens"] = 4000
+            kwargs["reasoning_effort"] = self._scorer_effort
+        elif model.startswith("gpt-5"):
             kwargs["max_completion_tokens"] = 500
             kwargs["reasoning_effort"] = "minimal"
         else:
@@ -170,7 +182,14 @@ class Scorer:
             f"{trending_block}"
             f"{self._focus_block()}"
         )
-        raw = await self._call(user_message)
+        model = self._scorer_model
+        try:
+            raw = await self._call(user_message, model)
+        except Exception as e:
+            logger.warning("Scorer: %s failed for %s (%s: %s) -- asking %s", model, candidate.url,
+                           type(e).__name__, str(e)[:200], self._fallback_model)
+            model = self._fallback_model
+            raw = await self._call(user_message, model)
         result, retried = None, False
         try:
             result = ScoreOutput.model_validate(json.loads(raw))
@@ -181,10 +200,10 @@ class Scorer:
                 f"{user_message}\n\nYour previous response could not be parsed as "
                 f'{{"llm_score": float, "llm_comment": string}}. Error: {e}. Return valid JSON only.'
             )
-            raw_retry = await self._call(retry_message)
+            raw_retry = await self._call(retry_message, model)
             try:
                 result = ScoreOutput.model_validate(json.loads(raw_retry))
             except (json.JSONDecodeError, ValidationError):
                 logger.error("Scorer: gave up on %s after retry", candidate.url)
-        self._log_call(candidate, user_message, result, retried)
+        self._log_call(candidate, user_message, result, retried, model)
         return result

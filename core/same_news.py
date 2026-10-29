@@ -30,6 +30,7 @@ from pathlib import Path
 
 from core import haiku
 from core.config import AppConfig
+from core.fallback import fallback_params
 from core.event_identity import event_identity_text
 from core.openai_client import create_openai_client
 
@@ -78,7 +79,8 @@ def news_record(post: str, title: str, lead: str, description: str = "") -> str:
 class SameNewsJudge:
     def __init__(self, config: AppConfig) -> None:
         self._client = create_openai_client(config)
-        self._model = config.openai.chat_model
+        self._model = config.openai.fallback_model
+        self._fb = fallback_params(config, 250)
         self._prompt = Path(config.entity_verifier.same_news_prompt_file).read_text(encoding="utf-8")
         # 2026-10-15 (AI-60, user: switch every judge Haiku measured better on):
         # Claude Haiku first, self._model only when the Haiku key is out of credit (core/haiku.py).
@@ -98,16 +100,10 @@ class SameNewsJudge:
                 return d["verdict"], json.dumps({**d, "model": haiku.MODEL}, ensure_ascii=False)
             # User 10-16 (AI-69): Haiku broken or out of credit, the same
             # question goes to OpenAI below (was: only out of credit, 10-15).
-        kwargs = dict(model=self._model, response_format=_SCHEMA, messages=[
+        kwargs = dict(**self._fb, response_format=_SCHEMA, messages=[
             {"role": "system", "content": self._prompt},
             {"role": "user", "content": user},
         ])
-        if self._model.startswith("gpt-5"):
-            kwargs["max_completion_tokens"] = 400
-            kwargs["reasoning_effort"] = "minimal"
-        else:
-            kwargs["temperature"] = 0
-            kwargs["max_tokens"] = 250
         resp = await self._client.chat.completions.create(**kwargs)
         raw = (resp.choices[0].message.content or "").strip()
         verdict = json.loads(raw)["verdict"]
