@@ -157,8 +157,8 @@ publish:
   interval_seconds: 1800       # 30 minutes
   candidate_min_score: 5.0     # Notion query floor (lower of weekday/weekend below) — unchanged, still the lower of the two
   stance_vector_model_file: "models/stance_vec.json"  # 2026-10-07 第二道立场兜底（与词表并列），门槛 0.8 写在模型文件里，用户定「保守些」；置空即关闭
-  caption_stance_model: "gpt-5.4-mini"  # 2026-10-11 AI-50 用户定：发布前对 caption 再查一次立场，过不了这篇不发、换下一篇；置空=关闭
-  caption_stance_reasoning_effort: "none"
+  caption_stance_model: "gpt-6-luna"  # 2026-10-11 AI-50 用户定：发布前对 caption 再查一次立场，过不了这篇不发、换下一篇；置空=关闭。主判是 Haiku，这里是 Haiku 出错时的退回模型；10-29 AI-108 用户：写稿已换 luna，不用 5.4-mini（离线同一测试集：真实反川普稿 8/8、已发 200 帖多拦 4）
+  caption_stance_reasoning_effort: "low"
   appeal_order: true            # 2026-10-06 owner-approved trial: within a score band, candidates with a reader appeal go first (agents/appeal_tagger.py). false = previous hash order
   election_fraud_boost: 1.0       # 2026-10-27 用户批准：选举舞弊/偷选举稿在选稿和排序时 +1 分（core/election_fraud.py），7 分舞弊稿排到 8 分普通稿前面；0=关闭
   weekday_min_score: 6.0        # raised to 7.0 2026-09-14 per 7-day audit, reverted same day — user judged too few real 7+ stories on a given day, tier would starve too often before falling back

@@ -322,44 +322,82 @@ class StanceVectorGuard:
 # caption is enforcement abuse, which the owner put inside the protected side.
 # The model names a side and quotes the words; code decides, and a quote that
 # is not in the caption is not a verdict.
+#
+# 2026-10-29 (AI-108, user: 这个很重要): of the 21 captions this check had blocked
+# since 10-13, 10 attacked the opponent -- Trump's DOJ suing Alaska over the decoy
+# candidate, the FBI burying the Chinese-ballot report, military boards defying
+# Hegseth -- because the old prompt made all of government and the military our
+# side and blocked any "despite" turn; and it passed "Bolsonaro provided no
+# evidence of fraud". Our side is now the administration acting on Trump's agenda
+# and his foreign allies; those who defy or obstruct it, and Biden-era agencies,
+# are the opponent; dismissing our side's fraud claims is an attack. Each prompt
+# judged once (Haiku): wrongly blocked 0 -> 8 of 9 passed; real hostile captions
+# 6 of 8 caught, as before, now including the Bolsonaro post; 12 of 12 written
+# hostile captions caught (old 11); 200 published captions, 0 newly blocked.
 _CAPTION_PROMPT = """You check a caption that a pro-Trump, America First news channel is about to
 post in its own name. Judge only the caption text.
 
-OUR SIDE: President Trump, his family, his officials and appointees, the White
-House, the MAGA movement, Republicans allied with Trump; and law enforcement
-doing its job: ICE, CBP, the Border Patrol, DHS, police, the military.
-Deportations, the border wall and immigration enforcement are our side's policy.
+OUR SIDE: President Trump and his family; his administration acting on his
+agenda (the White House, his officials and appointees, his Justice Department,
+FBI, DHS and Pentagon leadership); the MAGA movement; Republicans allied with
+Trump; law enforcement carrying out his policies (ICE, CBP, the Border Patrol,
+police); foreign leaders and movements allied with Trump (such as the
+Bolsonaros and Milei). Deportations, the border wall and immigration
+enforcement are our side's policy. Our side's claims that an election was
+rigged, stolen or fraudulent are our side's claims.
+
+NOT our side, even inside government: officials, career staff, boards,
+agencies or judges who defy, obstruct or slow Trump's agenda; the FBI, Justice
+Department, State Department or other agencies under Biden, and their past
+conduct; bureaucracies that fail a cause our side champions (election
+integrity, vaccine injuries, border security). Exposing them is an attack on
+the opponent.
 
 Answer three things:
 1. "villain": who does the caption, in its OWN narrating words, present as the
-   wrongdoer, the joke or the loser? Words in quotation marks, and claims the
-   caption attributes to a named person, group, poll, court or outlet ("X says",
-   "according to", "critics argue", "a judge ruled"), are THEIR words, not the
-   caption's. If nobody is cast that way, "none".
+   wrongdoer, the joke, the loser or the liar? Words in quotation marks, and
+   claims the caption attributes to a named person, group, poll, court or
+   outlet ("X says", "according to", "critics argue", "a judge ruled"), are
+   THEIR words, not the caption's. If nobody is cast that way, "none".
    One exception: when the caption's point is enforcement abuse (ICE, CBP, DHS,
    Border Patrol or police as abusive, intimidating or lawless, or illegal
    immigrants as their innocent victims), it counts even when attributed.
-2. "side": is that villain "our_side", "opponent" (Democrats, the Left, the
-   media, activists, criminals, illegal-alien criminals, sanctuary officials,
-   a Republican criticized from the right), "foreign", or "none"?
+2. "side": is that villain "our_side" (including the foreign allies named
+   above), "opponent" (Democrats, the Left, the media, activists, criminals,
+   illegal-alien criminals, sanctuary officials, a Republican criticized from
+   the right, and everyone in NOT our side above), "foreign" (rival or hostile
+   governments and their officials, such as China, Iran or Russia, or foreign
+   figures not allied with Trump), or "none"?
 3. "quote": the caption's words that do it, copied verbatim.
 
-Casting our side as wrongdoer, joke or loser means, in the caption's own words:
+Casting our side as wrongdoer, joke, loser or liar means, in the caption's own
+words:
 - mocking or belittling our side, or an epithet for it
 - enforcement shown as abusive, intimidating, unlawful or "under fire";
   illegal immigrants shown as innocent victims of it
 - our side's policy shown hurting people, or our side shown failing
   (bad polls, "backfires", "panic", "struggles", "humiliation")
+- our side's election-fraud or stolen-election claims dismissed in the
+  caption's own voice: "without evidence", "no evidence", "baseless",
+  "unfounded", "false claims", "debunked", or the caption itself offering
+  observers, courts or the size of the defeat as proof that the vote was fair
 - the Left's labels for our side or its causes: "far-right", "election
-  denier", "undocumented"
+  denier", "Big Lie", "undocumented"
 - the caption's own loaded words about our side ("unqualified",
   "controversial", "tirade", "under fire", "under scrutiny"), or a "however" /
-  "despite" turn in its own voice that undercuts what our side said or did
+  "despite" / "offering no details" turn in its own voice that undercuts what
+  our side said or did
 - our side shown humbling itself before a foreign rival
 
 It does not mean:
 - reporting what an opponent said or did ("Mamdani demanded...", "Democrats
   accused DHS of...")
+- exposing wrongdoing by anyone in NOT our side above, even with "despite" or
+  "but" in the caption's own voice (an agency ignoring the administration's
+  order, Biden-era officials burying evidence, a bureaucracy still sitting on a
+  problem)
+- our side acting against opponents, however forcefully (raids, arrests,
+  indictments, lawsuits, investigations described as tough or aggressive)
 - a court ruling, vote count or official statement reported plainly, even
   one that goes against our side
 - good news for our side, or an attack on the opponent
@@ -393,7 +431,7 @@ class CaptionStanceGuard:
         self.model = p.caption_stance_model or ""
         self.enabled = bool(self.model)
         self._extra = ({"reasoning_effort": p.caption_stance_reasoning_effort}
-                       if self.model.startswith("gpt-5") and p.caption_stance_reasoning_effort else {})
+                       if self.model.startswith(("gpt-5", "gpt-6")) and p.caption_stance_reasoning_effort else {})
         self._client = create_openai_client(config) if self.enabled else None
         # 2026-10-13: Claude Haiku first, self.model only when the Haiku key is out of credit (user 10-15)
         # (core/haiku.py). Same prompt, same code rule. On 599 re-labelled of
@@ -417,7 +455,8 @@ class CaptionStanceGuard:
             # User 10-16 (AI-69): Haiku broken or out of credit, the check goes
             # to self.model below (was: only out of credit, 10-15).
         try:
-            kw = {"max_completion_tokens": 2000} if self.model.startswith("gpt-5") else {"temperature": 0, "max_tokens": 200}
+            kw = ({"max_completion_tokens": 2000} if self.model.startswith(("gpt-5", "gpt-6"))
+                  else {"temperature": 0, "max_tokens": 200})
             r = await self._client.chat.completions.create(
                 model=self.model, **kw, **self._extra,
                 response_format={"type": "json_object"},
