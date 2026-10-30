@@ -63,6 +63,7 @@ from agents.scorer_shadow import ShadowScorer
 from agents.appeal_tagger import AppealTagger
 from agents.candidate_selector import usable_count
 from agents.topic_tagger import TopicTagger
+import core.haiku_budget  # noqa: F401 -- Haiku daily budget across the VM's bots (user 10-30), see the module
 from core import fulltext
 from core.config import load_config
 from core.event_identity import EventVerifier, HubIndex, entity_tokens, event_identity_text, event_judge_text, extract_event_frame, log_decision

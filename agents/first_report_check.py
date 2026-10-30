@@ -17,6 +17,9 @@ Claude Haiku compares headline + first paragraph on both sides
 adds a major development by the user's 10-12 standard. Code checks both quotes
 are really in the texts and decides: stale only for a same fact, quotes found,
 no major development. Anything else, any failure, leaves the article fresh.
+When Haiku cannot answer (out of credit, the 10-30 daily budget, or broken),
+the same question goes once to openai.fallback_model (user 10-30: 超过5块后
+切换到luna); only when that fails too is the article left fresh.
 
 Measured offline before going live: 13 of 47 old posts stopped, 0 of 37 fresh
 ones (7 of them newly revealed old matters) wrongly stopped, on the 10-10..10-12
@@ -46,6 +49,8 @@ from qdrant_client import AsyncQdrantClient
 from agents.embedder import Embedder
 from core import haiku
 from core.config import AppConfig
+from core.fallback import fallback_params
+from core.openai_client import create_openai_client
 from core.same_news import lead_paragraph
 from core.claude_usage import log_usage
 
@@ -147,6 +152,14 @@ class FirstReportCheck:
         self._embedder = Embedder(config) if self.enabled else None
         self._cache: OrderedDict[str, dict] = OrderedDict()
         self._cache_size = cache_size
+        self._openai_model = config.openai.fallback_model
+        self._fb = fallback_params(config, 4000)
+        self._openai = None
+        if self.enabled and config.openai.api_key:
+            try:
+                self._openai = create_openai_client(config)
+            except Exception as e:
+                logger.warning("FirstReportCheck: no %s fallback (%s)", self._openai_model, type(e).__name__)
         if config.publish.first_report_check and not key:
             logger.warning("FirstReportCheck: FIRST_REPORT_ANTHROPIC_API_KEY not set -- first-report check off")
 
@@ -248,14 +261,9 @@ class FirstReportCheck:
 
     async def _judge(self, ours: str, cands: list[dict]) -> dict:
         user = f"OUR ARTICLE:\n{ours}\n\n" + "\n\n".join(f"EARLIER ARTICLE {i + 1}:\n{c['text']}" for i, c in enumerate(cands))
-        resp = await self._claude.messages.create(
-            model=self._model, max_tokens=16000, system=[{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
-            messages=[{"role": "user", "content": user}],
-            output_config={"format": {"type": "json_schema", "schema": _SCHEMA}})
-        usage = log_usage(resp, 'first-report check')
-        if resp.stop_reason == "refusal":
+        v, usage = await self._ask(user)
+        if v is None:
             return {"stale": False, "same": [], "raw": None, "usage": usage}
-        v = json.loads(next(b.text for b in resp.content if b.type == "text"))
         same = []
         for c in v["candidates"]:
             i = c["id"] - 1
@@ -267,12 +275,37 @@ class FirstReportCheck:
         stale = any(x["quotes_ok"] for x in same) and not v["new_fact_quote"].strip()
         return {"stale": stale, "same": same, "raw": v, "usage": usage}
 
+    async def _ask(self, user: str) -> tuple[Optional[dict], dict]:
+        """(verdict, usage) from Haiku; when Haiku cannot answer, from
+        openai.fallback_model. A refusal is (None, usage). Raises only when
+        neither can answer."""
+        if haiku.available():
+            try:
+                resp = await self._claude.messages.create(
+                    model=self._model, max_tokens=16000, system=[{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
+                    messages=[{"role": "user", "content": user}],
+                    output_config={"format": {"type": "json_schema", "schema": _SCHEMA}})
+                usage = log_usage(resp, 'first-report check')
+                if resp.stop_reason == "refusal":
+                    return None, usage
+                return json.loads(next(b.text for b in resp.content if b.type == "text")), usage
+            except Exception as e:
+                haiku.note_error(e)
+                if self._openai is None:
+                    raise
+                logger.warning("FirstReportCheck: Haiku %s -- asking %s", type(e).__name__, self._openai_model)
+        elif self._openai is None:
+            raise RuntimeError("Haiku out of credit and no fallback")
+        resp = await self._openai.chat.completions.create(
+            **self._fb,
+            messages=[{"role": "system", "content": self._system}, {"role": "user", "content": user}],
+            response_format={"type": "json_schema", "json_schema": {"name": "first_report", "strict": True, "schema": _SCHEMA}})
+        return json.loads(resp.choices[0].message.content or ""), {"model": self._openai_model}
+
     async def check(self, url: str, url_hash: str, title: str, body: str, now: Optional[datetime] = None) -> dict:
         """{"verdict": "stale" | "fresh", "reason": str, "evidence": {...} | None, ...}. Fails open."""
         if not self.enabled:
             return {"verdict": "fresh", "reason": "first-report check off"}
-        if not haiku.available():  # out of credit: cleared as before this check existed, not cached
-            return {"verdict": "fresh", "reason": "Haiku out of credit"}
         if url_hash in self._cache:
             self._cache.move_to_end(url_hash)
             return self._cache[url_hash]
