@@ -51,9 +51,15 @@ openai:
   # 2026-10-30 回退（用户：「am和CB现在都回退，然后分析下现在是什么问题」）：10-29 上线后每帖平均互动 68，
   # 前两周每天 75-100，同期 maga360/dcvein 正常；luna 把外国新闻、无关小案打到 8-9 分。见 AI-105 评论。
   # 第八版：scorer_model "gpt-6-luna"、scoring_prompt_file "prompts/scoring_prompt_luna.txt"。
-  scorer_model: ""
+  # 2026-10-30 切 Haiku（用户：「优先haiku」「好」）：第九版提示词 prompts/scoring_prompt_v9.txt，
+  # Haiku 答不了（出错、没额度、过每日 $5 线）就同一提示词问 luna。按扣掉常客后的真实互动回测，
+  # Haiku 第九版在自己频道、gatewaypundit、newsmax 上都比 luna 准，见 AI-105 评论。
+  # 同日按用户口径补进提示词：欧洲移民危机算移民议题（不算外国内政），大事打 8 分；新冠疫苗副作用、芬太尼的新研究不受
+  # 「研究最多 5 分」限制；删掉 09-04 的西班牙休达反例。8 分档那句点名了「法国骚乱和休达移民潮」，这两件事过去后删掉点名。
+  # 回滚：scorer_model 置空、scoring_prompt_file 改回 "prompts/scoring_prompt_v23.txt"（4o-mini）。
+  scorer_model: "claude-haiku-5-5"
   scorer_reasoning_effort: "low"
-  scoring_prompt_file: "prompts/scoring_prompt_v23.txt"
+  scoring_prompt_file: "prompts/scoring_prompt_v9.txt"
   # 原来的：scoring_prompt_file: "prompts/scoring_prompt_v23.txt"  # 2026-10-07 切到手术版 v2.3（用户批准）：解决分数坍塌，8 分档成顶档；旧版 prompts/scoring_prompt.txt 保留，改回这一行即可回滚。2026-10-03 那次回退的是另一个 v2（scoring_prompt_v2.txt），不是这个
   # 2026-10-22 用户：「中期选举是现在热点事件」。附在每篇打分输入里，到期自动不加；改重点只改这两行。
   scoring_focus_note: "Editor's current focus, until the November 3 midterm elections: the midterm campaign is the biggest running story for this audience. A race development (a poll or race-rating shift, a notable endorsement, early-voting turnout, a candidate's scandal, gaffe or clash) is core news for this channel. Do not mark it down as a routine prediction or a generic reaction; grade it by what it reports, like any other story."

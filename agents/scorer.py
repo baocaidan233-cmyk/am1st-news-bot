@@ -9,6 +9,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
 
+from core import haiku
 from core.config import AppConfig
 from core.models import Candidate
 from core.openai_client import create_openai_client
@@ -50,6 +51,10 @@ logger = logging.getLogger(__name__)
 class ScoreOutput(BaseModel):
     llm_score: float
     llm_comment: str
+
+
+_SCHEMA = {"type": "object", "properties": {"llm_score": {"type": "number"}, "llm_comment": {"type": "string"}},
+           "required": ["llm_score", "llm_comment"], "additionalProperties": False}
 
 
 class Scorer:
@@ -95,6 +100,17 @@ class Scorer:
         self._scorer_model = config.openai.scorer_model or self._model
         self._scorer_effort = config.openai.scorer_reasoning_effort
         self._fallback_model = config.openai.fallback_model
+        # 2026-10-30 (AI-105, user: 优先haiku): scorer_model claude-haiku-5-5 goes
+        # through core/haiku.py; when Haiku cannot answer (broken, out of credit,
+        # past the daily line) the same prompt goes to fallback_model. On real
+        # readers' engagement Haiku ranked best of the three on prompt v9
+        # (prompts/scoring_prompt_v9.txt); luna on the same prompt is the fallback.
+        self._haiku_key = ""
+        if self._scorer_model == haiku.MODEL:
+            self._haiku_key = config.openai.scorer_api_key
+            if not self._haiku_key:
+                logger.warning("Scorer: FIRST_REPORT_ANTHROPIC_API_KEY not set -- every call goes to %s",
+                               self._fallback_model)
         self._system_prompt = Path(config.openai.scoring_prompt_file).read_text(encoding="utf-8")
         self._focus_note = config.openai.scoring_focus_note.strip()
         self._focus_until = config.openai.scoring_focus_until.strip()
@@ -182,28 +198,43 @@ class Scorer:
             f"{trending_block}"
             f"{self._focus_block()}"
         )
-        model = self._scorer_model
-        try:
-            raw = await self._call(user_message, model)
-        except Exception as e:
-            logger.warning("Scorer: %s failed for %s (%s: %s) -- asking %s", model, candidate.url,
-                           type(e).__name__, str(e)[:200], self._fallback_model)
-            model = self._fallback_model
-            raw = await self._call(user_message, model)
         result, retried = None, False
-        try:
-            result = ScoreOutput.model_validate(json.loads(raw))
-        except (json.JSONDecodeError, ValidationError) as e:
-            retried = True
-            logger.warning("Scorer: malformed output for %s, retrying once: %s", candidate.url, e)
-            retry_message = (
-                f"{user_message}\n\nYour previous response could not be parsed as "
-                f'{{"llm_score": float, "llm_comment": string}}. Error: {e}. Return valid JSON only.'
-            )
-            raw_retry = await self._call(retry_message, model)
+        model = self._scorer_model
+        if model == haiku.MODEL:
+            if self._haiku_key:
+                # The prompt is ~3,000 tokens and asked every cycle, more than 10 minutes apart: 1h cache.
+                answer = await haiku.ask(self._haiku_key, self._system_prompt, user_message, _SCHEMA,
+                                         cache=True, cache_ttl="1h")
+                try:
+                    result = ScoreOutput.model_validate(answer) if answer else None
+                except ValidationError:
+                    result = None
+                if result is None:
+                    logger.warning("Scorer: Haiku gave no score for %s -- asking %s", candidate.url,
+                                   self._fallback_model)
+            if result is None:
+                model = self._fallback_model
+        if result is None:
             try:
-                result = ScoreOutput.model_validate(json.loads(raw_retry))
-            except (json.JSONDecodeError, ValidationError):
-                logger.error("Scorer: gave up on %s after retry", candidate.url)
+                raw = await self._call(user_message, model)
+            except Exception as e:
+                logger.warning("Scorer: %s failed for %s (%s: %s) -- asking %s", model, candidate.url,
+                               type(e).__name__, str(e)[:200], self._fallback_model)
+                model = self._fallback_model
+                raw = await self._call(user_message, model)
+            try:
+                result = ScoreOutput.model_validate(json.loads(raw))
+            except (json.JSONDecodeError, ValidationError) as e:
+                retried = True
+                logger.warning("Scorer: malformed output for %s, retrying once: %s", candidate.url, e)
+                retry_message = (
+                    f"{user_message}\n\nYour previous response could not be parsed as "
+                    f'{{"llm_score": float, "llm_comment": string}}. Error: {e}. Return valid JSON only.'
+                )
+                raw_retry = await self._call(retry_message, model)
+                try:
+                    result = ScoreOutput.model_validate(json.loads(raw_retry))
+                except (json.JSONDecodeError, ValidationError):
+                    logger.error("Scorer: gave up on %s after retry", candidate.url)
         self._log_call(candidate, user_message, result, retried, model)
         return result

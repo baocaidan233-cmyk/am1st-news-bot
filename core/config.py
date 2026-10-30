@@ -132,6 +132,9 @@ class OpenAIConfig(BaseModel):
     # chat_model. A failed scorer_model call is asked once of fallback_model.
     scorer_model: str = ""
     scorer_reasoning_effort: str = "low"
+    # scorer_model "claude-haiku-5-5" (2026-10-30, AI-105, user: 优先haiku) is asked
+    # with this key, FIRST_REPORT_ANTHROPIC_API_KEY, the key the other judges use.
+    scorer_api_key: str = ""
     # 2026-10-29 (user: 所有回退、fallback 到 5.4mini、4o mini 的情况，全部改成 luna，
     # 以后新闻频道 open ai 只用 luna): the model every Haiku step and the scorer fall
     # back to (core/fallback.py). chat_model stays the primary for the steps still on it.
@@ -1115,6 +1118,7 @@ _ENV_OVERRIDES = {
     ("publish", "first_report_api_key"): "FIRST_REPORT_ANTHROPIC_API_KEY",
     ("entity_verifier", "guard_judge_api_key"): "FIRST_REPORT_ANTHROPIC_API_KEY",
     ("merged_judge", "api_key"): "FIRST_REPORT_ANTHROPIC_API_KEY",
+    ("openai", "scorer_api_key"): "FIRST_REPORT_ANTHROPIC_API_KEY",
     ("openai", "fallback_api_key"): "OPENAI_API_KEY_FALLBACK",
     ("qdrant", "url"): "QDRANT_URL",
     ("qdrant", "api_key"): "QDRANT_API_KEY",
