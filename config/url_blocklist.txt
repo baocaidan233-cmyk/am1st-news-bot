@@ -1,0 +1,32 @@
+# 不送去打分的网站和版面（core/url_blocklist.py，2026-10-31 用户定）。
+# 由本频道 10-01 以来的日志生成：同一网站或版面送去打分 >=10 次、从没过 6 分、没进过候选池、没发过。
+# 每行：网站，或 网站/版面（含其下所有子版面），或 */版面名（任何网站上叫这个名字的版面）。
+# 行尾 # 后面是 10-01 以来送去打分的次数。删掉一行即放行。
+
+# 用户点名的版面（本频道数据里同样从没过 6 分）
+*/fashion
+
+# 按数据统计
+theguardian.com/australia-news    # 58
+technologyreview.com    # 30
+usnews.com/banking    # 23
+wsj.com/business/autos    # 23
+interestingengineering.com/science    # 22
+fox5dc.com/weather    # 21
+nypost.com/article    # 21
+wsj.com/economy/central-banking    # 21
+money.usnews.com/loans/student-loans/reviews    # 20
+pjmedia.com/chris-queen    # 20
+health.usnews.com    # 19
+economist.com/finance-and-economics    # 16
+usnews.com/education    # 16
+intelligentfly.news    # 15
+theguardian.com/environment    # 14
+money.usnews.com/loans/rates    # 13
+wsj.com/business/airlines    # 13
+wsj.com/business/media    # 13
+usnews.com/news/best-states/new-york    # 12
+fortune.com/article    # 11
+theguardian.com/education    # 11
+wsj.com/cfo-journal    # 11
+newsnationnow.com/entertainment-news    # 10

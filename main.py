@@ -75,6 +75,7 @@ from core.notion_candidates import query_eligible_candidates, retire_by_url, wri
 from core.prescore import PreScorer, log_prescore_decision
 from core.reprint import RELAYS, reprint_of, site
 from core.roundup import roundup_rule, newsletter_rule
+from core.url_blocklist import blocklisted
 from core.notion_sources import load_rss_sources
 from core.qdrant_store import EventStore, PostedHistoryStore, QdrantStore, ensure_collection_with_retry
 from core.redis_store import AppealLabels, RedisStore, StuckVersions
@@ -287,6 +288,21 @@ async def run_cycle(
     logger.info("run_cycle: %d/%d survive English-language filter", len(survivors), before_lang_filter)
     if not survivors:
         return
+
+    # --- Layer 1.51: sites and URL sections this channel never publishes from
+    # (2026-10-31, core/url_blocklist.py, user: 根本就没必要送过去). The list
+    # is this channel's own: scored 10+ times since 10-01, never 6, never in
+    # the pool, never published. ---
+    kept = []
+    for c in survivors:
+        entry = blocklisted(c.url)
+        if entry:
+            logger.info("run_cycle: %s dropped — url_blocklist %s", c.url, entry)
+        else:
+            kept.append(c)
+    if len(kept) != len(survivors):
+        logger.info("run_cycle: %d/%d dropped — URL on the blocklist", len(survivors) - len(kept), len(survivors))
+    survivors = kept
 
     # --- Layer 1.52: no digests, rolling live pages or link lists
     # (2026-09-29, core/roundup.py) — user rule: a post has to be about one
