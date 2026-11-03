@@ -15,7 +15,12 @@ wraps the Anthropic SDK's messages.create for the whole process:
     before it is sent, with the same out-of-credit error Anthropic returns, so
     every judge takes the path it already takes when the credit runs out: an
     hour on openai.fallback_model (gpt-6-luna), then Haiku is tried again and
-    fails again until the UTC day turns.
+    fails again until the UTC day turns;
+  * a key Anthropic rejects (401/403 -- 2026-11-03 the account behind every
+    production key was banned, user: 「切换到open ai的服务，确保生产正常」) fails
+    with that same out-of-credit error. Otherwise the judges treat it as Haiku
+    being briefly broken and take their default (skip, not merged) instead of
+    asking OpenAI. Every call still goes out, so a restored key works at once.
 
 The other VM's number is at most SYNC_SECONDS old; with Redis unreachable each
 VM goes on its own total. Tests and one-off scripts do not import this, so they
@@ -182,20 +187,40 @@ def _check() -> None:
         response=httpx.Response(400, request=request), body=None)
 
 
+def _rejected(e: anthropic.APIStatusError) -> anthropic.BadRequestError:
+    """The out-of-credit error for a call whose key Anthropic refused."""
+    global _rejected_day
+    day = _day()
+    if _rejected_day != day:
+        _rejected_day = day
+        logger.warning("haiku_budget: Anthropic rejected the key (%s %s) -- handled as out of credit, Claude calls "
+                       "go to the fallback model", e.status_code, type(e).__name__)
+    return anthropic.BadRequestError(
+        f"Your credit balance is too low: key rejected by Anthropic ({e.status_code} {type(e).__name__}; "
+        f"local mapping)", response=httpx.Response(400, request=e.response.request), body=None)
+
+
+_rejected_day = ""
 _create = Messages.create
 _acreate = AsyncMessages.create
 
 
 def _wrapped(self, *args, **kwargs):
     _check()
-    resp = _create(self, *args, **kwargs)
+    try:
+        resp = _create(self, *args, **kwargs)
+    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as e:
+        raise _rejected(e) from e
     _add(resp)
     return resp
 
 
 async def _awrapped(self, *args, **kwargs):
     _check()
-    resp = await _acreate(self, *args, **kwargs)
+    try:
+        resp = await _acreate(self, *args, **kwargs)
+    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as e:
+        raise _rejected(e) from e
     _add(resp)
     return resp
 
