@@ -62,8 +62,11 @@ openai:
   scoring_prompt_file: "prompts/scoring_prompt_v9.txt"
   # 原来的：scoring_prompt_file: "prompts/scoring_prompt_v23.txt"  # 2026-10-07 切到手术版 v2.3（用户批准）：解决分数坍塌，8 分档成顶档；旧版 prompts/scoring_prompt.txt 保留，改回这一行即可回滚。2026-10-03 那次回退的是另一个 v2（scoring_prompt_v2.txt），不是这个
   # 2026-10-22 用户：「中期选举是现在热点事件」。附在每篇打分输入里，到期自动不加；改重点只改这两行。
-  scoring_focus_note: "Editor's current focus, until the November 3 midterm elections: the midterm campaign is the biggest running story for this audience. A race development (a poll or race-rating shift, a notable endorsement, early-voting turnout, a candidate's scandal, gaffe or clash) is core news for this channel. Do not mark it down as a routine prediction or a generic reaction; grade it by what it reports, like any other story."
-  scoring_focus_until: "2026-11-04"
+  # 2026-11-08 用户：「发啊，该发的就发」。换成选后重点（AI-27）：大号最热的「骂 Thune / 参院共和党」AM1ST 三天 0 条，
+  # 都被打 5–6 分（「只是表态」）。离线测（生产提示词 v9）：内讧类 59 条 7 分以上 8→17，随机对照 50 条 20→20。
+  # 原来的：中期选举那条（到 2026-11-04），见 git 历史。
+  scoring_focus_note: "Editor's current focus, through the lame-duck session: the fallout from the November 3 midterms is the biggest running story for this audience. Republicans fighting over who failed President Trump is core news for this channel: Senate GOP leadership under fire, the November 10 leadership elections, and named Republicans demanding that Congress pass the SAVE America Act or other Trump priorities before Democrats take over in January. So are the new Democratic majorities' moves against the administration. A named Republican leader attacking or defying party leadership, or a named figure demanding a specific vote before January, is a concrete development: do not mark it down as a generic reaction or mere commentary. Grade it by what it reports, like any other story."
+  scoring_focus_until: "2026-12-19"
   # 2026-10-27 用户批准，长期有效（不随 11-04 失效）。巴西大选那几天约 60 篇被当外国新闻打 4–5 分；离线 23 篇巴西稿 6 分以上 11→23，其他外国稿和美国选举稿不变。
   scoring_standing_note: "Claims that the left rigged or stole an election, in the U.S. or abroad (Brazil, for example), and what President Trump or U.S. officials say about them, are core election-integrity news for this audience. Do not mark such a story down because the election is foreign."
   content_gen_prompt_file: "prompts/content_gen_prompt.txt"
