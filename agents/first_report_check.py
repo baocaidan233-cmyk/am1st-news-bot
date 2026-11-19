@@ -93,14 +93,23 @@ _THIN = re.compile(r"The post .{0,200} appeared first on .*", re.S)
 _STOP = set("a an the of to in on for and or but with by at from as is are was were be been it its this that these those after "
             "before over into about just new now says said say will would could can has have had not no why how what who his her "
             "their our your than more most watch video breaking exclusive report reports".split())
+# The kinds of major development the prompt lists (user's 10-12 standard).
+# 11-19 (AI-23): asked only for a quote, the model handed one over for 55 of
+# 673 same-fact verdicts 11-03..11-19, mostly the old fact retold, background
+# or commentary -- "Last week saw the biggest drop in gas prices", "a resurfaced
+# video" -- and 15 old stories went out. It now names the kind first, and code
+# checks the quote (_real_development).
+_DEV_TYPES = ["NONE", "HAPPENED_OR_NEXT_STAGE", "RESPONSE", "NEW_EVIDENCE", "FIRST_STATEMENT",
+              "REVERSAL_OR_CONFIRMATION", "NUMBER_ORDER_OF_MAGNITUDE", "ESCALATION", "ACCOUNTABILITY", "TRUMP"]
 _SCHEMA = {
-    "type": "object", "additionalProperties": False, "required": ["candidates", "new_fact_quote"],
+    "type": "object", "additionalProperties": False, "required": ["candidates", "development_type", "new_fact_quote"],
     "properties": {
         "candidates": {"type": "array", "items": {
             "type": "object", "additionalProperties": False, "required": ["id", "relation", "our_quote", "their_quote"],
             "properties": {"id": {"type": "integer"},
                            "relation": {"type": "string", "enum": ["SAME_FACT", "DIFFERENT", "UNSURE"]},
                            "our_quote": {"type": "string"}, "their_quote": {"type": "string"}}}},
+        "development_type": {"type": "string", "enum": _DEV_TYPES},
         "new_fact_quote": {"type": "string"},
     },
 }
@@ -137,6 +146,16 @@ def _page_day(html: str):
         return datetime.strptime(meta.date[:10], "%Y-%m-%d").date() if meta and meta.date else None
     except Exception:
         return None
+
+
+def _real_development(v: dict, ours: str, earlier: list[str]) -> bool:
+    """A major development counts only when the model names its kind and quotes
+    it from our article (4+ words), and the earlier same-fact reports do not
+    already carry that sentence."""
+    q = _norm(v.get("new_fact_quote") or "").strip()
+    if v.get("development_type", "NONE") == "NONE" or len(q.split()) < 4 or q not in _norm(ours):
+        return False
+    return not any(q in _norm(t) for t in earlier)
 
 
 class FirstReportCheck:
@@ -272,7 +291,8 @@ class FirstReportCheck:
             ok = (len(_norm(c["our_quote"]).split()) >= 3 and _norm(c["our_quote"]) in _norm(ours)
                   and _norm(c["their_quote"]) in _norm(cands[i]["text"]))
             same.append({"cand": i, "quotes_ok": ok})
-        stale = any(x["quotes_ok"] for x in same) and not v["new_fact_quote"].strip()
+        dev = _real_development(v, ours, [cands[x["cand"]]["text"] for x in same if x["quotes_ok"]])
+        stale = any(x["quotes_ok"] for x in same) and not dev
         return {"stale": stale, "same": same, "raw": v, "usage": usage}
 
     async def _ask(self, user: str) -> tuple[Optional[dict], dict]:

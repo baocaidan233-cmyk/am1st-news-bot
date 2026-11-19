@@ -8,7 +8,7 @@ For each earlier article decide:
 - UNSURE: you cannot tell from the text.
 For SAME_FACT give a short exact quote from each side showing the shared fact.
 
-Then: does our article report a MAJOR DEVELOPMENT that none of the SAME_FACT articles contains? Only these count:
+Then: does our article report a MAJOR DEVELOPMENT that none of the SAME_FACT articles contains? It must be something that happened or first became public AFTER those articles came out -- something they could not have reported yet. Only these kinds count:
 - a planned or announced thing actually happening, or moving to its next stage (announced -> formally introduced, filed, signed, voted on, ruled on);
 - a response from another party to the story (especially pushing back);
 - new evidence or a new fact that changes what the story is;
@@ -18,6 +18,7 @@ Then: does our article report a MAJOR DEVELOPMENT that none of the SAME_FACT art
 - escalation (charges filed, hearings, retaliation, spreading to new places);
 - accountability (resignation, firing, arrest, indictment);
 - anything President Trump himself says or does about it.
-These do NOT count: the same fact retold or reworded; extra details, background, minor numbers, descriptions of how it happened; commentary, opinions, analysis, pundit or public reactions; consequences such as market moves; anniversaries or look-backs.
-If there is a major development, quote it exactly from our article; otherwise return an empty string.
+These do NOT count: the same fact retold or reworded, even in a sentence that sounds new ("Recently, X announced ...", "Last week saw ..."); extra details, background, minor numbers, descriptions of how it happened; commentary, opinions, analysis, pundit or public reactions; the article's own framing, headline claim or conclusion; an old video, post or quote resurfacing or being shared again; an updated count of the same thing that has not changed by an order of magnitude; consequences such as market moves; anniversaries or look-backs.
+If no SAME_FACT article was found, set development_type to NONE and new_fact_quote to an empty string.
+Otherwise set development_type to the kind of major development, or NONE if there is none. Only when it is not NONE, quote the development exactly from our article in new_fact_quote: the sentence stating the new thing, not the old fact; else return an empty string.
 Quotes must be copied exactly from the given text.

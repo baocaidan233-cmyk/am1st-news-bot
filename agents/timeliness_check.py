@@ -23,6 +23,22 @@ Logged to logs/timeliness.jsonl. Any failure leaves the story fresh.
 2026-10-13 (AI-23): an article that gives no time for its headline's news
 (news_at None) used to stop here as fresh; agents/first_report_check.py now
 looks for an earlier report of the same fact first.
+
+2026-11-19 (AI-23): the other way round too. A dated story that relays
+another outlet's reporting, or documents someone obtained, can be an old
+matter revealed only now -- user, 10-09: 过去的事件刚刚爆料出来，那不算旧闻，
+这种不能误伤. 11-11..11-19 the date rule stopped three such stories: an Erie
+Democratic chairman's July Notice to Appear dug up by the Erie Times-News, a
+San Francisco complaint of March 3 that NBC Bay Area brought out, VA figures
+for 2025 "obtained by The Daily Signal". The model had read each as the date
+of the news. Such a stale verdict now stands only if the first-report search
+finds an earlier report of the same fact; a failed search keeps it stale.
+Only for a date 30+ days back that the sentence does not give as the day it
+was made public: on the 59 dated stale verdicts of 11-11..11-19, asking for
+every relayed story released 6 that were only late (a sentencing on Tuesday,
+remarks on Wednesday), or public from the start ("figures released in
+September 2025", "the audit, released in August 2020"), next to the 4 real ones.
+With the two limits, exactly the 4.
 """
 from __future__ import annotations
 
@@ -38,7 +54,7 @@ from typing import Optional
 
 from agents.first_report_check import FirstReportCheck
 from core.config import AppConfig
-from core.news_time import decide, first_disclosure
+from core.news_time import _norm, decide, first_disclosure, names_this_outlet
 from core.openai_client import create_openai_client
 
 logger = logging.getLogger(__name__)
@@ -56,6 +72,39 @@ def _log(row: dict) -> None:
                                 ensure_ascii=False, default=str) + "\n")
     except Exception:
         logger.debug("timeliness: could not write %s", _LOG, exc_info=True)
+
+
+# The article passes on someone else's digging: records, documents, a report.
+_REVEAL = re.compile(r"\b(?:obtained by|according to (?:new |newly |detailed )?(?:records|documents|court (?:records|documents|filings)|"
+                     r"emails|filings|reporting)|(?:records|documents|filings|emails) (?:show|showed|reveal|revealed|obtained)|"
+                     r"newly (?:released|obtained|unsealed|surfaced)|unsealed|leaked|(?:detailed |new )?reporting (?:from|by))\b", re.I)
+# A first-report answer that means "nobody reported this earlier".
+_NOT_EARLIER = ("no earlier report of the same fact found", "same fact reported earlier, but this article adds a major development")
+
+
+_REVEAL_MIN_DAYS = 30
+# The sentence gives its date as the day the thing was made public.
+_MADE_PUBLIC = re.compile(r"\b(?:released|published|announced|unveiled|reported|posted|aired|made public|"
+                          r"said in a statement|told reporters|declared|disclosed)\b", re.I)
+
+
+def _relays_revelation(devs: list, body: str, url: str, news_at: Optional[datetime] = None,
+                       now: Optional[datetime] = None) -> bool:
+    """Whether a stale-by-date story may be an old matter just brought out by
+    someone else's reporting. Not when the headline's date is that report's
+    own: "Moonshot AI looked to rent Blackwell chips, CNBC reported Nov. 5th";
+    not when the date is recent (the story is late, not revealed); not when the
+    sentence says that date is when it came out."""
+    head = devs[0] if devs and isinstance(devs[0], dict) else {}
+    if news_at is not None and now is not None and (now - news_at).days < _REVEAL_MIN_DAYS:
+        return False
+    if _MADE_PUBLIC.search(head.get("what") or ""):
+        return False
+    outlet = head.get("cited_outlet")
+    if outlet and not names_this_outlet(outlet, url):
+        what = _norm(head.get("what") or "")
+        return not (_norm(outlet) in what and "report" in what)
+    return bool(_REVEAL.search((body or "")[:4000]))
 
 
 class TimelinessCheck:
@@ -100,7 +149,13 @@ class TimelinessCheck:
             logger.warning("timeliness: check failed for %s (%s) — treating as fresh", url, e)
             result = {"verdict": "fresh", "reason": "check failed: %s" % str(e)[:200], "news_at": None, "age_hours": None}
         first_report = None
-        if result["verdict"] == "fresh" and result.get("news_at") is None:
+        if (result["verdict"] == "stale" and result.get("news_at") is not None and self._first_report.enabled
+                and _relays_revelation(devs or [], body, url, datetime.fromisoformat(result["news_at"]), now)):
+            first_report = await self._first_report.check(url, url_hash, title, body, now)
+            if first_report.get("reason") in _NOT_EARLIER:
+                result = {**result, "verdict": "fresh",
+                          "reason": "dated %s, but no earlier report of it: brought out only now" % result["reason"].split(" is at least")[0]}
+        elif result["verdict"] == "fresh" and result.get("news_at") is None:
             first_report = await self._first_report.check(url, url_hash, title, body, now)
             if first_report["verdict"] == "stale":
                 result = {"verdict": "stale", "reason": "no time in the article; " + first_report["reason"],
